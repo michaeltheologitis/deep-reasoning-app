@@ -21,6 +21,7 @@ from deep_reasoning.chats import (
 )
 from deep_reasoning.library import (
     BEFORE_EVENTS,
+    HISTORIAN,
     LIBRARIAN,
     LIBRARY_ONLY,
     SCHEMA_VERSION,
@@ -59,8 +60,12 @@ def test_a_chat_made_first_in_a_new_file_leaves_a_whole_library_beside_it(librar
 
 def test_a_version_1_library_opens_with_its_library_kept_and_gains_chats(imported):
     with closing(open_library(imported)) as connection:
-        # Made before a fresh Library had a librarian: opening it adds none.
-        connection.execute("DELETE FROM namespaces WHERE name = ?", (LIBRARIAN,))
+        # Made before a fresh Library had a historian or librarian: opening it adds neither.
+        for name in (HISTORIAN, LIBRARIAN):
+            connection.execute("DELETE FROM namespaces WHERE name = ?", (name,))
+            connection.execute(
+                "DELETE FROM decompositions WHERE namespace = ?", (name,)
+            )
         before = stored_config(connection)
     as_made_by(LIBRARY_ONLY, imported)
     chat = create_chat(imported)

@@ -91,16 +91,37 @@ UPSERT_TOOL = (
     "INSERT INTO tools VALUES (?, ?, ?)"
     " ON CONFLICT (name) DO UPDATE SET yaml = excluded.yaml, source = excluded.source"
 )
-# Granted at root, so every namespace below has them, as in the engine's example configs.
-FRESH_ROOT = {"tools": ["llm", "history"]}
+# Granted at root, so every namespace below has it, as in the engine's example configs.
+FRESH_ROOT = {"tools": ["llm"]}
 # library writes the Library, so it is granted in a namespace of its own, which a chat
 # picks when it wants edits, and which no namespace inherits from.
 LIBRARIAN = "librarian"
 LIBRARY_TOOL = "library"
 FRESH_LIBRARIAN = {"tools": [LIBRARY_TOOL]}
-# Every namespace inherits it: without it, models answer in the cell printing history.
-HISTORY_EXAMPLE_FILE = Path(__file__).with_name("history_example.yaml")
-HISTORY_EXAMPLE = HISTORY_EXAMPLE_FILE.read_text(encoding="utf-8")
+# A specialist that root hands questions about earlier messages to.
+HISTORIAN = "historian"
+HISTORIAN_SUFFIX = """\
+You are the historian: you answer questions about this chat's earlier messages (how or \
+why an answer was reached, what a sub-agent did) from what was recorded. Read it with \
+history, drilling into the sub-agents involved, and quote their real code and outputs. \
+Never redo the work or guess; answer in a later cell, from what you printed.
+"""
+# A leaf: copying root's hand-off, the last cell of its own conversation, can't nest one.
+FRESH_HISTORIAN = {"tools": ["history"], "spawn": [], "system_suffix": HISTORIAN_SUFFIX}
+FRESH_NAMESPACES = {
+    ROOT: FRESH_ROOT,
+    HISTORIAN: FRESH_HISTORIAN,
+    LIBRARIAN: FRESH_LIBRARIAN,
+}
+# The historian's worked examples: without them, models answer in the cell that prints
+# history. Each opens with the question and root's hand-off.
+HISTORIANS_EXAMPLES = [
+    Path(__file__).with_name(file).read_text(encoding="utf-8")
+    for file in ("history_example.yaml", "sub_agents_example.yaml")
+]
+# Root's are those two turns of each, under the same name: every namespace inherits them,
+# but in historian its own take their place.
+HAND_OFF_TURNS = 2
 UNTOUCHED_ROOT = (
     "name = :root AND yaml = :empty"
     " AND NOT EXISTS (SELECT 1 FROM decompositions WHERE namespace = :root)"
@@ -389,12 +410,21 @@ def written_by_an_earlier_version(found, names):
 
 
 def seed_new_library(connection):
-    connection.execute(UPSERT_NAMESPACE, (ROOT, dump(FRESH_ROOT)))
-    connection.execute(UPSERT_NAMESPACE, (LIBRARIAN, dump(FRESH_LIBRARIAN)))
-    example = (ROOT, parsed(HISTORY_EXAMPLE).name, HISTORY_EXAMPLE)
-    connection.execute(UPSERT_DECOMPOSITION, example)
+    for name, fields in FRESH_NAMESPACES.items():
+        connection.execute(UPSERT_NAMESPACE, (name, dump(fields)))
+    examples = [(ROOT, hand_off(text)) for text in HISTORIANS_EXAMPLES]
+    examples += [(HISTORIAN, text) for text in HISTORIANS_EXAMPLES]
+    rows = [(namespace, parsed(text).name, text) for namespace, text in examples]
+    connection.executemany(UPSERT_DECOMPOSITION, rows)
     settings = [(key, dump(value)) for key, value in DEFAULT_SETTINGS.items()]
     connection.executemany(UPSERT_SETTING, settings)
+
+
+def hand_off(text):
+    """Root's worked example from the historian's written as YAML *text*: its question and
+    root's hand-off, under its name."""
+    example = parsed(text).model_dump()
+    return dump(example | {"messages": example["messages"][:HAND_OFF_TURNS]})
 
 
 def freshen_an_untouched_root(connection):

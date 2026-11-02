@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import socket
 import sqlite3
@@ -39,15 +40,20 @@ from deep_reasoning.app import WEB, create_app
 from deep_reasoning.chats import create_chat
 from deep_reasoning.folders import data_folder
 from deep_reasoning.library import (
+    HAND_OFF_TURNS,
+    HISTORIAN,
+    HISTORIAN_SUFFIX,
+    HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
-    HISTORY_EXAMPLE,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
     UPSERT_TOOL,
     dump,
+    hand_off,
     import_config,
     open_library,
     parsed,
+    running_code,
     writing,
 )
 from deep_reasoning.runs import CHANGE_FIELDS, EARLIER_TURNS_NOTE, LOST, save_event
@@ -203,6 +209,7 @@ def test_the_api_returns_the_library_as_the_engine_resolves_it(client):
         "root",
         "course_advisor",
         "health_advisor",
+        HISTORIAN,
         "librarian",
         "router",
     ]
@@ -219,7 +226,7 @@ def test_the_api_returns_the_library_as_the_engine_resolves_it(client):
     assert settings["max_depth"] == {"value": "8", "source": "the engine's default"}
     assert [(tool["name"], tool["granted_in"]) for tool in library["tools"]] == [
         ("llm", ["root"]),
-        ("history", []),
+        ("history", [HISTORIAN]),
         ("library", ["librarian"]),
     ]
     [catalog] = library["variables"]
@@ -230,7 +237,7 @@ def test_the_api_returns_the_library_as_the_engine_resolves_it(client):
     )
 
 
-def test_a_fresh_library_shows_llm_and_history_granted_at_root_and_library_in_the_librarian(
+def test_a_fresh_library_shows_llm_granted_at_root_history_in_the_historian_and_library_in_the_librarian(
     library, home, tmp_path
 ):
     child = tmp_path / "child.yaml"
@@ -242,11 +249,16 @@ def test_a_fresh_library_shows_llm_and_history_granted_at_root_and_library_in_th
     tools = client.get("/api/library").json()["tools"]
     assert field(by_name["root"], "Tools") == [
         {"value": "llm", "source": "granted here", "here": True},
-        {"value": "history", "source": "granted here", "here": True},
     ]
     assert field(by_name["helper"], "Tools") == [
         {"value": "llm", "source": "inherited from root", "here": False},
-        {"value": "history", "source": "inherited from root", "here": False},
+    ]
+    assert field(by_name[HISTORIAN], "Tools") == [
+        {"value": "llm", "source": "inherited from root", "here": False},
+        {"value": "history", "source": "granted here", "here": True},
+    ]
+    assert field(by_name[HISTORIAN], "System suffix") == [
+        {"value": HISTORIAN_SUFFIX.strip(), "source": "set here", "here": True},
     ]
     assert field(by_name["librarian"], "Tools")[-1] == {
         "value": "library",
@@ -255,7 +267,7 @@ def test_a_fresh_library_shows_llm_and_history_granted_at_root_and_library_in_th
     }
     assert [(tool["name"], tool["granted_in"]) for tool in tools] == [
         ("llm", ["root"]),
-        ("history", ["root"]),
+        ("history", [HISTORIAN]),
         ("library", ["librarian"]),
     ]
     assert [(tool["defined_in"], tool["badge"]) for tool in tools] == [
@@ -344,6 +356,7 @@ def test_a_namespace_is_added_edited_and_deleted_through_the_api(client):
         "router",
         "course_advisor",
         "health_advisor",
+        HISTORIAN,
         "librarian",
     }
 
@@ -543,60 +556,166 @@ async def test_a_run_on_a_fresh_library_gets_the_llm_tools_answer(library_on, co
     assert events[-1]["answer"] == "7"
 
 
+def historian_or(historian, others):
+    """A responder that asks *historian* for the historian, whose system prompt holds its
+    suffix, and *others* for every other agent: the historian's task is the user's
+    message, as root's is."""
+
+    def respond(messages):
+        system = [each["content"] for each in messages if each["role"] == "system"]
+        told = any(HISTORIAN_SUFFIX.strip() in each for each in system)
+        return (historian if told else others)(messages)
+
+    return respond
+
+
+ASKED_HOW = "How did you count?"
+# Root's hand-off, as its worked example writes it.
+HANDING_OFF = parsed(hand_off(HISTORIANS_EXAMPLES[0])).messages[-1].content
 HISTORY_PLAN = {
     "Count to two.": [repl("print(1)"), repl("FinalAnswer(2)")],
-    "How did you count?": [
+    ASKED_HOW: [HANDING_OFF],
+}
+HISTORIANS_PLAN = {
+    ASKED_HOW: [
         repl("t = history.turns()", "print(len(t), t[0]['message'], t[0]['answer'])"),
         repl("print(history.steps(1))"),
         repl("print(history.steps(9))"),
         repl("FinalAnswer('by printing 1')"),
-    ],
+    ]
 }
 
 
 @pytest.mark.anyio
-async def test_a_follow_up_reads_how_an_earlier_message_was_worked_out_with_history(
+async def test_root_hands_a_question_about_an_earlier_message_to_the_historian(
     library_on, connect
 ):
-    with FakeOpenAI(scripted(HISTORY_PLAN)) as fake:
+    responder = historian_or(scripted(HISTORIANS_PLAN), scripted(HISTORY_PLAN))
+    with FakeOpenAI(responder) as fake:
         async with connect(library_on(fake)) as api:
             chat = await new_chat(api)
             await run_events(api, await send(api, chat, "Count to two."))
-            events = await run_events(api, await send(api, chat, "How did you count?"))
-    turns, steps, refused, _ = [each for each in events if each["kind"] == "cell.end"]
+            asked = len(fake.calls)
+            events = await run_events(api, await send(api, chat, ASKED_HOW))
+    root, historian = kinds(events, "agent.start")
+    assert (historian["namespace"], historian["parent"]) == (HISTORIAN, root["node"])
+    assert historian["task"] == ASKED_HOW
+    turns, steps, refused, _, handed_off = kinds(events, "cell.end")
+    assert handed_off["code"] == running_code(HANDING_OFF)
     assert turns["output"] == "1 Count to two. 2"
     assert "'code': 'print(1)'" in steps["output"]
     assert "'code': 'FinalAnswer(2)'" in steps["output"]
     assert refused["status"] == "failed"
     assert "ValueError: There is no message 9" in refused["output"]
     assert events[-1]["outcome"] == "answered", events[-1]
-    assert HISTORY_DESCRIPTION in fake.calls[-1].messages[0]["content"]
-
-
-EXAMPLE_PLAN = {
-    "What is 17 times 23?": [repl("17 * 23", "FinalAnswer(391)")],
-    "How did you get it?": [
-        repl("print(history.steps(1))"),
-        repl("FinalAnswer('17 * 23')"),
-    ],
-}
+    assert events[-1]["answer"] == "by printing 1"
+    roots_prompt, historians_prompt = [
+        "\n".join(each["content"] for each in call.messages if each["role"] == "system")
+        for call in (fake.calls[asked], fake.calls[-1])
+    ]
+    assert HISTORY_DESCRIPTION not in roots_prompt
+    assert HISTORY_DESCRIPTION in historians_prompt
+    assert HISTORIAN_SUFFIX.strip() in historians_prompt
 
 
 @pytest.mark.anyio
-async def test_a_fresh_librarys_worked_example_shows_what_history_steps_prints(
+async def test_a_historian_that_copies_roots_hand_off_nests_no_historian(
     library_on, connect
 ):
-    with FakeOpenAI(scripted(EXAMPLE_PLAN)) as fake:
+    copying = {ASKED_HOW: [HANDING_OFF, repl("FinalAnswer('by printing 1')")]}
+    responder = historian_or(scripted(copying), scripted(HISTORY_PLAN))
+    with FakeOpenAI(responder) as fake:
         async with connect(library_on(fake)) as api:
             chat = await new_chat(api)
-            await run_events(api, await send(api, chat, "What is 17 times 23?"))
-            events = await run_events(api, await send(api, chat, "How did you get it?"))
-    printed = kinds(events, "cell.end")[0]["output"]
-    # Asked before the follow-up ran a cell, so its only observation is the example's.
-    [_, asked, _] = fake.calls
-    texts = [each["content"] for each in asked.messages]
-    observations = [text for text in texts if text.startswith("<observation>")]
-    assert observations == [f"<observation>\n{printed}\n</observation>\n"]
+            await run_events(api, await send(api, chat, "Count to two."))
+            events = await run_events(api, await send(api, chat, ASKED_HOW))
+    namespaces = [each["namespace"] for each in kinds(events, "agent.start")]
+    assert namespaces == ["root", HISTORIAN]
+    copied = kinds(events, "cell.end")[0]
+    assert copied["status"] == "failed"
+    assert "may not spawn a sub-agent in 'historian'" in copied["output"]
+    assert events[-1]["answer"] == "by printing 1"
+
+
+# The first message each of the historian's examples explains, as the fake answers it.
+EXAMPLES_FIRST_MESSAGE = {
+    "explain an earlier answer": (
+        "What is 17 times 23?",
+        {"What is 17 times 23?": [repl("17 * 23", "FinalAnswer(391)")]},
+    ),
+    "say what each sub-agent did": (
+        "Add the sum of the first 10 primes to the 10th Fibonacci number.",
+        {
+            "Add the sum": [
+                repl(
+                    'primes = subagent("Sum the first 10 primes.")',
+                    'fib = subagent("Find the 10th Fibonacci number.")',
+                    "print(primes, fib)",
+                    think="Give each part to its own sub-agent, then add the two.",
+                ),
+                repl("FinalAnswer(primes + fib)"),
+            ],
+            "Sum the first 10 primes.": [
+                repl(
+                    "primes = [n for n in range(2, 30) if all(n % d for d in range(2, n))]",
+                    "FinalAnswer(sum(primes))",
+                    think="The primes below 30 are the first 10; sum them.",
+                )
+            ],
+            "Find the 10th Fibonacci number.": [
+                repl(
+                    "a, b = 0, 1",
+                    "for _ in range(10):",
+                    "    a, b = b, a + b",
+                    "FinalAnswer(a)",
+                    think="Step the pair ten times.",
+                )
+            ],
+        },
+    ),
+}
+# A cost depends on the prompt, which the examples are part of.
+COST = re.compile(r"'cost': [^,}]+")
+# How a hand-off reaches the historian: the question, root's hand-off, then the question
+# again as its task.
+HANDED_OVER_TURNS = HAND_OFF_TURNS + 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "text", HISTORIANS_EXAMPLES, ids=lambda text: parsed(text).name
+)
+async def test_the_historians_examples_show_what_history_really_prints(
+    library_on, connect, text
+):
+    example = parsed(text)
+    opening = example.messages[:HANDED_OVER_TURNS]
+    rest = example.messages[HANDED_OVER_TURNS:]
+    question, handing_off, _ = opening
+    first, plan = EXAMPLES_FIRST_MESSAGE[example.name]
+    replies = [turn.content for turn in rest if turn.role == "assistant"]
+    plan = plan | {question.content: [handing_off.content]}
+    historian = scripted({question.content: replies})
+    with FakeOpenAI(historian_or(historian, scripted(plan))) as fake:
+        async with connect(library_on(fake)) as api:
+            chat = await new_chat(api)
+            await run_events(api, await send(api, chat, first))
+            asked = len(fake.calls)
+            events = await run_events(api, await send(api, chat, question.content))
+    # The historian's conversation ends as the example opens.
+    historians_first = fake.calls[asked + 1].messages[-HANDED_OVER_TURNS:]
+    assert [(each["role"], each["content"].strip()) for each in historians_first] == [
+        (each.role, each.content.strip()) for each in opening
+    ]
+    shown = [turn.content for turn in rest if turn.role == "user"]
+    printed = [
+        f"<observation>\n{cell['output']}\n</observation>\n"
+        for cell in kinds(events, "cell.end")[: len(shown)]
+    ]
+    assert [COST.sub("'cost': …", each) for each in printed] == [
+        COST.sub("'cost': …", each) for each in shown
+    ]
+    assert events[-1]["outcome"] == "answered", events[-1]
 
 
 # What EXAMPLE and REWORDED lack as worked examples: their one reply is prose.
@@ -707,9 +826,15 @@ async def test_a_change_to_the_library_applies_from_the_next_message(
     assert showing(thanking, ASKED) == [False]
 
 
+# A fresh Library's decompositions, as the panel lists them: root's hand-offs, the
+# historian's examples, and none in librarian.
 FRESH_DECOMPOSITIONS = [
-    [{"name": parsed(HISTORY_EXAMPLE).name, "yaml": HISTORY_EXAMPLE, "problems": []}],
-    [],
+    [{"name": parsed(text).name, "yaml": text, "problems": []} for text in texts]
+    for texts in (
+        [hand_off(text) for text in HISTORIANS_EXAMPLES],
+        HISTORIANS_EXAMPLES,
+        [],
+    )
 ]
 
 

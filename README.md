@@ -25,11 +25,16 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 - Each message is a run, shown live as a tree of sub-agents you open level by level. Esc stops it.
 - Each run shows its time, sub-agent count, cost (N/A when the model's price isn't known) and model.
 - Follow-ups see the chat's earlier messages and answers as the conversation's own turns, and can ask how one was
-  worked out: the agent reads the chat's earlier runs (each message's sub-agents, thoughts and cells) with the app's
-  own `history` tool. A new Library grants it at root, beside a worked example of reading it before answering
-  (`explain an earlier answer`); in an older one, add `history` to a namespace's tools, and an example like it in the
-  decompositions panel. If you take `history` out of root, delete root's example in the panel too: it shows a call
-  the agent no longer has.
+  worked out or what its sub-agents did. A new Library has a `historian` namespace, which reads the chat's earlier
+  runs (each message's sub-agents, thoughts and cells) with the app's own `history` tool, and root hands such
+  questions to a sub-agent there, with the conversation so far: root's worked examples, which every namespace
+  inherits, show the hand-off, and the historian's show reading `history` before answering. A namespace with a
+  `spawn` list hands off only if it lists `historian`. If you delete `historian` or take `history` out of it, delete
+  root's two hand-off examples in the panel too: they send questions where nothing can read the history.
+- An older Library keeps what it has: one made since `history` came reads it at root, with a worked example there,
+  and needs nothing. For the historian, run `reset`, which deletes the Library and every chat, or add `historian` in
+  the panel (`tools: [history]`, `spawn: []`, and the examples a new Library has) and give root the two hand-off
+  examples in place of its own `explain an earlier answer`.
 - Each chat has its own model, namespace and working folder, picked under the message box; a change applies from
   the next message.
 - Light and dark themes; works at phone width.

@@ -27,8 +27,11 @@ from structlog.testing import capture_logs
 from deep_reasoning.library import (
     APP_TOOLS_FILE,
     BEFORE_EVENTS,
+    HAND_OFF_TURNS,
+    HISTORIAN,
+    HISTORIAN_SUFFIX,
+    HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
-    HISTORY_EXAMPLE,
     LIBRARIAN,
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
@@ -44,6 +47,7 @@ from deep_reasoning.library import (
     delete_namespace,
     dump,
     engine_config,
+    hand_off,
     import_config,
     open_library,
     panel,
@@ -57,8 +61,15 @@ from deep_reasoning.library import (
 FAKE_KEY = "sk-test-not-a-real-key"
 CHAT = "a-chat"
 RUN = "20261027-120000-000000"
-# advisors.yaml's namespaces, imported into a fresh Library beside its librarian.
-IMPORTED_NAMESPACES = {"root", "router", "course_advisor", "health_advisor", LIBRARIAN}
+# advisors.yaml's namespaces, imported into a fresh Library beside its historian and librarian.
+IMPORTED_NAMESPACES = {
+    "root",
+    "router",
+    "course_advisor",
+    "health_advisor",
+    HISTORIAN,
+    LIBRARIAN,
+}
 ROUTER_DECOMPOSITIONS = [
     "route a course question",
     "route a wellbeing question",
@@ -92,7 +103,12 @@ messages:
 - {role: user, content: "How many?"}
 - {role: assistant, content: "<repl>FinalAnswer(3)</repl>"}
 """
-SEEDED = parsed(HISTORY_EXAMPLE)
+# A fresh Library's worked examples: the historian's, and root's hand-offs of the same names.
+HISTORIANS = [parsed(text) for text in HISTORIANS_EXAMPLES]
+HAND_OFFS = [parsed(hand_off(text)) for text in HISTORIANS_EXAMPLES]
+SEEDED_ROWS = [(each.name, []) for each in HAND_OFFS]
+# Root spawns a sub-agent into historian, with the user's message and this conversation.
+HAND_OFF = 'FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))'
 # What the app puts in for a chat on OpenAI's gpt-6-luna.
 CHATS_MODEL = {
     "model": "gpt-6-luna",
@@ -141,34 +157,46 @@ def test_a_fresh_library_has_root_and_leaves_the_model_and_its_key_to_the_chat(
 ):
     monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
     config = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)
-    assert list(config["namespaces"]) == [ROOT, LIBRARIAN]
+    assert list(config["namespaces"]) == [ROOT, HISTORIAN, LIBRARIAN]
     assert default_namespace(library) == ROOT
     assert "model" not in config and "client" not in config
     assert resolve_api_key(run_config(library, tmp_path).client) == FAKE_KEY
     assert FAKE_KEY.encode() not in library.read_bytes()
 
 
-def test_a_fresh_library_grants_llm_and_history_at_root_and_library_to_the_librarian(
+def test_a_fresh_library_grants_llm_at_root_history_to_the_historian_and_library_to_the_librarian(
     library, tmp_path
 ):
     config = run_config(library, tmp_path)
     build_namespace_registry(config).check(declared_tool_names(config))
-    assert config.namespaces[ROOT].tools == ["llm", "history"]
+    assert config.namespaces[ROOT].tools == ["llm"]
+    assert config.namespaces[HISTORIAN].tools == ["history"]
+    assert config.namespaces[HISTORIAN].spawn == []
+    assert config.namespaces[HISTORIAN].system_suffix == HISTORIAN_SUFFIX
     assert config.namespaces[LIBRARIAN].tools == ["library"]
 
 
-def test_a_fresh_library_shows_every_namespace_how_to_read_history_before_answering(
+def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_messages(
     library, tmp_path
 ):
     registry = registry_of(library, tmp_path)
-    assert all(
-        SEEDED in registry.resolve(name).decompositions for name in registry.names
-    )
-    reading, answering = [
-        turn.content for turn in SEEDED.messages if turn.role == "assistant"
+    shown = {name: registry.resolve(name).decompositions for name in registry.names}
+    assert shown == {ROOT: HAND_OFFS, HISTORIAN: HISTORIANS, LIBRARIAN: HAND_OFFS}
+    for example in HAND_OFFS:
+        assert example.messages[-1].content.endswith(f"<repl>\n{HAND_OFF}\n</repl>\n")
+
+
+@pytest.mark.parametrize("example", HISTORIANS, ids=lambda example: example.name)
+def test_the_historian_reads_history_then_answers_in_a_later_cell(example):
+    handing_off, *reading, answering = [
+        turn.content for turn in example.messages if turn.role == "assistant"
     ]
-    assert "print(history.steps(1))" in reading and "FinalAnswer" not in reading
-    assert "FinalAnswer" in answering
+    assert HAND_OFF in handing_off
+    # After root's hand-off, the historian's task is the user's message.
+    assert example.messages[HAND_OFF_TURNS] == example.messages[0]
+    assert reading
+    assert all("history." in each and "FinalAnswer" not in each for each in reading)
+    assert "FinalAnswer" in answering and "history." not in answering
 
 
 def test_a_library_made_with_an_empty_root_is_given_a_fresh_root_once(
@@ -177,7 +205,7 @@ def test_a_library_made_with_an_empty_root_is_given_a_fresh_root_once(
     made_with_an_empty_root(library)
     upgraded = dumped(library)
     assert dumped(library) == upgraded
-    assert run_config(library, tmp_path).namespaces[ROOT].tools == ["llm", "history"]
+    assert run_config(library, tmp_path).namespaces[ROOT].tools == ["llm"]
 
 
 def test_a_read_only_library_with_an_empty_root_still_opens_as_it_is(
@@ -339,7 +367,7 @@ def test_an_import_reads_back_as_the_engine_loads_the_config(library, tmp_path):
     assert config.namespaces[ROOT].vars["due"] == date(2026, 10, 25)
     assert config.namespaces[ROOT].vars["cap"] == math.inf
     assert config.namespaces[ROOT].decompositions == [
-        SEEDED,
+        *HAND_OFFS,
         *expected.namespaces[ROOT].decompositions,
     ]
 
@@ -383,7 +411,7 @@ def test_a_configs_run_level_openings_are_left_out(library, tmp_path):
         "    messages: [{role: user, content: '{{ task }}'}]\n"
     )
     assert import_into(library, written)["decompositions"] == 0
-    assert run_config(library, tmp_path).namespaces[ROOT].decompositions == [SEEDED]
+    assert run_config(library, tmp_path).namespaces[ROOT].decompositions == HAND_OFFS
 
 
 def test_import_replaces_same_named_items_and_keeps_the_rest(imported, tmp_path):
@@ -578,7 +606,10 @@ def test_the_engine_config_builds_a_registry_and_a_reasoner_without_a_model_call
         inline=list(config.namespaces.values()), default_repl=config.repl
     )
     lookup = registry.resolve("course_advisor").decompositions
-    assert [each.name for each in lookup] == [SEEDED.name, "catalog lookup"]
+    assert [each.name for each in lookup] == [
+        *(each.name for each in HAND_OFFS),
+        "catalog lookup",
+    ]
     assert registry.resolve("course_advisor").tools == ["llm"]
     monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
     monkeypatch.chdir(tmp_path)
@@ -788,7 +819,7 @@ def test_a_decompositions_turns_are_checked_as_a_worked_example(messages, proble
     assert turn_problems(messages) == problems
 
 
-def test_the_seeded_example_and_the_engines_own_namespace_examples_pass(library):
+def test_the_seeded_examples_and_the_engines_own_namespace_examples_pass(library):
     for config in ("catalog/advisors.yaml", "examples/experience/experience.yaml"):
         import_into(library, CONFIGS / config)
     with closing(open_library(library)) as connection:
@@ -798,8 +829,8 @@ def test_the_seeded_example_and_the_engines_own_namespace_examples_pass(library)
         for row in namespaces
         for each in row["decompositions"]
     ]
-    # the seeded one, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
-    assert len(rows) == 8
+    # the four seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
+    assert len(rows) == 11
     assert rows == [(name, []) for name, _ in rows]
 
 
@@ -815,7 +846,7 @@ def test_a_decomposition_with_problems_is_stored_and_the_panel_lists_them(librar
         "problems": no_think,
     }
     assert [(each["name"], each["problems"]) for each in root["decompositions"]] == [
-        (SEEDED.name, []),
+        *SEEDED_ROWS,
         ("no think", no_think),
     ]
 
@@ -842,6 +873,6 @@ def test_a_shared_files_decompositions_under_a_root_it_lacks_are_still_checked(l
             connection.execute(UPSERT_DECOMPOSITION, (ROOT, "no think", NO_THINK))
         [root, *_] = panel(connection)["namespaces"]
     assert [(each["name"], each["problems"]) for each in root["decompositions"]] == [
-        (SEEDED.name, []),
+        *SEEDED_ROWS,
         ("no think", ["Turn 2 (assistant) has no <think>…</think>."]),
     ]
