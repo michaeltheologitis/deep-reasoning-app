@@ -1,4 +1,4 @@
-"""The web app: the Library's, the settings', the folders', the chats' and the runs' API, and the UI's static files at /."""
+"""The web app: the Library's, the settings', the folders', the chats', the runs' and the pages' API, the UI's static files at /, and each page's tab at /pages/<id>."""
 
 import asyncio
 import sqlite3
@@ -12,7 +12,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from fastapi import Path as InPath
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, StringConstraints
@@ -53,6 +53,7 @@ from deep_reasoning.library import (
     open_library,
     panel,
 )
+from deep_reasoning.pages import page_exists, page_text
 from deep_reasoning.runs import (
     RUN_ID,
     RunInProgress,
@@ -89,6 +90,7 @@ LOCAL_HOSTS = ["127.0.0.1", "localhost"]
 UNWRITABLE = ("SQLITE_READONLY", "SQLITE_FULL", "SQLITE_IOERR", "SQLITE_CANTOPEN")
 BUSY = ("SQLITE_BUSY", "SQLITE_LOCKED")
 MODEL_NAME = r"^[^\x00-\x1f\x7f]{1,200}$"
+NO_PAGE = "There is no such page: it may have been deleted with its chat."
 
 log = structlog.get_logger()
 
@@ -456,6 +458,25 @@ def create_app(library, home):
         # EventSource sends no Last-Event-ID on its first connect, hence ?after=.
         async for event in runs.events(run, after=max(after, last_event_id)):
             yield ServerSentEvent(data=event, id=str(event["seq"]))
+
+    # Written by the reader: FastAPI's own encoder recurses, and a shared file may nest a
+    # record deep.
+    @app.get("/api/pages/{page}")
+    def read_a_page(page: str):
+        with closing(open_library(library)) as connection:
+            text = page_text(connection, page)
+        if text is None:
+            raise HTTPException(HTTPStatus.NOT_FOUND, NO_PAGE)
+        return Response(text, media_type="application/json")
+
+    # The tab a page's link opens: page.js reads the page from the API and draws it.
+    @app.get("/pages/{page}")
+    def page_tab(page: str):
+        with closing(open_library(library)) as connection:
+            found = page_exists(connection, page)
+        if not found:
+            return PlainTextResponse(NO_PAGE, status_code=HTTPStatus.NOT_FOUND)
+        return FileResponse(WEB / "page.html")
 
     # A mount at / answers every path, so API routes must be added above it.
     app.mount("/", StaticFiles(directory=WEB, html=True))

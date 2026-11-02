@@ -8,6 +8,10 @@ a moved or deleted one afresh.
 history reads the chat's earlier runs from the app file, read-only, as the page reads them:
 runs.py checks each row, and folded() folds a run's events into its tree as fold.js does.
 
+page builds a page for the user from the same trees: each step or sub-agent it points to
+is copied from the record, as fold.js folds it, into the pages table; a page opened is
+logged as page.open, which the worker records as a run event.
+
 library reads and writes the Library through library.py, with the panel's checks and
 transactions; the locks are here, as the panel may still edit root, a namespace's repl and
 reasoner, and which namespaces grant the app's own tools. It writes only in a run whose
@@ -19,15 +23,16 @@ Each change is logged as library.change, which the worker records as a run event
 
 import ast
 import copy
+import json
 import keyword
 import os
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
-from functools import cache
+from functools import cached_property, partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -44,11 +49,13 @@ from deep_reasoning.library import (
     HISTORY_DESCRIPTION,
     LIBRARY_DESCRIPTION,
     LIBRARY_TOOL,
+    PAGE_DESCRIPTION,
     LibraryError,
     add_decomposition,
     add_namespace,
     change_namespace,
     config_and_registry,
+    count,
     distrust,
     dump,
     loaded,
@@ -59,7 +66,27 @@ from deep_reasoning.library import (
     tool_file,
     tool_text,
 )
-from deep_reasoning.runs import CHANGE_FIELDS, chat_turns, secrets_of, total_cost
+from deep_reasoning.pages import (
+    DRIVE,
+    MAX_BLOCKS,
+    MAX_COLUMNS,
+    MAX_PAGE_CHARS,
+    MAX_ROWS,
+    MAX_TEXT_CHARS,
+    MAX_TITLE_CHARS,
+    NODE,
+    add_page,
+    page_link,
+    stored_text,
+)
+from deep_reasoning.runs import (
+    CHANGE_FIELDS,
+    PAGE_FIELDS,
+    chat_turns,
+    secrets_of,
+    total_cost,
+    withheld,
+)
 
 log = structlog.get_logger()
 
@@ -113,6 +140,26 @@ NOT_LOCAL = (
     "write_tool works only in a chat whose namespace runs the local REPL: building the"
     " tool to check it runs its code outside any sandbox."
 )
+TITLE = f"A page's title should be text of 1 to {MAX_TITLE_CHARS} characters."
+NOT_MARKDOWN = "text takes Markdown, as text (a str)."
+NOT_A_REF = (
+    "node should be a sub-agent's node as history.agents(turn) gives it (None for the"
+    " top agent), and note Markdown text or None."
+)
+NOT_AN_INDEX = "index should be a step's number in history.steps(turn, node), from 0."
+NOT_ROWS = (
+    "rows should be a list of dicts keyed by text, or a list of lists; columns a list"
+    " of texts, or None."
+)
+NOT_VALUES = "Each value in a table should be text, a number, True, False or None."
+NOT_SHOWN = (
+    "That can't be shown: the record it copies isn't one a run of the app writes."
+)
+NOT_SAVED = (
+    "The page can't be saved as it is: open() saves only what the page's methods added."
+)
+TOO_DEEP = "That nests too deep to show on a page."
+EMPTY = "The page is empty: add text, a step, an agent or a table first."
 
 
 @dataclass
@@ -126,6 +173,8 @@ class Tree:
     rows: list[Holder] = field(default_factory=list)
     nodes: dict[Any, tuple[Holder, Any]] = field(default_factory=dict)
     cells: dict[Any, dict[str, Any]] = field(default_factory=dict)
+    # The drives each cell started, by the cell's id(), for a page's copy of it.
+    started: dict[int, list[Holder]] = field(default_factory=dict)
 
 
 def start_agent(tree: Tree, event: Event) -> None:
@@ -139,9 +188,13 @@ def start_agent(tree: Tree, event: Event) -> None:
         return
     row = {key: event.get(key) for key in STARTED_WITH}
     row |= {"status": "running", "result": None, "costs": [], "steps": []}
+    # When it started, for a page, which times it as fold.js does; the cell it started
+    # in, so the cell's id() in tree.started names no other while the row lives.
+    row |= {"started": event["t"], "seconds": None, "cell": cell}
     if node not in cell["agents"]:
         cell["agents"].append(node)
     tree.rows.append(row)
+    tree.started.setdefault(id(cell), []).append(row)
     tree.nodes[node] = (row, parent)
 
 
@@ -167,10 +220,11 @@ def start_cell(tree: Tree, event: Event) -> None:
     add_step(tree, event.get("node"), cell)
 
 
-def add_change(tree: Tree, event: Event) -> None:
-    """A change the library tool made, as a step of the agent that made it."""
-    change = {key: event.get(key) for key in CHANGE_FIELDS}
-    add_step(tree, event.get("node"), {"kind": "change"} | change)
+def add_logged(kind: str, fields: tuple[str, ...], tree: Tree, event: Event) -> None:
+    """A change the library tool made, or a page the page tool opened, as a step of the
+    agent that did it."""
+    step = {"kind": kind} | {key: event.get(key) for key in fields}
+    add_step(tree, event.get("node"), step)
 
 
 def end_cell(tree: Tree, event: Event) -> None:
@@ -196,13 +250,18 @@ def end_agent(tree: Tree, event: Event) -> None:
     result = event.get("result")
     row["status"] = event.get("status")
     row["result"] = event.get("detail") if result is None else result
+    row["seconds"] = event["t"] - row["started"]
 
 
 def end_turn(tree: Tree, event: Event) -> None:
-    """What the run left going when it ended was stopped with it."""
-    for each in [*tree.rows, *tree.cells.values()]:
-        if each["status"] == "running":
-            each["status"] = "stopped"
+    """What the run left going when it ended was stopped with it, a sub-agent timed to
+    the end."""
+    for row in tree.rows:
+        if row["status"] == "running":
+            row |= {"status": "stopped", "seconds": event["t"] - row["started"]}
+    for cell in tree.cells.values():
+        if cell["status"] == "running":
+            cell["status"] = "stopped"
 
 
 FOLDS = {
@@ -210,7 +269,8 @@ FOLDS = {
     "think": think,
     "cell.start": start_cell,
     "cell.end": end_cell,
-    "library.change": add_change,
+    "library.change": partial(add_logged, "change", CHANGE_FIELDS),
+    "page.open": partial(add_logged, "page", PAGE_FIELDS),
     "usage": add_usage,
     "agent.end": end_agent,
     "turn.end": end_turn,
@@ -288,43 +348,37 @@ def earlier_runs(library: str, chat: str, run: str) -> list[list[Event]]:
     return [turn["events"] for turn in turns if turn["run"] != run]
 
 
-def build_history(client: Any, params: dict[str, Any]) -> Func:
-    """The history tool of run *run* of *chat*, in the app file *library*, as its block
-    in the run's config names them."""
-    library, chat, run = params["library"], params["chat"], params["run"]
+class History:
+    """The chat's earlier runs, as run *run* of *chat* in the app file *library* sees
+    them: read once, folded, and numbered from 1. The history tool's methods, and the
+    trees the page tool copies from."""
 
-    @cache
-    def earlier() -> list[tuple[list[Event], Tree]]:
+    def __init__(self, library: str, chat: str, run: str) -> None:
+        self._where = (library, chat, run)
+
+    @cached_property
+    def _runs(self) -> list[tuple[list[Event], Tree]]:
         # Read once: no run of the chat's starts or ends while this one is going.
-        return [(events, folded(events)) for events in earlier_runs(library, chat, run)]
+        return [(events, folded(events)) for events in earlier_runs(*self._where)]
 
-    def chosen(turn: int) -> Tree:
-        runs = earlier()
+    def tree(self, turn: int) -> Tree:
+        """Message *turn*'s run, folded."""
+        runs = self._runs
         if not runs:
             raise ValueError("This chat has no earlier messages: this is its first.")
-        if not isinstance(turn, int) or not 1 <= turn <= len(runs):
+        if type(turn) is not int or not 1 <= turn <= len(runs):
             raise ValueError(
                 f"There is no message {turn!r}: this chat's earlier messages are"
                 f" numbered 1 to {len(runs)}."
             )
         return runs[turn - 1][1]
 
-    def turns() -> list[dict[str, Any]]:
-        """This chat's earlier messages, numbered from 1, with how each ended."""
-        return [turn_row(number, *each) for number, each in enumerate(earlier(), 1)]
-
-    def agents(turn: int) -> list[dict[str, Any]]:
-        """Each sub-agent drive of message *turn*."""
-        return [agent_row(row) for row in chosen(turn).rows]
-
-    def steps(turn: int, node: Any = None) -> list[dict[str, Any]]:
-        """The thoughts, cells and Library changes of message *turn*'s top agent, or of
-        sub-agent *node*."""
-        tree = chosen(turn)
-        top = node is None or node == tree.root["node"]
-        drives = (
-            [tree.root] if top else [row for row in tree.rows if row["node"] == node]
-        )
+    def drives(self, turn: int, node: Any) -> list[Holder]:
+        """Message *turn*'s top agent, or each drive of its sub-agent *node*."""
+        tree = self.tree(turn)
+        if node is None or node == tree.root["node"]:
+            return [tree.root]
+        drives = [row for row in tree.rows if row["node"] == node]
         if not drives:
             nodes = [
                 tree.root["node"],
@@ -333,11 +387,248 @@ def build_history(client: Any, params: dict[str, Any]) -> Func:
             raise ValueError(
                 f"Message {turn} has no agent {node!r}: its agents' nodes are {nodes}."
             )
+        return drives
+
+    def turns(self) -> list[dict[str, Any]]:
+        """This chat's earlier messages, numbered from 1, with how each ended."""
+        return [turn_row(number, *each) for number, each in enumerate(self._runs, 1)]
+
+    def agents(self, turn: int) -> list[dict[str, Any]]:
+        """Each sub-agent drive of message *turn*."""
+        return [agent_row(row) for row in self.tree(turn).rows]
+
+    def steps(self, turn: int, node: Any = None) -> list[dict[str, Any]]:
+        """The thoughts, cells, Library changes and pages of message *turn*'s top agent,
+        or of sub-agent *node*."""
         # A copy: the folded runs are kept for the next call.
+        drives = self.drives(turn, node)
         return copy.deepcopy([step for row in drives for step in row["steps"]])
 
-    history = SimpleNamespace(turns=turns, agents=agents, steps=steps)
-    return Func(history, description=HISTORY_DESCRIPTION)
+
+def build_history(client: Any, params: dict[str, Any]) -> Func:
+    """The history tool of run *run* of *chat*, in the app file *library*, as its block
+    in the run's config names them."""
+    history = History(params["library"], params["chat"], params["run"])
+    methods = SimpleNamespace(
+        turns=history.turns, agents=history.agents, steps=history.steps
+    )
+    return Func(methods, description=HISTORY_DESCRIPTION)
+
+
+def shown_drive(tree: Tree, row: Holder) -> dict[str, Any]:
+    """A sub-agent's drive as fold.js folds it, for a page: its steps, and its own
+    sub-agents' drives under the cells that started them."""
+    cost = total_cost(row["costs"])
+    return {key: row.get(key) for key in DRIVE} | {
+        "cost": cost if row["costs"] else None,
+        "unpriced": cost is None,
+        "steps": [shown_step(tree, step) for step in row["steps"]],
+    }
+
+
+def shown_step(tree: Tree, step: dict[str, Any]) -> dict[str, Any]:
+    """A step as fold.js folds it, for a page: a cell's sub-agents as their drives."""
+    if step["kind"] != "cell":
+        return step
+    drives = tree.started.get(id(step), [])
+    return step | {"agents": [shown_drive(tree, row) for row in drives]}
+
+
+def copied(show: Callable[[Tree, Any], Any], tree: Tree, item: Any) -> Any:
+    """*item* as *show* copies it from *tree*; a ValueError when it nests too deep to
+    copy, as a record in a shared file may."""
+    try:
+        return show(tree, item)
+    except RecursionError as error:
+        raise ValueError(TOO_DEEP) from error
+
+
+def keys_withheld(value: Any, secrets: list[str]) -> Any:
+    """*value* with each of *secrets* withheld; a ValueError when it nests too deep to
+    walk."""
+    try:
+        return withheld(value, secrets)
+    except RecursionError as error:
+        raise ValueError(TOO_DEEP) from error
+
+
+def checked_title(title: Any, secrets: list[str]) -> str:
+    title = withheld(title, secrets) if type(title) is str else ""
+    if not title.strip() or len(title) > MAX_TITLE_CHARS:
+        raise ValueError(TITLE)
+    return title
+
+
+def table_block(rows: Any, columns: Any) -> dict[str, Any]:
+    """*rows*, a list of dicts or of lists, as a table block under *columns* (by default
+    the dicts' keys, or none), each value as text."""
+    shaped = type(rows) is list and (
+        all(type(row) is dict for row in rows) or all(type(row) is list for row in rows)
+    )
+    named = columns is None or (
+        type(columns) is list and all(type(each) is str for each in columns)
+    )
+    if not shaped or not named:
+        raise ValueError(NOT_ROWS)
+    if len(rows) > MAX_ROWS:
+        raise ValueError(
+            f"A table has at most {MAX_ROWS:,} rows; this has {len(rows):,}."
+        )
+    if rows and type(rows[0]) is dict:
+        if any(type(key) is not str for row in rows for key in row):
+            raise ValueError(NOT_ROWS)
+        if columns is None:
+            columns = list(dict.fromkeys(key for row in rows for key in row))
+        rows = [[row.get(column) for column in columns] for row in rows]
+    width = max(map(len, [columns or [], *rows]))
+    if width > MAX_COLUMNS:
+        raise ValueError(
+            f"A table has at most {MAX_COLUMNS} columns; this has {width}."
+        )
+    if any(type(value) not in PLAIN for row in rows for value in row):
+        raise ValueError(NOT_VALUES)
+    texts = [["" if value is None else str(value) for value in row] for row in rows]
+    return {"type": "table", "columns": columns or [], "rows": texts}
+
+
+class Page:
+    """A page in progress, as page.new makes it: each method adds a block, and open()
+    saves it. What it holds has the worker's keys withheld, as run events do."""
+
+    def __init__(
+        self,
+        title: str,
+        history: History,
+        secrets: list[str],
+        save: Callable[[str, list[dict[str, Any]]], str],
+    ) -> None:
+        self._title = checked_title(title, secrets)
+        self._blocks = []
+        self._history, self._secrets, self._save = history, secrets, save
+        self._chars = len(json.dumps([]))
+
+    def text(self, markdown: str) -> None:
+        """Add *markdown*, a paragraph or more."""
+        if type(markdown) is not str:
+            raise ValueError(NOT_MARKDOWN)
+        self._add({"type": "text", "text": markdown})
+
+    def step(
+        self, turn: int, node: Any = None, *, index: int, note: str | None = None
+    ) -> None:
+        """Add history.steps(turn, node)[index], drawn as the chat draws it, with a
+        Markdown *note*."""
+        check_ref(node, note)
+        if type(index) is not int:
+            raise ValueError(NOT_AN_INDEX)
+        drives = self._history.drives(turn, node)
+        steps = [(row, step) for row in drives for step in row["steps"]]
+        if not -len(steps) <= index < len(steps):
+            who = "top agent" if node is None else f"agent {node!r}"
+            raise ValueError(
+                f"Message {turn}'s {who} has {count(len(steps), 'step')}, numbered from"
+                f" 0: there is no step {index}."
+            )
+        row, step = steps[index]
+        block = {
+            "type": "step",
+            "turn": turn,
+            "node": node,
+            "index": index % len(steps),
+            "task": row.get("task"),
+            "note": note,
+            "step": copied(shown_step, self._history.tree(turn), step),
+        }
+        self._add(block)
+
+    def agent(self, turn: int, node: Any, note: str | None = None) -> None:
+        """Add message *turn*'s sub-agent *node*, each drive of it with its steps and its
+        own sub-agents' below, with a Markdown *note*."""
+        check_ref(node, note)
+        tree = self._history.tree(turn)
+        drives = self._history.drives(turn, node)
+        if drives[0] is tree.root:
+            raise ValueError(
+                f"Message {turn}'s top agent is no sub-agent: show its steps with"
+                f" p.step({turn}, index=...)."
+            )
+        block = {
+            "type": "agent",
+            "turn": turn,
+            "node": node,
+            "note": note,
+            "agents": [copied(shown_drive, tree, row) for row in drives],
+        }
+        self._add(block)
+
+    def table(self, rows: list, columns: list[str] | None = None) -> None:
+        """Add *rows*, a list of dicts or of lists, as a table under *columns*: by default
+        the dicts' keys, and none for lists."""
+        self._add(table_block(rows, columns))
+
+    def open(self) -> str:
+        """Save the page; its link, which the chat shows under the answer. What it saves
+        is checked again, as a cell may have set the page's state itself."""
+        title = checked_title(self._title, self._secrets)
+        if not self._blocks:
+            raise ValueError(EMPTY)
+        blocks = keys_withheld(self._blocks, self._secrets)
+        if stored_text(blocks) is None:
+            raise ValueError(NOT_SAVED)
+        page = self._save(title, blocks)
+        log.info("page.open", page=page, title=title)
+        return page_link(page)
+
+    def _add(self, block: dict[str, Any]) -> None:
+        if len(self._blocks) == MAX_BLOCKS:
+            raise ValueError(
+                f"A page holds at most {MAX_BLOCKS} blocks: open this one, and put the"
+                " rest on another."
+            )
+        block = keys_withheld(block, self._secrets)
+        for key in ("text", "note"):
+            if len(block.get(key) or "") > MAX_TEXT_CHARS:
+                raise ValueError(
+                    f"A {key} may be at most {MAX_TEXT_CHARS:,} characters; this one"
+                    f" is {len(block[key]):,}."
+                )
+        # As it reads back once saved: a number a crafted record sums past ±2**53 won't.
+        stored = stored_text([block])
+        if stored is None:
+            raise ValueError(NOT_SHOWN)
+        chars = len(stored) - len("[]") + (len(", ") if self._blocks else 0)
+        if self._chars + chars > MAX_PAGE_CHARS:
+            raise ValueError(
+                f"With this, the page would be {self._chars + chars:,} characters as"
+                f" saved, past {MAX_PAGE_CHARS:,}: show less, or put it on another page."
+            )
+        self._blocks.append(block)
+        self._chars += chars
+
+
+def check_ref(node: Any, note: Any) -> None:
+    if type(node) not in NODE or not (note is None or type(note) is str):
+        raise ValueError(NOT_A_REF)
+
+
+def build_page(client: Any, params: dict[str, Any]) -> Func:
+    """The page tool of run *run* of *chat*, in the app file *library*, whose worker holds
+    keys in *key_names*, as its block in the run's config names them."""
+    library, chat, run = params["library"], params["chat"], params["run"]
+    history = History(library, chat, run)
+    secrets = secrets_of(os.environ, params["key_names"])
+
+    def save(title: str, blocks: list[dict[str, Any]]) -> str:
+        # The agent whose cell opens the page, as its page.open event names it.
+        node = structlog.contextvars.get_contextvars().get("agent_id")
+        with app_file(library, "rw") as connection:
+            return add_page(connection, chat, run, node, title, blocks)
+
+    def new(title: str) -> Page:
+        """A page titled *title*, saved when its open() is called."""
+        return Page(title, history, secrets, save)
+
+    return Func(SimpleNamespace(new=new), description=PAGE_DESCRIPTION)
 
 
 def texts_in(data: Any) -> Iterator[str]:

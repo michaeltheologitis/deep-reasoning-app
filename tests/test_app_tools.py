@@ -10,13 +10,24 @@ from fake_model import WORD_COUNT
 from structlog.testing import capture_logs
 
 from deep_reasoning.app_tools import (
+    EMPTY,
     MAX_YAML_CHARS,
+    NOT_A_REF,
     NOT_A_TOOL,
+    NOT_AN_INDEX,
     NOT_LOCAL,
+    NOT_MARKDOWN,
+    NOT_ROWS,
+    NOT_SAVED,
+    NOT_SHOWN,
     NOT_TEXT,
+    NOT_VALUES,
     SETS_OWN_KEYS,
+    TITLE,
+    TOO_DEEP,
     build_history,
     build_library,
+    build_page,
     open_existing,
 )
 from deep_reasoning.library import (
@@ -32,7 +43,16 @@ from deep_reasoning.library import (
     parsed,
     writing,
 )
-from deep_reasoning.runs import CHANGE_FIELDS, LOST, chat_runs, read_turn, save_event
+from deep_reasoning.pages import MAX_PAGE_CHARS, read_page
+from deep_reasoning.runs import (
+    CHANGE_FIELDS,
+    KEY_WITHHELD,
+    LOST,
+    PAGE_FIELDS,
+    chat_runs,
+    read_turn,
+    save_event,
+)
 
 RUNS = Path(__file__).parent / "runs"
 CHAT = "a-chat"
@@ -171,6 +191,23 @@ def test_steps_list_each_library_change_with_the_agent_that_made_it(library):
     assert top[1] == as_change_step(added)
     assert history.steps(1, node=reworder["node"])[1] == as_change_step(replaced)
     assert (added["before"], replaced["before"]) == (None, added["after"])
+
+
+def test_steps_list_each_page_opened_with_the_agent_that_opened_it(library):
+    events = recorded("pages")
+    plant(library, CHAT, events)
+    history = history_of(library)
+    top, tabled = [event for event in events if event["kind"] == "page.open"]
+    [tabler] = history.agents(1)
+    as_step = {"kind": "page"} | {key: top[key] for key in PAGE_FIELDS} | {"drive": 1}
+    assert [step["kind"] for step in history.steps(1)] == [
+        "cell",
+        "page",
+        "cell",
+        "cell",
+    ]
+    assert history.steps(1)[1] == as_step
+    assert history.steps(1, node=tabler["node"])[1]["title"] == tabled["title"]
 
 
 @pytest.mark.parametrize("name", ["stopped", "killed"])
@@ -760,3 +797,454 @@ def test_a_tool_is_built_from_a_file_deleted_after_the_build(fresh):
     with pytest.raises(LibraryError, match="raised RuntimeError: built"):
         tool.write_tool("other", RAISING, "build")
     assert list((fresh.parent / "run-tools" / "checks").iterdir()) == []
+
+
+def page_of(library, chat=CHAT, key_names=()):
+    """The page tool, as the run CURRENT of *chat* gets it, in an app file the app has
+    laid out."""
+    open_library(library).close()
+    told = {
+        "library": str(library),
+        "chat": chat,
+        "run": CURRENT,
+        "key_names": list(key_names),
+    }
+    return build_page(None, told).value
+
+
+def saved(library, p):
+    """The blocks page *p* saves when opened, as the reader reads them back."""
+    link = p.open()
+    with closing(open_library(library)) as connection:
+        return read_page(connection, link.rpartition("/")[2])["blocks"]
+
+
+def as_listed(step):
+    """A page's copy of a step as history.steps lists it: a cell's sub-agents by node."""
+    if step["kind"] != "cell":
+        return step
+    return step | {"agents": list(dict.fromkeys(row["node"] for row in step["agents"]))}
+
+
+def drives_in(rows):
+    """Each sub-agent drive in a page's copy, and each one below it."""
+    stack, found = list(rows), []
+    while stack:
+        row = stack.pop()
+        found.append(row)
+        stack += [each for step in row["steps"] for each in step.get("agents", [])]
+    return found
+
+
+AGENT_FIELDS = ("node", "drive", "task", "namespace", "status", "result", "cost")
+RECORDED = ["fanout", "nested", "drives", "failing", "stopped", "librarian", "pages"]
+
+
+@pytest.mark.parametrize("name", RECORDED)
+def test_a_step_on_a_page_is_the_step_history_lists_there(library, name):
+    plant(library, CHAT, recorded(name))
+    history, page = history_of(library), page_of(library)
+    nodes = [None, *dict.fromkeys(agent["node"] for agent in history.agents(1))]
+    for node in nodes:
+        listed = history.steps(1, node=node)
+        p = page.new("Steps")
+        for index in range(len(listed)):
+            p.step(1, node, index=index)
+        shown = saved(library, p) if listed else []
+        assert [as_listed(block["step"]) for block in shown] == listed
+
+
+@pytest.mark.parametrize("name", RECORDED)
+def test_a_sub_agent_on_a_page_is_its_drives_history_lists_with_their_steps_below(
+    library, name
+):
+    plant(library, CHAT, recorded(name))
+    history, page = history_of(library), page_of(library)
+    agents = history.agents(1)
+    for node in dict.fromkeys(agent["node"] for agent in agents):
+        p = page.new("A sub-agent")
+        p.agent(1, node, note="Here it is.")
+        [block] = saved(library, p)
+        listed = [agent for agent in agents if agent["node"] == node]
+        shown = [{key: row[key] for key in AGENT_FIELDS} for row in block["agents"]]
+        assert shown == [{key: agent[key] for key in AGENT_FIELDS} for agent in listed]
+        assert [len(row["steps"]) for row in block["agents"]] == [
+            agent["steps"] for agent in listed
+        ]
+        for row in drives_in(block["agents"]):
+            steps = history.steps(1, node=row["node"])
+            of_drive = [step for step in steps if step["drive"] == row["drive"]]
+            assert [as_listed(step) for step in row["steps"]] == of_drive
+
+
+def test_a_delegating_step_carries_each_sub_agent_it_started_with_its_time(library):
+    events = recorded("fanout")
+    plant(library, CHAT, events)
+    p = page_of(library).new("The fan-out")
+    p.step(1, index=-2)
+    [block] = saved(library, p)
+    starts = {e["node"]: e["t"] for e in events if e["kind"] == "agent.start"}
+    ends = {e["node"]: e["t"] for e in events if e["kind"] == "agent.end"}
+    assert (block["index"], block["task"]) == (1, None)
+    assert [
+        (row["task"], row["seconds"], row["unpriced"])
+        for row in block["step"]["agents"]
+    ] == [
+        ("Summarize C1.", ends[2] - starts[2], False),
+        ("Summarize C2.", ends[3] - starts[3], False),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("add", "refusal"),
+    [
+        (lambda p: p.step(2, index=0), "There is no message 2: this chat's earlier"),
+        (lambda p: p.step(True, index=0), "There is no message True"),
+        (
+            lambda p: p.step(1, node=9, index=0),
+            "Message 1 has no agent 9: its agents' nodes are [1, 2, 3].",
+        ),
+        (
+            lambda p: p.step(1, index=2),
+            "Message 1's top agent has 2 steps, numbered from 0: there is no step 2.",
+        ),
+        (
+            lambda p: p.step(1, node=3, index=-2),
+            "Message 1's agent 3 has 1 step, numbered from 0: there is no step -2.",
+        ),
+        (lambda p: p.step(1, index="0"), NOT_AN_INDEX),
+        (lambda p: p.step(1, index=False), NOT_AN_INDEX),
+        (lambda p: p.step(1, node=2.0, index=0), NOT_A_REF),
+        (lambda p: p.step(1, index=0, note=["Why"]), NOT_A_REF),
+        (
+            lambda p: p.agent(1, 9),
+            "Message 1 has no agent 9: its agents' nodes are [1, 2, 3].",
+        ),
+        (lambda p: p.agent(1, 1), "Message 1's top agent is no sub-agent"),
+        (lambda p: p.agent(1, None), "Message 1's top agent is no sub-agent"),
+    ],
+    ids=[
+        "a-message-not-there",
+        "a-bool-for-a-message",
+        "a-node-not-there",
+        "an-index-past-the-end",
+        "an-index-before-the-start",
+        "an-index-not-a-number",
+        "a-bool-for-an-index",
+        "a-node-not-an-int",
+        "a-note-not-text",
+        "a-sub-agent-not-there",
+        "the-top-agent-as-a-sub-agent",
+        "no-node",
+    ],
+)
+def test_a_reference_to_what_isnt_there_is_refused_in_words_naming_what_is(
+    library, add, refusal
+):
+    plant(library, CHAT, recorded("nested"))
+    p = page_of(library).new("Refused")
+    with pytest.raises(ValueError, match=re.escape(refusal)):
+        add(p)
+    with pytest.raises(ValueError, match=re.escape(EMPTY)):
+        p.open()
+
+
+def test_a_chat_with_no_earlier_messages_has_nothing_to_point_at(library):
+    p = page_of(library).new("Nothing yet")
+    with pytest.raises(ValueError, match="no earlier messages: this is its first"):
+        p.step(1, index=0)
+
+
+ROWS_OF_TEXT = [{"course": "CS101", "seats": 3}]
+
+
+@pytest.mark.parametrize(
+    ("add", "refusal"),
+    [
+        (lambda p: p.text(5), NOT_MARKDOWN),
+        (lambda p: p.text(NeverEqual("x")), NOT_MARKDOWN),
+        (
+            lambda p: p.text("x" * 100_001),
+            "A text may be at most 100,000 characters; this one is 100,001.",
+        ),
+        (
+            lambda p: p.step(1, index=0, note="x" * 100_001),
+            "A note may be at most 100,000 characters",
+        ),
+        (lambda p: p.table([{"n": i} for i in range(1_001)]), "at most 1,000 rows"),
+        (lambda p: p.table([list(range(51))]), "at most 50 columns; this has 51"),
+        (
+            lambda p: p.table([{}], columns=[str(i) for i in range(51)]),
+            "at most 50 columns",
+        ),
+        (lambda p: p.table(ROWS_OF_TEXT + [["CS201", 4]]), NOT_ROWS),
+        (lambda p: p.table([{1: "CS101"}]), NOT_ROWS),
+        (lambda p: p.table(ROWS_OF_TEXT, columns="course"), NOT_ROWS),
+        (lambda p: p.table({"course": "CS101"}), NOT_ROWS),
+        (lambda p: p.table([{"courses": ["CS101"]}]), NOT_VALUES),
+        (lambda p: p.table([[("CS101",)]]), NOT_VALUES),
+        (lambda p: p.table([HOLDS_ITSELF]), NOT_VALUES),
+    ],
+    ids=[
+        "text-not-text",
+        "text-not-plain-text",
+        "a-long-text",
+        "a-long-note",
+        "too-many-rows",
+        "too-many-columns",
+        "too-many-columns-named",
+        "rows-of-two-kinds",
+        "a-key-not-text",
+        "columns-not-a-list",
+        "rows-not-a-list",
+        "a-list-value",
+        "a-tuple-value",
+        "a-row-holding-itself",
+    ],
+)
+def test_what_a_page_cant_hold_is_refused_in_words(library, add, refusal):
+    plant(library, CHAT, recorded("nested"))
+    p = page_of(library).new("Refused")
+    with pytest.raises(ValueError, match=re.escape(refusal)):
+        add(p)
+    with pytest.raises(ValueError, match=re.escape(EMPTY)):
+        p.open()
+
+
+@pytest.mark.parametrize("title", ["", "  ", "x" * 201, 7, NeverEqual("Why")])
+def test_a_title_must_be_text_of_1_to_200_characters(library, title):
+    with pytest.raises(ValueError, match=re.escape(TITLE)):
+        page_of(library).new(title)
+
+
+def test_a_page_holds_at_most_200_blocks(library):
+    p = page_of(library).new("Full")
+    for _ in range(200):
+        p.text("More.")
+    with pytest.raises(ValueError, match="at most 200 blocks"):
+        p.text("One too many.")
+    assert len(saved(library, p)) == 200
+
+
+def test_a_page_is_at_most_2_000_000_characters_as_saved(library):
+    p = page_of(library).new("Long")
+    with pytest.raises(ValueError, match="past 2,000,000: show less"):
+        while True:
+            p.text("x" * 100_000)
+    assert len(saved(library, p)) == 19
+    [(_, _, _, _, _, blocks)] = stored_pages(library)
+    assert len(blocks) <= MAX_PAGE_CHARS
+
+
+def stored_pages(library):
+    with closing(open_library(library)) as connection:
+        return connection.execute(
+            "SELECT id, chat, run, node, title, blocks FROM pages"
+        ).fetchall()
+
+
+def test_a_page_is_saved_only_when_opened_and_reads_back_as_it_was_made(library):
+    plant(library, CHAT, recorded("nested"))
+    p = page_of(library).new("How the term was planned")
+    p.text("It asked a sub-agent to **survey** CS.")
+    p.step(1, index=0, note="The survey.")
+    p.agent(1, 3)
+    p.table([["CS101", 3], ["CS201", None]], columns=["course", "seats"])
+    assert stored_pages(library) == []
+    link = p.open()
+    [(page, chat, run, node, title, blocks)] = stored_pages(library)
+    with closing(open_library(library)) as connection:
+        read = read_page(connection, page)
+    assert link == f"/pages/{page}"
+    assert (chat, run, node, title) == (CHAT, CURRENT, None, "How the term was planned")
+    assert read == {"id": page, "title": title, "blocks": json.loads(blocks)}
+    assert [block["type"] for block in read["blocks"]] == [
+        "text",
+        "step",
+        "agent",
+        "table",
+    ]
+    assert read["blocks"][-1] == {
+        "type": "table",
+        "columns": ["course", "seats"],
+        "rows": [["CS101", "3"], ["CS201", ""]],
+    }
+
+
+def test_a_table_of_dicts_takes_their_keys_as_columns_unless_given(library):
+    rows = [{"course": "CS101", "seats": 3}, {"course": "CS201", "full": True}]
+    p = page_of(library).new("Seats")
+    p.table(rows)
+    p.table(rows, columns=["full", "course"])
+    assert [(block["columns"], block["rows"]) for block in saved(library, p)] == [
+        (["course", "seats", "full"], [["CS101", "3", ""], ["CS201", "", "True"]]),
+        (["full", "course"], [["", "CS101"], ["True", "CS201"]]),
+    ]
+
+
+def test_an_empty_page_is_not_opened(library):
+    with pytest.raises(ValueError, match=re.escape(EMPTY)):
+        page_of(library).new("Empty").open()
+    assert stored_pages(library) == []
+
+
+def test_each_open_saves_the_page_as_it_stands_then(library):
+    p = page_of(library).new("Twice")
+    p.text("First.")
+    first = p.open()
+    p.text("Second.")
+    second = p.open()
+    with closing(open_library(library)) as connection:
+        read = [
+            read_page(connection, link.rpartition("/")[2]) for link in (first, second)
+        ]
+    assert first != second
+    assert [len(page["blocks"]) for page in read] == [1, 2]
+
+
+def test_a_providers_key_is_withheld_from_all_a_page_holds(library, monkeypatch):
+    monkeypatch.setenv(SHELL_KEY_ENV, SHELL_KEY)
+    plant(library, CHAT, crafted(*ROOT_AND_CELL))
+    with closing(open_library(library)) as connection, writing(connection):
+        # As a file from another machine may hold: the key in a step of the record.
+        connection.execute(
+            "UPDATE events SET data = replace(data, 'kept', ?)", (SHELL_KEY,)
+        )
+    p = page_of(library, key_names=[SHELL_KEY_ENV]).new(f"Mine: {SHELL_KEY}")
+    p.text(f"The key is {SHELL_KEY}.")
+    p.step(1, index=0, note=SHELL_KEY)
+    p.table([{SHELL_KEY: SHELL_KEY}])
+    p.open()
+    [(_, _, _, _, title, blocks)] = stored_pages(library)
+    assert SHELL_KEY not in title + blocks
+    assert title == f"Mine: {KEY_WITHHELD}"
+    assert json.loads(blocks)[0]["text"] == f"The key is {KEY_WITHHELD}."
+    assert json.loads(blocks)[1]["step"]["code"] == f"print('{KEY_WITHHELD}')"
+
+
+def test_a_busy_app_file_is_a_refusal_to_open_in_words(library):
+    p = page_of(library).new("Busy")
+    p.text("Wait.")
+    refused = pytest.raises(LibraryError, match="can't be used now .*; try again")
+    with closing(open_library(library)) as connection, writing(connection), refused:
+        p.open()
+    assert stored_pages(library) == []
+
+
+def test_a_moved_app_file_is_never_made_afresh_by_a_page(library, tmp_path):
+    p = page_of(library).new("Moved")
+    p.text("Gone.")
+    library.rename(tmp_path / "moved.sqlite")
+    with pytest.raises(LibraryError, match="can't be used now"):
+        p.open()
+    assert not library.exists()
+
+
+def test_a_cell_setting_the_pages_state_itself_saves_no_key_and_nothing_unchecked(
+    library, monkeypatch
+):
+    monkeypatch.setenv(SHELL_KEY_ENV, SHELL_KEY)
+    p = page_of(library, key_names=[SHELL_KEY_ENV]).new("Mine")
+    p.text("Checked.")
+    p.title, p.blocks = SHELL_KEY, [{"type": "text", "text": SHELL_KEY}]
+    p._title = f"Set by a cell: {SHELL_KEY}"
+    p._blocks.append({"type": "text", "text": f"Set by a cell: {SHELL_KEY}"})
+    blocks = saved(library, p)
+    [(_, _, _, _, title, text)] = stored_pages(library)
+    assert SHELL_KEY not in title + text
+    assert title == f"Set by a cell: {KEY_WITHHELD}"
+    assert blocks == [
+        {"type": "text", "text": "Checked."},
+        {"type": "text", "text": f"Set by a cell: {KEY_WITHHELD}"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("tamper", "refusal"),
+    [
+        (lambda p: setattr(p, "_title", "x" * 201), TITLE),
+        (lambda p: p._blocks.append({"type": "chart"}), NOT_SAVED),
+        (
+            lambda p: p._blocks.append({"type": "text", "text": "x" * 100_001}),
+            NOT_SAVED,
+        ),
+        (lambda p: p._blocks.append({"type": "text", "text": ("x",)}), NOT_SAVED),
+        (lambda p: p._blocks.append({"type": "text", "text": {1, 2}}), NOT_SAVED),
+        (lambda p: p._blocks[0]["agents"][0].update(cost=2.0**60), NOT_SAVED),
+        (lambda p: p._blocks.append(HOLDS_ITSELF), TOO_DEEP),
+        (lambda p: setattr(p, "_blocks", "blocks"), NOT_SAVED),
+    ],
+    ids=[
+        "a-long-title",
+        "an-unknown-block",
+        "a-long-text",
+        "a-tuple",
+        "a-set",
+        "a-cost-past-2-to-the-53",
+        "a-list-holding-itself",
+        "blocks-not-a-list",
+    ],
+)
+def test_what_a_cell_sets_in_the_pages_state_is_refused_at_open(
+    library, tamper, refusal
+):
+    plant(library, CHAT, recorded("nested"))
+    p = page_of(library).new("Tampered")
+    p.agent(1, 2)
+    tamper(p)
+    with pytest.raises(ValueError, match=re.escape(refusal)):
+        p.open()
+    assert stored_pages(library) == []
+
+
+ROOT_CELL_AND_SUB_AGENT = (
+    *ROOT_AND_CELL,
+    {"kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Sum."},
+)
+OVER_RANGE = {
+    "cost": [
+        *ROOT_CELL_AND_SUB_AGENT,
+        {"kind": "usage", "node": 2, "cost": 2**53},
+        {"kind": "usage", "node": 2, "cost": 2**53},
+    ],
+    "seconds": [
+        *ROOT_AND_CELL,
+        {"kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Sum."}
+        | {"t": -(2**53)},
+        {"kind": "agent.end", "node": 2, "status": "done", "t": 2**53},
+    ],
+}
+
+
+@pytest.mark.parametrize("what", OVER_RANGE)
+def test_a_number_a_crafted_record_sums_past_2_to_the_53_is_refused_not_saved_unread(
+    library, what
+):
+    plant(library, CHAT, crafted(*OVER_RANGE[what]))
+    p = page_of(library).new("Over")
+    for add in (lambda: p.agent(1, 2), lambda: p.step(1, index=0)):
+        with pytest.raises(ValueError, match=re.escape(NOT_SHOWN)):
+            add()
+    with pytest.raises(ValueError, match=re.escape(EMPTY)):
+        p.open()
+
+
+def nested_run(levels):
+    """A run's events in which each sub-agent starts the next, *levels* deep, as a file
+    from someone else may hold."""
+    events = [{"kind": "agent.start", "node": 1, "parent": None, "cell": None}]
+    for node in range(1, levels + 1):
+        events.append({"kind": "cell.start", "node": node, "cell": node, "code": ""})
+        events.append(
+            {"kind": "agent.start", "node": node + 1, "parent": node, "cell": node}
+            | {"task": "Deeper."}
+        )
+    return crafted(*events)
+
+
+def test_a_record_nested_too_deep_to_copy_is_refused_in_words(library):
+    plant(library, CHAT, nested_run(600))
+    p = page_of(library).new("Deep")
+    for add in (lambda: p.agent(1, 2), lambda: p.step(1, index=0)):
+        with pytest.raises(ValueError, match=re.escape(TOO_DEEP)):
+            add()

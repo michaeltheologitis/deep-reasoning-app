@@ -168,6 +168,30 @@ def test_a_library_change_is_recorded_for_the_agent_whose_cell_made_it():
     }
 
 
+def test_a_page_opened_is_recorded_for_the_agent_whose_cell_opened_it():
+    opened = {
+        "event": "page.open",
+        "node_id": CHILD,
+        "agent_id": CHILD,
+        "page": "eager-modest-oarfish",
+        "title": "How I counted",
+    }
+    events = recorded(
+        agent_start(ROOT, None),
+        agent_start(CHILD, ROOT),
+        model_reply(CHILD, "<repl>\nprint(page.new('How I counted').open())\n</repl>"),
+        opened,
+    )
+    [cell] = [event["cell"] for event in events if event["kind"] == "cell.start"][-1:]
+    assert events[-1] == {
+        "kind": "page.open",
+        "node": CHILD,
+        "cell": cell,
+        "page": "eager-modest-oarfish",
+        "title": "How I counted",
+    }
+
+
 def test_nothing_is_written_after_the_turn_ends():
     out = io.StringIO()
     recorder = Recorder(out, on_root_start=lambda: None)

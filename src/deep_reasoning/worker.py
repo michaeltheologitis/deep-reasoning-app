@@ -15,8 +15,9 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
 
@@ -30,7 +31,7 @@ from deep_reasoner.v2.messages import NoCodeBlock, code
 from genai_prices import Usage, calc_price
 
 from deep_reasoning.app_tools import CLAUDE_CODE
-from deep_reasoning.runs import CHANGE_FIELDS, SPEC
+from deep_reasoning.runs import CHANGE_FIELDS, PAGE_FIELDS, SPEC
 
 log = structlog.get_logger()
 
@@ -141,7 +142,10 @@ class Recorder:
             "claude.call": self._claude_call,
             "repl.execute": self._repl_execute,
             "agent.end": self._agent_end,
-            "library.change": self._library_change,
+            "library.change": partial(
+                self._tool_event, "library.change", CHANGE_FIELDS
+            ),
+            "page.open": partial(self._tool_event, "page.open", PAGE_FIELDS),
         }
 
     def __call__(
@@ -274,13 +278,16 @@ class Recorder:
             detail=event.get("detail"),
         )
 
-    def _library_change(self, event: dict[str, Any]) -> None:
-        """A change the library tool made, in the open cell of the agent that called it."""
+    def _tool_event(
+        self, kind: str, fields: Sequence[str], event: dict[str, Any]
+    ) -> None:
+        """What an app tool logged (a Library change, a page opened), in the open cell of
+        the agent that called it."""
         node = event.get("agent_id") or self._root
         agent = self._agents.get(node)
-        fields = {key: event.get(key) for key in CHANGE_FIELDS}
+        told = {key: event.get(key) for key in fields}
         cell = agent.cell if agent else None
-        self.emit("library.change", node=node, cell=cell, **fields)
+        self.emit(kind, node=node, cell=cell, **told)
 
     def _own(self, event: dict[str, Any]) -> bool:
         """The event is a known agent's own model call or cell, not a tool's inside it."""

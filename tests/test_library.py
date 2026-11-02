@@ -27,6 +27,7 @@ from structlog.testing import capture_logs
 from deep_reasoning.library import (
     APP_TOOLS_FILE,
     BEFORE_EVENTS,
+    BEFORE_PAGES,
     HAND_OFF_TURNS,
     HISTORIAN,
     HISTORIAN_SUFFIX,
@@ -35,6 +36,7 @@ from deep_reasoning.library import (
     LIBRARIAN,
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
+    PAGE_DESCRIPTION,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
@@ -164,13 +166,13 @@ def test_a_fresh_library_has_root_and_leaves_the_model_and_its_key_to_the_chat(
     assert FAKE_KEY.encode() not in library.read_bytes()
 
 
-def test_a_fresh_library_grants_llm_at_root_history_to_the_historian_and_library_to_the_librarian(
+def test_a_fresh_library_grants_llm_at_root_history_and_page_to_the_historian_and_library_to_the_librarian(
     library, tmp_path
 ):
     config = run_config(library, tmp_path)
     build_namespace_registry(config).check(declared_tool_names(config))
     assert config.namespaces[ROOT].tools == ["llm"]
-    assert config.namespaces[HISTORIAN].tools == ["history"]
+    assert config.namespaces[HISTORIAN].tools == ["history", "page"]
     assert config.namespaces[HISTORIAN].spawn == []
     assert config.namespaces[HISTORIAN].system_suffix == HISTORIAN_SUFFIX
     assert config.namespaces[LIBRARIAN].tools == ["library"]
@@ -182,20 +184,27 @@ def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_mess
     registry = registry_of(library, tmp_path)
     shown = {name: registry.resolve(name).decompositions for name in registry.names}
     assert shown == {ROOT: HAND_OFFS, HISTORIAN: HISTORIANS, LIBRARIAN: HAND_OFFS}
+    assert [each.name for each in HAND_OFFS] == [
+        "explain an earlier answer",
+        "say what each sub-agent did",
+        "show it on a page",
+    ]
     for example in HAND_OFFS:
         assert example.messages[-1].content.endswith(f"<repl>\n{HAND_OFF}\n</repl>\n")
 
 
 @pytest.mark.parametrize("example", HISTORIANS, ids=lambda example: example.name)
 def test_the_historian_reads_history_then_answers_in_a_later_cell(example):
-    handing_off, *reading, answering = [
+    handing_off, reading, *working, answering = [
         turn.content for turn in example.messages if turn.role == "assistant"
     ]
     assert HAND_OFF in handing_off
     # After root's hand-off, the historian's task is the user's message.
     assert example.messages[HAND_OFF_TURNS] == example.messages[0]
-    assert reading
-    assert all("history." in each and "FinalAnswer" not in each for each in reading)
+    # It reads first, then reads more or builds a page, answering in none of those cells.
+    assert "history." in reading
+    assert all("history." in each or "page." in each for each in working)
+    assert all("FinalAnswer" not in each for each in [reading, *working])
     assert "FinalAnswer" in answering and "history." not in answering
 
 
@@ -276,7 +285,7 @@ def test_a_fresh_library_carries_a_generic_repl_prompt(library, tmp_path):
     assert "FinalAnswer" in prompt
 
 
-@pytest.mark.parametrize("version", [0, LIBRARY_ONLY, BEFORE_EVENTS])
+@pytest.mark.parametrize("version", [0, LIBRARY_ONLY, BEFORE_EVENTS, BEFORE_PAGES])
 def test_a_file_that_is_not_a_library_is_refused_and_left_alone(tmp_path, version):
     other = tmp_path / "chats.sqlite"
     with closing(sqlite3.connect(other)) as connection:
@@ -288,7 +297,7 @@ def test_a_file_that_is_not_a_library_is_refused_and_left_alone(tmp_path, versio
     assert other.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [LIBRARY_ONLY, BEFORE_EVENTS])
+@pytest.mark.parametrize("version", [LIBRARY_ONLY, BEFORE_EVENTS, BEFORE_PAGES])
 def test_an_older_file_that_already_holds_a_later_versions_tables_is_refused_and_left_alone(
     library, version
 ):
@@ -517,9 +526,27 @@ def test_a_runs_config_holds_only_the_tools_a_namespace_grants_and_the_panel_lis
         connection.execute(UPSERT_TOOL, (*broken, "def build(:\n"))
         listed = [tool["name"] for tool in panel(connection)["tools"]]
     config = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)
-    assert list(config["tools"]) == ["waitlist", "history", "library"]
+    assert list(config["tools"]) == ["waitlist", "history", "library", "page"]
     assert not (tmp_path / "tools" / "unused.py").exists()
-    assert listed == ["llm", "waitlist", "unused", "history", "library"]
+    assert listed == ["llm", "waitlist", "unused", "history", "library", "page"]
+
+
+def test_an_app_tool_is_in_a_runs_config_only_while_a_namespace_grants_it(
+    library, tmp_path
+):
+    def tools():
+        return list(
+            engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)["tools"]
+        )
+
+    open_library(library).close()
+    granted = tools()
+    with closing(open_library(library)) as connection:
+        change_namespace(connection, HISTORIAN, "tools: [history]\nspawn: []\n")
+    assert (granted, tools()) == (
+        ["history", "library", "page"],
+        ["history", "library"],
+    )
 
 
 def test_a_tool_stored_over_another_gives_back_the_row_it_replaced(library):
@@ -542,12 +569,19 @@ def test_the_panel_lists_a_tool_whose_source_is_too_deep_to_parse(library):
 
 
 @pytest.mark.parametrize(
-    ("tool", "factory"), [("history", "build_history"), ("library", "build_library")]
+    ("tool", "factory"),
+    [
+        ("history", "build_history"),
+        ("library", "build_library"),
+        ("page", "build_page"),
+    ],
 )
 def test_a_runs_config_tells_each_app_tool_the_app_file_the_chat_and_the_run(
     library, tmp_path, monkeypatch, tool, factory
 ):
     monkeypatch.chdir(library.parent)
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "granting", f"tools: [{tool}]\n")
     config = engine_config(Path(library.name), ROOT, tmp_path / "tools", CHAT, RUN)
     assert config["tools"][tool] == {
         "factory_from": str(APP_TOOLS_FILE),
@@ -563,7 +597,7 @@ def test_a_runs_config_tells_each_app_tool_the_app_file_the_chat_and_the_run(
         assert connection.execute("SELECT count(*) FROM tools").fetchone() == (0,)
 
 
-@pytest.mark.parametrize("tool", ["history", "library"])
+@pytest.mark.parametrize("tool", ["history", "library", "page"])
 def test_an_import_may_not_give_a_tool_an_app_tools_name(library, tmp_path, tool):
     config = tmp_path / "tool.yaml"
     config.write_text(f"tools:\n  {tool}: {{factory: llm}}\n")
@@ -575,12 +609,17 @@ def test_an_import_may_not_give_a_tool_an_app_tools_name(library, tmp_path, tool
 
 @pytest.mark.parametrize(
     ("tool", "description"),
-    [("history", HISTORY_DESCRIPTION), ("library", LIBRARY_DESCRIPTION)],
+    [
+        ("history", HISTORY_DESCRIPTION),
+        ("library", LIBRARY_DESCRIPTION),
+        ("page", PAGE_DESCRIPTION),
+    ],
 )
 def test_a_shared_files_tool_named_as_an_app_tool_is_shadowed_by_the_apps(
     library, tmp_path, tool, description
 ):
     with closing(open_library(library)) as connection:
+        add_namespace(connection, "granting", f"tools: [{tool}]\n")
         connection.execute(
             "INSERT INTO tools VALUES (?, ?, ?)",
             (tool, f"factory: build\nfactory_from: {tool}.py\n", "def build(): 1\n"),
@@ -829,8 +868,8 @@ def test_the_seeded_examples_and_the_engines_own_namespace_examples_pass(library
         for row in namespaces
         for each in row["decompositions"]
     ]
-    # the four seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
-    assert len(rows) == 11
+    # the six seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
+    assert len(rows) == 13
     assert rows == [(name, []) for name, _ in rows]
 
 

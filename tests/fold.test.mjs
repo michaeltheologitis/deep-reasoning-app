@@ -15,6 +15,7 @@ const sum = (numbers) => numbers.reduce((total, number) => total + number, 0);
 const costOf = (events, node) => sum(ofKind(events, "usage").filter((event) => event.node === node).map((event) => event.cost));
 const cells = (holder) => holder.steps.filter((step) => step.kind === "cell");
 const changes = (holder) => holder.steps.filter((step) => step.kind === "change");
+const pages = (holder) => holder.steps.filter((step) => step.kind === "page");
 const rowsOf = (holder) => cells(holder).flatMap((cell) => cell.agents);
 
 function allRows(holder) {
@@ -234,7 +235,7 @@ test("a running sub-agent is a running row, and it costs what its calls so far c
   assert.equal(turn.outcome, null);
 });
 
-for (const name of ["nested", "librarian"]) {
+for (const name of ["nested", "librarian", "pages"]) {
   test(`folding ${name} live, after catching up on the events so far, gives the saved turn`, () => {
     const events = recorded(name);
     const fold = foldEvents(events.slice(0, 9));
@@ -326,4 +327,35 @@ test("a change with odd fields, as a crafted file may hold, folds as it came, an
   const step = { kind: "change", ...odd, after: undefined };
   assert.deepEqual(turn.steps, [step]);
   assert.deepEqual(turn.changes, [{ tasks: [], step }]);
+});
+
+test("a page opened is a step of the agent that opened it, after the cell it opened it in, and the turn lists each", () => {
+  const events = recorded("pages");
+  const { turn } = foldEvents(events);
+  const [tabler] = rowsOf(turn);
+  assert.deepEqual(
+    turn.steps.map((step) => step.kind),
+    ["cell", "page", "cell", "cell"],
+  );
+  assert.deepEqual(
+    tabler.steps.map((step) => step.kind),
+    ["cell", "page", "cell"],
+  );
+  const asFolded = ({ page, title }) => ({ kind: "page", page, title });
+  assert.deepEqual([...pages(turn), ...pages(tabler)], ofKind(events, "page.open").map(asFolded));
+  assert.deepEqual(
+    turn.pages.map(({ title }) => title),
+    ["How I counted", "Seats"],
+  );
+  assert.equal(turn.pages[0], pages(turn)[0]);
+  assert.equal(turn.pages[1], pages(tabler)[0]);
+});
+
+test("a page of no known agent, as a crafted file may hold, is left out", () => {
+  const { turn } = foldEvents([
+    { seq: 1, t: 0, kind: "turn.start", prompt: "Forge." },
+    { seq: 2, t: 0, kind: "agent.start", node: 1, parent: null, cell: null },
+    { seq: 3, t: 1, kind: "page.open", node: 9, cell: 1, page: "nowhere", title: "Nowhere" },
+  ]);
+  assert.deepEqual([turn.steps, turn.pages], [[], []]);
 });

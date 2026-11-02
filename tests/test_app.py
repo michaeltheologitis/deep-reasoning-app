@@ -45,6 +45,7 @@ from deep_reasoning.library import (
     HISTORIAN_SUFFIX,
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
+    PAGE_DESCRIPTION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
     UPSERT_TOOL,
@@ -56,6 +57,7 @@ from deep_reasoning.library import (
     running_code,
     writing,
 )
+from deep_reasoning.pages import add_page
 from deep_reasoning.runs import CHANGE_FIELDS, EARLIER_TURNS_NOTE, LOST, save_event
 from deep_reasoning.settings import (
     DEFAULT_FOLDER,
@@ -191,7 +193,17 @@ def test_root_serves_the_ui(client):
 
 
 @pytest.mark.parametrize(
-    "path", ["app.js", "fold.js", "style.css", "library.js", "settings.js"]
+    "path",
+    [
+        "app.js",
+        "fold.js",
+        "tree.js",
+        "style.css",
+        "library.js",
+        "settings.js",
+        "page.js",
+        "page.html",
+    ],
 )
 def test_static_assets_are_served(client, path):
     response = client.get(f"/{path}")
@@ -228,6 +240,7 @@ def test_the_api_returns_the_library_as_the_engine_resolves_it(client):
         ("llm", ["root"]),
         ("history", [HISTORIAN]),
         ("library", ["librarian"]),
+        ("page", [HISTORIAN]),
     ]
     [catalog] = library["variables"]
     assert (catalog["name"], catalog["where"], len(catalog["rows"])) == (
@@ -237,7 +250,7 @@ def test_the_api_returns_the_library_as_the_engine_resolves_it(client):
     )
 
 
-def test_a_fresh_library_shows_llm_granted_at_root_history_in_the_historian_and_library_in_the_librarian(
+def test_a_fresh_library_shows_llm_granted_at_root_history_and_page_in_the_historian_and_library_in_the_librarian(
     library, home, tmp_path
 ):
     child = tmp_path / "child.yaml"
@@ -256,6 +269,7 @@ def test_a_fresh_library_shows_llm_granted_at_root_history_in_the_historian_and_
     assert field(by_name[HISTORIAN], "Tools") == [
         {"value": "llm", "source": "inherited from root", "here": False},
         {"value": "history", "source": "granted here", "here": True},
+        {"value": "page", "source": "granted here", "here": True},
     ]
     assert field(by_name[HISTORIAN], "System suffix") == [
         {"value": HISTORIAN_SUFFIX.strip(), "source": "set here", "here": True},
@@ -269,12 +283,15 @@ def test_a_fresh_library_shows_llm_granted_at_root_history_in_the_historian_and_
         ("llm", ["root"]),
         ("history", [HISTORIAN]),
         ("library", ["librarian"]),
+        ("page", [HISTORIAN]),
     ]
     assert [(tool["defined_in"], tool["badge"]) for tool in tools] == [
         (None, "built-in"),
         ("Deep Reasoning", "the app's"),
         ("Deep Reasoning", "the app's"),
+        ("Deep Reasoning", "the app's"),
     ]
+    assert tools[-1]["description"] == PAGE_DESCRIPTION
 
 
 def test_a_valid_decomposition_is_stored_and_listed_under_its_namespace(client):
@@ -637,45 +654,57 @@ async def test_a_historian_that_copies_roots_hand_off_nests_no_historian(
     assert events[-1]["answer"] == "by printing 1"
 
 
+# Message 1 of the examples that read sub-agents, as the fake answers it.
+SUB_AGENTS_FIRST_MESSAGE = (
+    "Add the sum of the first 10 primes to the 10th Fibonacci number.",
+    {
+        "Add the sum": [
+            repl(
+                'primes = subagent("Sum the first 10 primes.")',
+                'fib = subagent("Find the 10th Fibonacci number.")',
+                "print(primes, fib)",
+                think="Give each part to its own sub-agent, then add the two.",
+            ),
+            repl("FinalAnswer(primes + fib)"),
+        ],
+        "Sum the first 10 primes.": [
+            repl(
+                "primes = [n for n in range(2, 30) if all(n % d for d in range(2, n))]",
+                "FinalAnswer(sum(primes))",
+                think="The primes below 30 are the first 10; sum them.",
+            )
+        ],
+        "Find the 10th Fibonacci number.": [
+            repl(
+                "a, b = 0, 1",
+                "for _ in range(10):",
+                "    a, b = b, a + b",
+                "FinalAnswer(a)",
+                think="Step the pair ten times.",
+            )
+        ],
+    },
+)
 # The first message each of the historian's examples explains, as the fake answers it.
 EXAMPLES_FIRST_MESSAGE = {
     "explain an earlier answer": (
         "What is 17 times 23?",
         {"What is 17 times 23?": [repl("17 * 23", "FinalAnswer(391)")]},
     ),
-    "say what each sub-agent did": (
-        "Add the sum of the first 10 primes to the 10th Fibonacci number.",
-        {
-            "Add the sum": [
-                repl(
-                    'primes = subagent("Sum the first 10 primes.")',
-                    'fib = subagent("Find the 10th Fibonacci number.")',
-                    "print(primes, fib)",
-                    think="Give each part to its own sub-agent, then add the two.",
-                ),
-                repl("FinalAnswer(primes + fib)"),
-            ],
-            "Sum the first 10 primes.": [
-                repl(
-                    "primes = [n for n in range(2, 30) if all(n % d for d in range(2, n))]",
-                    "FinalAnswer(sum(primes))",
-                    think="The primes below 30 are the first 10; sum them.",
-                )
-            ],
-            "Find the 10th Fibonacci number.": [
-                repl(
-                    "a, b = 0, 1",
-                    "for _ in range(10):",
-                    "    a, b = b, a + b",
-                    "FinalAnswer(a)",
-                    think="Step the pair ten times.",
-                )
-            ],
-        },
-    ),
+    "say what each sub-agent did": SUB_AGENTS_FIRST_MESSAGE,
+    "show it on a page": SUB_AGENTS_FIRST_MESSAGE,
 }
-# A cost depends on the prompt, which the examples are part of.
+# A cost depends on the prompt, which the examples are part of, and each page opened gets
+# an id of its own.
 COST = re.compile(r"'cost': [^,}]+")
+PAGE_LINK = re.compile(r"/pages/[A-Za-z0-9_-]+")
+
+
+def as_recorded(observation):
+    """*observation* as any run of an example prints it: its costs and page links masked."""
+    return PAGE_LINK.sub("/pages/…", COST.sub("'cost': …", observation))
+
+
 # How a hand-off reaches the historian: the question, root's hand-off, then the question
 # again as its task.
 HANDED_OVER_TURNS = HAND_OFF_TURNS + 1
@@ -691,17 +720,7 @@ async def test_the_historians_examples_show_what_history_really_prints(
     example = parsed(text)
     opening = example.messages[:HANDED_OVER_TURNS]
     rest = example.messages[HANDED_OVER_TURNS:]
-    question, handing_off, _ = opening
-    first, plan = EXAMPLES_FIRST_MESSAGE[example.name]
-    replies = [turn.content for turn in rest if turn.role == "assistant"]
-    plan = plan | {question.content: [handing_off.content]}
-    historian = scripted({question.content: replies})
-    with FakeOpenAI(historian_or(historian, scripted(plan))) as fake:
-        async with connect(library_on(fake)) as api:
-            chat = await new_chat(api)
-            await run_events(api, await send(api, chat, first))
-            asked = len(fake.calls)
-            events = await run_events(api, await send(api, chat, question.content))
+    fake, asked, events, _, _ = await ask_as_the_example(library_on, connect, text)
     # The historian's conversation ends as the example opens.
     historians_first = fake.calls[asked + 1].messages[-HANDED_OVER_TURNS:]
     assert [(each["role"], each["content"].strip()) for each in historians_first] == [
@@ -712,10 +731,80 @@ async def test_the_historians_examples_show_what_history_really_prints(
         f"<observation>\n{cell['output']}\n</observation>\n"
         for cell in kinds(events, "cell.end")[: len(shown)]
     ]
-    assert [COST.sub("'cost': …", each) for each in printed] == [
-        COST.sub("'cost': …", each) for each in shown
-    ]
+    assert list(map(as_recorded, printed)) == list(map(as_recorded, shown))
     assert events[-1]["outcome"] == "answered", events[-1]
+
+
+async def ask_as_the_example(library_on, connect, text):
+    """The historian's example *text* run through the app on the fake: its first message,
+    then its question, which root hands off and the historian answers with the example's
+    own cells. The fake, how many calls it had before the question, the question's
+    events, the chat's turns, and each page opened as the API serves it."""
+    example = parsed(text)
+    question, handing_off, _ = example.messages[:HANDED_OVER_TURNS]
+    rest = example.messages[HANDED_OVER_TURNS:]
+    first, plan = EXAMPLES_FIRST_MESSAGE[example.name]
+    replies = [turn.content for turn in rest if turn.role == "assistant"]
+    plan = plan | {question.content: [handing_off.content]}
+    historian = scripted({question.content: replies})
+    with FakeOpenAI(historian_or(historian, scripted(plan))) as fake:
+        async with connect(library_on(fake)) as api:
+            chat = await new_chat(api)
+            await run_events(api, await send(api, chat, first))
+            asked = len(fake.calls)
+            events = await run_events(api, await send(api, chat, question.content))
+            turns = (await api.get(f"/api/chats/{chat}")).json()["turns"]
+            pages = [
+                (await api.get(f"/api/pages/{each['page']}")).json()
+                for each in kinds(events, "page.open")
+            ]
+    return fake, asked, events, turns, pages
+
+
+@pytest.mark.anyio
+async def test_root_hands_show_me_on_a_page_to_the_historian_whose_page_its_turn_links(
+    library_on, connect
+):
+    [text] = [
+        each for each in HISTORIANS_EXAMPLES if parsed(each).name == "show it on a page"
+    ]
+    _, _, events, turns, pages = await ask_as_the_example(library_on, connect, text)
+    _, historian = kinds(events, "agent.start")
+    [opened] = kinds(events, "page.open")
+    [page] = pages
+    assert historian["namespace"] == HISTORIAN
+    assert (opened["node"], opened["title"]) == (
+        historian["node"],
+        "How the answer to message 1 was reached",
+    )
+    assert kinds(turns[1]["events"], "page.open") == [opened]
+    assert events[-1]["answer"].startswith("I put it on a page, linked below")
+    first = turns[0]["events"]
+    first_root = kinds(first, "agent.start")[0]
+    delegating, adding = [
+        each["code"]
+        for each in kinds(first, "cell.end")
+        if each["node"] == first_root["node"]
+    ]
+    text_block, fanned_out, sub_agent, added = page["blocks"]
+    assert text_block["type"] == "text"
+    assert [
+        (each["turn"], each["node"], each["index"]) for each in (fanned_out, added)
+    ] == [
+        (1, None, 1),
+        (1, None, 2),
+    ]
+    assert (fanned_out["step"]["code"], added["step"]["code"]) == (delegating, adding)
+    assert [row["task"] for row in fanned_out["step"]["agents"]] == [
+        "Sum the first 10 primes.",
+        "Find the 10th Fibonacci number.",
+    ]
+    [drive] = sub_agent["agents"]
+    assert (sub_agent["node"], drive["task"], drive["result"]) == (
+        2,
+        "Sum the first 10 primes.",
+        "129",
+    )
 
 
 # What EXAMPLE and REWORDED lack as worked examples: their one reply is prose.
@@ -993,6 +1082,10 @@ NAMESPACE_REFUSALS = [
     (
         library_cell("change_namespace", "drafts", "repl: {type: local}\n"),
         "tools may not add or take out history",
+    ),
+    (
+        library_cell("change_namespace", "historian", "tools: [history]\nspawn: []\n"),
+        "tools may not add or take out page",
     ),
     (
         library_cell("add_namespace", "re search", ""),
@@ -1295,6 +1388,84 @@ def held_on(prompt, plan):
         return follow(messages)
 
     return held, release
+
+
+SHOWN_PLAN = {
+    "Summarize two courses.": [
+        repl(
+            "r = run_all({c: anext(subagent().send(f'Summarize {c}.')) for c in ['C1', 'C2']})",
+            "print(r)",
+            think="Fan out.",
+        ),
+        repl("FinalAnswer(r)"),
+    ],
+    "Summarize C1.": [repl("print('C1 has 3 credits')"), repl("FinalAnswer('C1: 3')")],
+    "Summarize C2.": [repl("FinalAnswer('C2: 4')", think="Easy.")],
+    "Show me how.": [
+        repl(
+            "p = page.new('Why it fanned out')",
+            "p.text('It split the work in **two**.')",
+            "p.step(1, index=1, note='Here it fans out.')",
+            "p.agent(1, history.agents(1)[0]['node'])",
+            "p.table([{'course': 'C1', 'credits': 3}])",
+            "print(p.open())",
+        ),
+        repl("FinalAnswer('See the page.')"),
+    ],
+}
+
+
+@pytest.mark.anyio
+async def test_a_follow_up_shows_an_earlier_messages_steps_on_a_page_its_turn_links(
+    library_on, connect
+):
+    with FakeOpenAI(scripted(SHOWN_PLAN)) as fake:
+        async with connect(library_on(fake)) as api:
+            namespace = {"name": "shown", "yaml": "tools: [history, page]\n"}
+            assert (await api.post("/api/namespaces", json=namespace)).is_success
+            chat = await chat_in(api, "shown")
+            first = await run_events(
+                api, await send(api, chat, "Summarize two courses.")
+            )
+            shown = await run_events(api, await send(api, chat, "Show me how."))
+            turns = (await api.get(f"/api/chats/{chat}")).json()["turns"]
+            [opened] = kinds(shown, "page.open")
+            page = (await api.get(f"/api/pages/{opened['page']}")).json()
+            tab = await api.get(f"/pages/{opened['page']}")
+    [root] = kinds(shown, "agent.start")
+    cell = kinds(shown, "cell.end")[0]
+    assert {key: opened[key] for key in ("node", "cell", "title")} == {
+        "node": root["node"],
+        "cell": cell["cell"],
+        "title": "Why it fanned out",
+    }
+    assert cell["output"] == f"/pages/{opened['page']}"
+    assert kinds(turns[1]["events"], "page.open") == [opened]
+    assert shown[-1]["outcome"] == "answered", shown[-1]
+    text, step, agent, table = page["blocks"]
+    top, *sub_agents = kinds(first, "agent.start")
+    fanned = next(
+        each for each in kinds(first, "cell.end") if each["node"] == top["node"]
+    )
+    assert page["title"] == "Why it fanned out"
+    assert text == {"type": "text", "text": "It split the work in **two**."}
+    assert (step["note"], step["step"]["code"], step["step"]["output"]) == (
+        "Here it fans out.",
+        fanned["code"],
+        fanned["output"],
+    )
+    assert [row["task"] for row in step["step"]["agents"]] == [
+        "Summarize C1.",
+        "Summarize C2.",
+    ]
+    assert [row["node"] for row in agent["agents"]] == [sub_agents[0]["node"]]
+    assert [each["code"] for each in agent["agents"][0]["steps"]] == [
+        "print('C1 has 3 credits')",
+        "FinalAnswer('C1: 3')",
+    ]
+    assert (table["columns"], table["rows"]) == (["course", "credits"], [["C1", "3"]])
+    assert tab.status_code == 200
+    assert PAGE_DESCRIPTION in fake.calls[-1].messages[0]["content"]
 
 
 @pytest.mark.anyio
@@ -1779,6 +1950,122 @@ async def test_the_page_and_a_follow_ups_turns_agree_on_how_each_run_started_and
         ("assistant", "<repl>\nFinalAnswer('3')\n</repl>"),
         ("user", "What did I ask?"),
     ]
+
+
+TEXT_ONLY = [{"type": "text", "text": "It **counted**."}]
+
+
+def a_page(library, chat):
+    """A page of *chat*'s, as the page tool saves one; its id."""
+    with closing(open_library(library)) as connection:
+        return add_page(connection, chat, GOOD, 1, "Counted", TEXT_ONLY)
+
+
+def pages_in(library):
+    with closing(open_library(library)) as connection:
+        return {page for (page,) in connection.execute("SELECT id FROM pages")}
+
+
+def test_a_page_is_read_from_the_api_and_its_tab_is_the_page_drawing_it(client):
+    library = client.app.state.runs.library
+    page = a_page(library, client.post("/api/chats").json()["id"])
+    read = client.get(f"/api/pages/{page}")
+    tab = client.get(f"/pages/{page}")
+    assert read.json() == {"id": page, "title": "Counted", "blocks": TEXT_ONLY}
+    assert tab.headers["content-type"].startswith("text/html")
+    assert tab.text == (WEB / "page.html").read_text()
+
+
+@pytest.mark.parametrize("page", ["no-such-page", "not%20an%20id", "x" * 101])
+def test_a_page_not_there_or_with_no_pages_id_is_a_plain_404(client, page):
+    read, tab = client.get(f"/api/pages/{page}"), client.get(f"/pages/{page}")
+    assert (read.status_code, tab.status_code) == (404, 404)
+    assert read.json()["detail"] == tab.text
+    assert tab.headers["content-type"].startswith("text/plain")
+
+
+@pytest.mark.parametrize("path", ["/api/pages/{}", "/pages/{}"])
+def test_a_page_named_from_another_host_or_site_is_refused(client, path):
+    library = client.app.state.runs.library
+    url = path.format(a_page(library, client.post("/api/chats").json()["id"]))
+    rebound = client.get(url, headers={"Host": "rebound.example"})
+    cross = client.get(url, headers={"Origin": "https://elsewhere.example"})
+    assert (rebound.status_code, cross.status_code) == (400, 403)
+
+
+def test_a_page_whose_record_nests_deep_is_served(client):
+    library = client.app.state.runs.library
+    drive = {"task": "Go.", "status": "done", "unpriced": False, "steps": []}
+    for _ in range(1_000):
+        cell = {"kind": "cell", "code": "", "status": "done", "agents": [drive]}
+        drive = drive | {"steps": [cell]}
+    blocks = [{"type": "agent", "turn": 1, "node": 2, "agents": [drive]}]
+    with closing(open_library(library)) as connection:
+        page = add_page(connection, "a-chat", GOOD, 1, "Deep", blocks)
+    assert client.get(f"/api/pages/{page}").status_code == 200
+
+
+def plant_page(library, blocks_text):
+    """A page row holding *blocks_text* as it is, as a file from someone else might; its
+    id."""
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute("DELETE FROM pages WHERE id = 'planted'")
+        connection.execute(
+            "INSERT INTO pages VALUES ('planted', 'a-chat', ?, 1, 'Planted', ?, 0)",
+            (GOOD, blocks_text),
+        )
+    return "planted"
+
+
+def deep_agent_text(levels):
+    """An agent block whose sub-agent nests *levels* deep, as JSON written by hand, as
+    json.dumps may not reach that deep."""
+    drive = '{"task": "Go.", "status": "done", "unpriced": false, "steps": '
+    cell = '[{"kind": "cell", "code": "", "status": "done", "agents": ['
+    chain = (drive + cell) * levels + drive + "[]}" + "]}]}" * levels
+    return '[{"type": "agent", "turn": 1, "node": 2, "agents": [' + chain + "]}]"
+
+
+def test_a_page_nested_about_as_deep_as_json_reads_is_served_or_a_404_never_a_500(
+    client,
+):
+    library = client.app.state.runs.library
+    # Around 10,000 deep, JSON reads a little deeper than it writes back.
+    statuses = {
+        client.get(
+            f"/api/pages/{plant_page(library, deep_agent_text(levels))}"
+        ).status_code
+        for levels in range(2480, 2520)
+    }
+    assert statuses == {200, 404}
+
+
+def test_a_pages_tab_opens_on_any_page_there_and_the_api_says_whether_it_can_be_shown(
+    client,
+):
+    page = plant_page(client.app.state.runs.library, "not json")
+    assert client.get(f"/pages/{page}").status_code == 200
+    assert client.get(f"/api/pages/{page}").status_code == 404
+
+
+def test_deleting_a_chat_deletes_its_pages_and_no_other(client):
+    library = client.app.state.runs.library
+    chat, other = (client.post("/api/chats").json()["id"] for _ in range(2))
+    a_page(library, chat)
+    kept = a_page(library, other)
+    deleted = client.delete(f"/api/chats/{chat}")
+    assert deleted.status_code == 204
+    assert pages_in(library) == {kept}
+
+
+def test_pages_of_chats_deleted_before_their_pages_are_deleted_when_the_app_starts(
+    imported, home
+):
+    kept = a_page(imported, create_chat(imported)["id"])
+    a_page(imported, "a-deleted-chat")
+    with TestClient(create_app(imported, home), base_url=LOCAL):
+        pass
+    assert pages_in(imported) == {kept}
 
 
 def test_runs_of_chats_deleted_before_their_runs_are_deleted_when_the_app_starts(
