@@ -30,16 +30,17 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   questions to a sub-agent there, with the conversation so far: root's worked examples, which every namespace
   inherits, show the hand-off, and the historian's show reading `history` before answering. A namespace with a
   `spawn` list hands off only if it lists `historian`. If you delete `historian` or take `history` out of it, delete
-  root's two hand-off examples in the panel too: they send questions where nothing can read the history.
+  root's three hand-off examples in the panel too: they send questions where nothing can read the history.
 - An older Library keeps what it has: one made since `history` came reads it at root, with a worked example there,
   and needs nothing. For the historian, run `reset`, which deletes the Library and every chat, or add `historian` in
-  the panel (`tools: [history]`, `spawn: []`, and the examples a new Library has) and give root the two hand-off
-  examples in place of its own `explain an earlier answer`.
+  the panel (`tools: [history, page]`, `spawn: []`, and the examples a new Library has) and give root the three
+  hand-off examples in place of its own `explain an earlier answer`.
 - The agent can show you something on a page of its own, with the app's `page` tool: Markdown text, tables, and steps
   or sub-agents of the chat's earlier messages, copied from their record and drawn as the chat draws them. A line
   under the answer, and a step in its tree, open the page in a new tab. Pages are kept in the Library file and
-  deleted with their chat. No namespace grants `page` in a new Library: add it to a namespace's tools in the
-  decompositions panel; the agent finds the steps to show with `history`, which a new Library grants in `historian`.
+  deleted with their chat. A new Library grants `page` in `historian`, beside `history`, with a worked example of
+  showing an earlier answer on a page (`show it on a page`), so asking to be shown how an answer was reached goes
+  there too.
 - Each chat has its own model, namespace and working folder, picked under the message box; a change applies from
   the next message.
 - Light and dark themes; works at phone width.

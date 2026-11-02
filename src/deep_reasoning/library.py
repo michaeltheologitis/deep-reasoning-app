@@ -119,7 +119,11 @@ history, drilling into the sub-agents involved, and quote their real code and ou
 Never redo the work or guess; answer in a later cell, from what you printed.
 """
 # A leaf: copying root's hand-off, the last cell of its own conversation, can't nest one.
-FRESH_HISTORIAN = {"tools": ["history"], "spawn": [], "system_suffix": HISTORIAN_SUFFIX}
+FRESH_HISTORIAN = {
+    "tools": ["history", "page"],
+    "spawn": [],
+    "system_suffix": HISTORIAN_SUFFIX,
+}
 FRESH_NAMESPACES = {
     ROOT: FRESH_ROOT,
     HISTORIAN: FRESH_HISTORIAN,
@@ -129,7 +133,7 @@ FRESH_NAMESPACES = {
 # history. Each opens with the question and root's hand-off.
 HISTORIANS_EXAMPLES = [
     Path(__file__).with_name(file).read_text(encoding="utf-8")
-    for file in ("history_example.yaml", "sub_agents_example.yaml")
+    for file in ("history_example.yaml", "sub_agents_example.yaml", "page_example.yaml")
 ]
 # Root's are those two turns of each, under the same name: every namespace inherits them,
 # but in historian its own take their place.

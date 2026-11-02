@@ -166,13 +166,13 @@ def test_a_fresh_library_has_root_and_leaves_the_model_and_its_key_to_the_chat(
     assert FAKE_KEY.encode() not in library.read_bytes()
 
 
-def test_a_fresh_library_grants_llm_at_root_history_to_the_historian_and_library_to_the_librarian(
+def test_a_fresh_library_grants_llm_at_root_history_and_page_to_the_historian_and_library_to_the_librarian(
     library, tmp_path
 ):
     config = run_config(library, tmp_path)
     build_namespace_registry(config).check(declared_tool_names(config))
     assert config.namespaces[ROOT].tools == ["llm"]
-    assert config.namespaces[HISTORIAN].tools == ["history"]
+    assert config.namespaces[HISTORIAN].tools == ["history", "page"]
     assert config.namespaces[HISTORIAN].spawn == []
     assert config.namespaces[HISTORIAN].system_suffix == HISTORIAN_SUFFIX
     assert config.namespaces[LIBRARIAN].tools == ["library"]
@@ -184,20 +184,26 @@ def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_mess
     registry = registry_of(library, tmp_path)
     shown = {name: registry.resolve(name).decompositions for name in registry.names}
     assert shown == {ROOT: HAND_OFFS, HISTORIAN: HISTORIANS, LIBRARIAN: HAND_OFFS}
+    assert [each.name for each in HAND_OFFS] == [
+        "explain an earlier answer",
+        "say what each sub-agent did",
+        "show it on a page",
+    ]
     for example in HAND_OFFS:
         assert example.messages[-1].content.endswith(f"<repl>\n{HAND_OFF}\n</repl>\n")
 
 
 @pytest.mark.parametrize("example", HISTORIANS, ids=lambda example: example.name)
 def test_the_historian_reads_history_then_answers_in_a_later_cell(example):
-    handing_off, *reading, answering = [
+    handing_off, reading, *working, answering = [
         turn.content for turn in example.messages if turn.role == "assistant"
     ]
     assert HAND_OFF in handing_off
     # After root's hand-off, the historian's task is the user's message.
     assert example.messages[HAND_OFF_TURNS] == example.messages[0]
-    assert reading
-    assert all("history." in each and "FinalAnswer" not in each for each in reading)
+    # It reads first; what it does with what it read (more reading, a page) answers nothing.
+    assert "history." in reading
+    assert all("FinalAnswer" not in each for each in [reading, *working])
     assert "FinalAnswer" in answering and "history." not in answering
 
 
@@ -519,7 +525,7 @@ def test_a_runs_config_holds_only_the_tools_a_namespace_grants_and_the_panel_lis
         connection.execute(UPSERT_TOOL, (*broken, "def build(:\n"))
         listed = [tool["name"] for tool in panel(connection)["tools"]]
     config = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)
-    assert list(config["tools"]) == ["waitlist", "history", "library"]
+    assert list(config["tools"]) == ["waitlist", "history", "library", "page"]
     assert not (tmp_path / "tools" / "unused.py").exists()
     assert listed == ["llm", "waitlist", "unused", "history", "library", "page"]
 
@@ -533,14 +539,10 @@ def test_an_app_tool_is_in_a_runs_config_only_while_a_namespace_grants_it(
         )
 
     open_library(library).close()
-    before = tools()
-    with closing(open_library(library)) as connection:
-        add_namespace(connection, "shown", "tools: [page]\n")
     granted = tools()
     with closing(open_library(library)) as connection:
-        delete_namespace(connection, "shown", 0)
-    assert (before, granted, tools()) == (
-        ["history", "library"],
+        change_namespace(connection, HISTORIAN, "tools: [history]\nspawn: []\n")
+    assert (granted, tools()) == (
         ["history", "library", "page"],
         ["history", "library"],
     )
@@ -865,8 +867,8 @@ def test_the_seeded_examples_and_the_engines_own_namespace_examples_pass(library
         for row in namespaces
         for each in row["decompositions"]
     ]
-    # the four seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
-    assert len(rows) == 11
+    # the six seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
+    assert len(rows) == 13
     assert rows == [(name, []) for name, _ in rows]
 
 

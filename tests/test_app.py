@@ -240,7 +240,7 @@ def test_the_api_returns_the_library_as_the_engine_resolves_it(client):
         ("llm", ["root"]),
         ("history", [HISTORIAN]),
         ("library", ["librarian"]),
-        ("page", []),
+        ("page", [HISTORIAN]),
     ]
     [catalog] = library["variables"]
     assert (catalog["name"], catalog["where"], len(catalog["rows"])) == (
@@ -250,7 +250,7 @@ def test_the_api_returns_the_library_as_the_engine_resolves_it(client):
     )
 
 
-def test_a_fresh_library_shows_llm_granted_at_root_history_in_the_historian_and_library_in_the_librarian(
+def test_a_fresh_library_shows_llm_granted_at_root_history_and_page_in_the_historian_and_library_in_the_librarian(
     library, home, tmp_path
 ):
     child = tmp_path / "child.yaml"
@@ -269,6 +269,7 @@ def test_a_fresh_library_shows_llm_granted_at_root_history_in_the_historian_and_
     assert field(by_name[HISTORIAN], "Tools") == [
         {"value": "llm", "source": "inherited from root", "here": False},
         {"value": "history", "source": "granted here", "here": True},
+        {"value": "page", "source": "granted here", "here": True},
     ]
     assert field(by_name[HISTORIAN], "System suffix") == [
         {"value": HISTORIAN_SUFFIX.strip(), "source": "set here", "here": True},
@@ -282,7 +283,7 @@ def test_a_fresh_library_shows_llm_granted_at_root_history_in_the_historian_and_
         ("llm", ["root"]),
         ("history", [HISTORIAN]),
         ("library", ["librarian"]),
-        ("page", []),
+        ("page", [HISTORIAN]),
     ]
     assert [(tool["defined_in"], tool["badge"]) for tool in tools] == [
         (None, "built-in"),
@@ -653,45 +654,57 @@ async def test_a_historian_that_copies_roots_hand_off_nests_no_historian(
     assert events[-1]["answer"] == "by printing 1"
 
 
+# Message 1 of the examples that read sub-agents, as the fake answers it.
+SUB_AGENTS_FIRST_MESSAGE = (
+    "Add the sum of the first 10 primes to the 10th Fibonacci number.",
+    {
+        "Add the sum": [
+            repl(
+                'primes = subagent("Sum the first 10 primes.")',
+                'fib = subagent("Find the 10th Fibonacci number.")',
+                "print(primes, fib)",
+                think="Give each part to its own sub-agent, then add the two.",
+            ),
+            repl("FinalAnswer(primes + fib)"),
+        ],
+        "Sum the first 10 primes.": [
+            repl(
+                "primes = [n for n in range(2, 30) if all(n % d for d in range(2, n))]",
+                "FinalAnswer(sum(primes))",
+                think="The primes below 30 are the first 10; sum them.",
+            )
+        ],
+        "Find the 10th Fibonacci number.": [
+            repl(
+                "a, b = 0, 1",
+                "for _ in range(10):",
+                "    a, b = b, a + b",
+                "FinalAnswer(a)",
+                think="Step the pair ten times.",
+            )
+        ],
+    },
+)
 # The first message each of the historian's examples explains, as the fake answers it.
 EXAMPLES_FIRST_MESSAGE = {
     "explain an earlier answer": (
         "What is 17 times 23?",
         {"What is 17 times 23?": [repl("17 * 23", "FinalAnswer(391)")]},
     ),
-    "say what each sub-agent did": (
-        "Add the sum of the first 10 primes to the 10th Fibonacci number.",
-        {
-            "Add the sum": [
-                repl(
-                    'primes = subagent("Sum the first 10 primes.")',
-                    'fib = subagent("Find the 10th Fibonacci number.")',
-                    "print(primes, fib)",
-                    think="Give each part to its own sub-agent, then add the two.",
-                ),
-                repl("FinalAnswer(primes + fib)"),
-            ],
-            "Sum the first 10 primes.": [
-                repl(
-                    "primes = [n for n in range(2, 30) if all(n % d for d in range(2, n))]",
-                    "FinalAnswer(sum(primes))",
-                    think="The primes below 30 are the first 10; sum them.",
-                )
-            ],
-            "Find the 10th Fibonacci number.": [
-                repl(
-                    "a, b = 0, 1",
-                    "for _ in range(10):",
-                    "    a, b = b, a + b",
-                    "FinalAnswer(a)",
-                    think="Step the pair ten times.",
-                )
-            ],
-        },
-    ),
+    "say what each sub-agent did": SUB_AGENTS_FIRST_MESSAGE,
+    "show it on a page": SUB_AGENTS_FIRST_MESSAGE,
 }
-# A cost depends on the prompt, which the examples are part of.
+# A cost depends on the prompt, which the examples are part of, and each page opened gets
+# an id of its own.
 COST = re.compile(r"'cost': [^,}]+")
+PAGE_LINK = re.compile(r"/pages/[A-Za-z0-9_-]+")
+
+
+def as_recorded(observation):
+    """*observation* as any run of an example prints it: its costs and page links masked."""
+    return PAGE_LINK.sub("/pages/…", COST.sub("'cost': …", observation))
+
+
 # How a hand-off reaches the historian: the question, root's hand-off, then the question
 # again as its task.
 HANDED_OVER_TURNS = HAND_OFF_TURNS + 1
@@ -707,17 +720,7 @@ async def test_the_historians_examples_show_what_history_really_prints(
     example = parsed(text)
     opening = example.messages[:HANDED_OVER_TURNS]
     rest = example.messages[HANDED_OVER_TURNS:]
-    question, handing_off, _ = opening
-    first, plan = EXAMPLES_FIRST_MESSAGE[example.name]
-    replies = [turn.content for turn in rest if turn.role == "assistant"]
-    plan = plan | {question.content: [handing_off.content]}
-    historian = scripted({question.content: replies})
-    with FakeOpenAI(historian_or(historian, scripted(plan))) as fake:
-        async with connect(library_on(fake)) as api:
-            chat = await new_chat(api)
-            await run_events(api, await send(api, chat, first))
-            asked = len(fake.calls)
-            events = await run_events(api, await send(api, chat, question.content))
+    fake, asked, events, _, _ = await ask_as_the_example(library_on, connect, text)
     # The historian's conversation ends as the example opens.
     historians_first = fake.calls[asked + 1].messages[-HANDED_OVER_TURNS:]
     assert [(each["role"], each["content"].strip()) for each in historians_first] == [
@@ -728,10 +731,78 @@ async def test_the_historians_examples_show_what_history_really_prints(
         f"<observation>\n{cell['output']}\n</observation>\n"
         for cell in kinds(events, "cell.end")[: len(shown)]
     ]
-    assert [COST.sub("'cost': …", each) for each in printed] == [
-        COST.sub("'cost': …", each) for each in shown
-    ]
+    assert list(map(as_recorded, printed)) == list(map(as_recorded, shown))
     assert events[-1]["outcome"] == "answered", events[-1]
+
+
+async def ask_as_the_example(library_on, connect, text):
+    """The historian's example *text* run through the app on the fake: its first message,
+    then its question, which root hands off and the historian answers with the example's
+    own cells. The fake, how many calls it had before the question, the question's
+    events, the chat's turns, and each page opened as the API serves it."""
+    example = parsed(text)
+    question, handing_off, _ = example.messages[:HANDED_OVER_TURNS]
+    rest = example.messages[HANDED_OVER_TURNS:]
+    first, plan = EXAMPLES_FIRST_MESSAGE[example.name]
+    replies = [turn.content for turn in rest if turn.role == "assistant"]
+    plan = plan | {question.content: [handing_off.content]}
+    historian = scripted({question.content: replies})
+    with FakeOpenAI(historian_or(historian, scripted(plan))) as fake:
+        async with connect(library_on(fake)) as api:
+            chat = await new_chat(api)
+            await run_events(api, await send(api, chat, first))
+            asked = len(fake.calls)
+            events = await run_events(api, await send(api, chat, question.content))
+            turns = (await api.get(f"/api/chats/{chat}")).json()["turns"]
+            pages = [
+                (await api.get(f"/api/pages/{each['page']}")).json()
+                for each in kinds(events, "page.open")
+            ]
+    return fake, asked, events, turns, pages
+
+
+@pytest.mark.anyio
+async def test_root_hands_show_me_on_a_page_to_the_historian_whose_page_its_turn_links(
+    library_on, connect
+):
+    [text] = [each for each in HISTORIANS_EXAMPLES if "page.new" in each]
+    _, _, events, turns, pages = await ask_as_the_example(library_on, connect, text)
+    _, historian = kinds(events, "agent.start")
+    [opened] = kinds(events, "page.open")
+    [page] = pages
+    assert historian["namespace"] == HISTORIAN
+    assert (opened["node"], opened["title"]) == (
+        historian["node"],
+        "How the answer to message 1 was reached",
+    )
+    assert kinds(turns[1]["events"], "page.open") == [opened]
+    assert events[-1]["answer"].startswith("I put it on a page, linked below")
+    first = turns[0]["events"]
+    first_root = kinds(first, "agent.start")[0]
+    delegating, adding = [
+        each["code"]
+        for each in kinds(first, "cell.end")
+        if each["node"] == first_root["node"]
+    ]
+    text_block, fanned_out, sub_agent, added = page["blocks"]
+    assert text_block["type"] == "text"
+    assert [
+        (each["turn"], each["node"], each["index"]) for each in (fanned_out, added)
+    ] == [
+        (1, None, 1),
+        (1, None, 2),
+    ]
+    assert (fanned_out["step"]["code"], added["step"]["code"]) == (delegating, adding)
+    assert [row["task"] for row in fanned_out["step"]["agents"]] == [
+        "Sum the first 10 primes.",
+        "Find the 10th Fibonacci number.",
+    ]
+    [drive] = sub_agent["agents"]
+    assert (sub_agent["node"], drive["task"], drive["result"]) == (
+        2,
+        "Sum the first 10 primes.",
+        "129",
+    )
 
 
 # What EXAMPLE and REWORDED lack as worked examples: their one reply is prose.
