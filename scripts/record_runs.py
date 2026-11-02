@@ -38,7 +38,13 @@ from fake_model import (
     write,
 )
 
-from deep_reasoning.library import ROOT, engine_config, open_library
+from deep_reasoning.library import (
+    ROOT,
+    add_namespace,
+    engine_config,
+    has_namespace,
+    open_library,
+)
 from deep_reasoning.runs import Runs, read_events
 
 OUT = TESTS / "runs"
@@ -167,6 +173,30 @@ SCENARIOS = {
             ],
         },
     },
+    "pages": {
+        "prompt": "Show your work.",
+        "namespace": "shown",
+        "namespaces": {"shown": "tools: [page]\n"},
+        "plan": {
+            "Show your work.": [
+                repl(
+                    "p = page.new('How I counted')",
+                    "p.text('By **hand**.')",
+                    "print(p.open())",
+                ),
+                repl("print(subagent('Table the seats.', namespace='shown'))"),
+                repl("FinalAnswer('shown')"),
+            ],
+            "Table the seats.": [
+                repl(
+                    "p = page.new('Seats')",
+                    "p.table([{'course': 'CS101', 'seats': 3}])",
+                    "print(p.open())",
+                ),
+                repl("FinalAnswer('tabled')"),
+            ],
+        },
+    },
     "tools": {
         "prompt": "Make a word counter.",
         "namespace": "librarian",
@@ -221,6 +251,10 @@ async def read_to_the_end(runs, run, stop_at):
 async def record(home, name, scenario):
     library = home / LIBRARY
     namespace = scenario.get("namespace", ROOT)
+    with closing(open_library(library)) as connection:
+        for added, text in scenario.get("namespaces", {}).items():
+            if not has_namespace(connection, added):
+                add_namespace(connection, added, text)
     with FakeOpenAI(responder(scenario)) as fake:
 
         def config_for(folder):

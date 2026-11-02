@@ -39,11 +39,12 @@ from pydantic import ValidationError
 
 log = structlog.get_logger()
 
-SCHEMA_VERSION = 3
-# Version 1 held the Library alone, and version 2 added the chats and the app's settings;
-# a file of either opens and gains the tables of the versions after it.
+SCHEMA_VERSION = 4
+# Version 1 held the Library alone, version 2 added the chats and the app's settings, and
+# version 3 the runs; a file of any opens and gains the tables of the versions after it.
 LIBRARY_ONLY = 1
 BEFORE_EVENTS = 2
+BEFORE_PAGES = 3
 LIBRARY_SCHEMA = (
     "CREATE TABLE settings (key TEXT PRIMARY KEY, yaml TEXT NOT NULL)",
     "CREATE TABLE namespaces (name TEXT PRIMARY KEY, yaml TEXT NOT NULL)",
@@ -74,11 +75,22 @@ RUN_SCHEMA = (
         " PRIMARY KEY (run, seq))"
     ),
 )
+PAGE_TABLES = {"pages"}
+# What the page tool saved: each page's chat, the run and agent (node) that made it, and
+# its blocks as JSON. node has no type, so it keeps the record's int or text.
+PAGE_SCHEMA = (
+    (
+        "CREATE TABLE pages (id TEXT PRIMARY KEY, chat TEXT NOT NULL, run TEXT NOT NULL,"
+        " node, title TEXT NOT NULL, blocks TEXT NOT NULL, created REAL NOT NULL)"
+    ),
+    "CREATE INDEX pages_by_chat ON pages (chat)",
+)
 # The tables each version added, and how.
 ADDED_IN = {
     LIBRARY_ONLY: (LIBRARY_TABLES, LIBRARY_SCHEMA),
     BEFORE_EVENTS: (APP_TABLES, APP_SCHEMA),
-    SCHEMA_VERSION: (RUN_TABLES, RUN_SCHEMA),
+    BEFORE_PAGES: (RUN_TABLES, RUN_SCHEMA),
+    SCHEMA_VERSION: (PAGE_TABLES, PAGE_SCHEMA),
 }
 # Upserts keep a row's place, so decompositions stay in the order they were added.
 UPSERT_SETTING = "INSERT INTO settings VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET yaml = excluded.yaml"
@@ -197,11 +209,12 @@ many sub-agents it ran).
   history.agents(turn): each sub-agent drive of message number `turn`: node, parent, \
 drive, task, namespace, status, result, cost (its own sub-agents' included) and steps \
 (how many).
-  history.steps(turn, node=None): the thoughts, cells and Library changes, in order, of \
-message `turn`'s top agent, or of the sub-agent whose node is `node`: {kind: "think", \
-text}, {kind: "cell", code, output, status, agents: the nodes of the sub-agents it \
-started} or {kind: "change", what ("decomposition", "namespace" or "tool"), namespace, \
-name, before (None when added), after}, each with its drive."""
+  history.steps(turn, node=None): the thoughts, cells, Library changes and pages, in \
+order, of message `turn`'s top agent, or of the sub-agent whose node is `node`: {kind: \
+"think", text}, {kind: "cell", code, output, status, agents: the nodes of the sub-agents \
+it started}, {kind: "change", what ("decomposition", "namespace" or "tool"), namespace, \
+name, before (None when added), after} or {kind: "page", page, title} (a page opened for \
+the user), each with its drive."""
 LIBRARY_DESCRIPTION = """\
 The `library` tool reads and writes the app's Library: its namespaces, each with its own \
 fields, the decompositions (worked examples) each one's agents are shown, and the custom \
@@ -213,7 +226,7 @@ research.papers): their tools, vars and system_suffix texts add up, and a decomp
 of the same name lower down takes the place of its parent's there; show() lists only \
 each namespace's own. Locked, so you may read them but not write them: root; a \
 namespace's repl and reasoner; which namespaces grant the app's own tools (library, \
-history); granting a tool that runs Claude Code (its factory is claude_code), which \
+history, page); granting a tool that runs Claude Code (its factory is claude_code), which \
 bills the user's subscription; a new namespace under one that grants library or runs \
 Claude Code (as its reasoner or a tool); a tool root grants, or one the engine builds \
 from its block alone (no Python of its own); a tool named as a built-in (llm, rag, kg, \
@@ -255,12 +268,34 @@ stops every chat until the user takes it out of the namespaces' tools in the Lib
 panel.
 Each write returns what it did, as {done, what, name} (and namespace, but for a \
 tool); a refusal raises ValueError saying why."""
+PAGE_DESCRIPTION = """\
+When the user asks to be shown something (how an earlier answer was worked out, what a \
+sub-agent did, what you found), or an explanation reads better with the real steps \
+beside it, make a page with `page`: the app opens it in a tab of its own, linked from \
+the chat. You pick what goes on it and the app draws it, copying each step and \
+sub-agent from the record, so write no HTML. Its methods take plain data (text, numbers, \
+True, False, None, and lists and dicts of them), and the REPL shows only what you print.
+  p = page.new(title): a page in progress, titled `title` (up to 200 characters); \
+nothing is saved until p.open().
+  p.text(markdown): a paragraph or more of Markdown.
+  p.step(turn, node=None, index=i, note=None): history.steps(turn, node)[i], drawn as \
+the chat draws it, with an optional Markdown note.
+  p.agent(turn, node, note=None): the sub-agent whose node history.agents(turn) lists, \
+drawn as a tree with its steps and its own sub-agents', with an optional note.
+  p.table(rows, columns=None): rows as a table: a list of dicts (the columns are their \
+keys, unless given) or of lists, each value text, a number, True, False or None.
+  p.open(): saves the page and returns its link, which the chat shows under your answer.
+step and agent take a turn, node and index as history shows them, so they reach this \
+chat's earlier messages only. A page holds up to 200 blocks, each text or note up to \
+100,000 characters and each table up to 1,000 rows of 50 columns, and up to 2,000,000 \
+characters in all. A refusal raises ValueError saying why."""
 # Added in code, never stored: a shared file mustn't choose the code they run. Each one's
 # factory in app_tools.py, and what the agent is told it does.
 APP_TOOLS_FILE = Path(__file__).with_name("app_tools.py")
 APP_TOOLS = {
     "history": ("build_history", HISTORY_DESCRIPTION),
     LIBRARY_TOOL: ("build_library", LIBRARY_DESCRIPTION),
+    "page": ("build_page", PAGE_DESCRIPTION),
 }
 APP_TOOLS_MODULE = f"{__package__}.{APP_TOOLS_FILE.stem}"
 APP = "Deep Reasoning"
@@ -521,11 +556,11 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     """The Library as one plain dict that V2Config accepts, for run *run* of *chat*, which
     enters *namespace*; the run's model and client are the chat's to put in.
 
-    Only the Library's tools some namespace grants are in it: a run builds each tool it
-    declares, whichever namespace it enters, so a tool any namespace grants runs its module
-    and factory at the start of every run of every chat, one no namespace grants never
-    runs, and one that fails to build stops every run until no namespace grants it. Each
-    one's source is written into
+    Only the tools some namespace grants are in it, the app's own included: a run builds
+    each tool it declares, whichever namespace it enters, so a tool any namespace grants
+    runs its module and factory at the start of every run of every chat, one no namespace
+    grants never runs, and one that fails to build stops every run until no namespace
+    grants it. Each Library tool's source is written into
     *tools_dir*, and its factory_from points at that file. Each of the app's tools is told
     the app file, the chat, the run, *tools_dir*, the namespace it enters, and *key_names*,
     the variables of the worker's environment that hold keys.
@@ -537,9 +572,7 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
         tools = library_tools(connection)
     grants = granted(config["namespaces"])
     config["tools"] = {
-        name: block
-        for name, block in config["tools"].items()
-        if name in grants or name in APP_TOOLS
+        name: block for name, block in config["tools"].items() if name in grants
     }
     for name, _, source in tools:
         if source is None or name not in config["tools"]:
@@ -555,7 +588,7 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
         "namespace": namespace,
         "key_names": list(key_names),
     }
-    for name in APP_TOOLS:
+    for name in APP_TOOLS.keys() & config["tools"]:
         config["tools"][name] |= told
     return config | {"entry_namespace": namespace}
 

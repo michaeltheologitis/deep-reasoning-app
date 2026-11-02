@@ -1,4 +1,4 @@
-// Folds a run's events into the turn the chat draws: the root's steps, each sub-agent as a row under the cell that started it, Library changes, and the totals;
+// Folds a run's events into the turn the chat draws: the root's steps, each sub-agent as a row under the cell that started it, Library changes, pages, and the totals;
 // and words a Library change.
 
 const FIELD_CHARS = 60;
@@ -17,7 +17,7 @@ export function changeText({ what, namespace, name, before }) {
 
 export function newFold() {
   return {
-    turn: { prompt: "", steps: [], changes: [], answer: null, outcome: null, detail: null, cost: null, unpriced: false, seconds: null, started: null, model: null, namespace: null },
+    turn: { prompt: "", steps: [], changes: [], pages: [], answer: null, outcome: null, detail: null, cost: null, unpriced: false, seconds: null, started: null, model: null, namespace: null },
     seq: 0,
     // node → its holder (the turn for the root, else its row) and its parent's node
     nodes: new Map(),
@@ -48,6 +48,7 @@ const FOLDS = {
   "cell.start": startCell,
   "cell.end": endCell,
   "library.change": addChange,
+  "page.open": addPage,
   usage: addUsage,
   "agent.end": endAgent,
   "turn.end": endTurn,
@@ -92,6 +93,12 @@ function startCell(fold, event) {
 function addChange(fold, event) {
   const { what, namespace, name, before, after } = event;
   if (addStep(fold, event.node, { kind: "change", what, namespace, name, before, after })) fold.turn.changes.push(fold.latest);
+}
+
+// A page the page tool opened: a step of the agent that opened it, and listed on the turn for the line under the answer.
+function addPage(fold, event) {
+  const step = { kind: "page", page: event.page, title: event.title };
+  if (addStep(fold, event.node, step)) fold.turn.pages.push(step);
 }
 
 function endCell(fold, event) {

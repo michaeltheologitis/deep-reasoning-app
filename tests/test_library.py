@@ -27,6 +27,7 @@ from structlog.testing import capture_logs
 from deep_reasoning.library import (
     APP_TOOLS_FILE,
     BEFORE_EVENTS,
+    BEFORE_PAGES,
     HAND_OFF_TURNS,
     HISTORIAN,
     HISTORIAN_SUFFIX,
@@ -35,6 +36,7 @@ from deep_reasoning.library import (
     LIBRARIAN,
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
+    PAGE_DESCRIPTION,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
@@ -276,7 +278,7 @@ def test_a_fresh_library_carries_a_generic_repl_prompt(library, tmp_path):
     assert "FinalAnswer" in prompt
 
 
-@pytest.mark.parametrize("version", [0, LIBRARY_ONLY, BEFORE_EVENTS])
+@pytest.mark.parametrize("version", [0, LIBRARY_ONLY, BEFORE_EVENTS, BEFORE_PAGES])
 def test_a_file_that_is_not_a_library_is_refused_and_left_alone(tmp_path, version):
     other = tmp_path / "chats.sqlite"
     with closing(sqlite3.connect(other)) as connection:
@@ -288,7 +290,7 @@ def test_a_file_that_is_not_a_library_is_refused_and_left_alone(tmp_path, versio
     assert other.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [LIBRARY_ONLY, BEFORE_EVENTS])
+@pytest.mark.parametrize("version", [LIBRARY_ONLY, BEFORE_EVENTS, BEFORE_PAGES])
 def test_an_older_file_that_already_holds_a_later_versions_tables_is_refused_and_left_alone(
     library, version
 ):
@@ -519,7 +521,29 @@ def test_a_runs_config_holds_only_the_tools_a_namespace_grants_and_the_panel_lis
     config = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)
     assert list(config["tools"]) == ["waitlist", "history", "library"]
     assert not (tmp_path / "tools" / "unused.py").exists()
-    assert listed == ["llm", "waitlist", "unused", "history", "library"]
+    assert listed == ["llm", "waitlist", "unused", "history", "library", "page"]
+
+
+def test_an_app_tool_is_in_a_runs_config_only_while_a_namespace_grants_it(
+    library, tmp_path
+):
+    def tools():
+        return list(
+            engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)["tools"]
+        )
+
+    open_library(library).close()
+    before = tools()
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "shown", "tools: [page]\n")
+    granted = tools()
+    with closing(open_library(library)) as connection:
+        delete_namespace(connection, "shown", 0)
+    assert (before, granted, tools()) == (
+        ["history", "library"],
+        ["history", "library", "page"],
+        ["history", "library"],
+    )
 
 
 def test_a_tool_stored_over_another_gives_back_the_row_it_replaced(library):
@@ -542,12 +566,19 @@ def test_the_panel_lists_a_tool_whose_source_is_too_deep_to_parse(library):
 
 
 @pytest.mark.parametrize(
-    ("tool", "factory"), [("history", "build_history"), ("library", "build_library")]
+    ("tool", "factory"),
+    [
+        ("history", "build_history"),
+        ("library", "build_library"),
+        ("page", "build_page"),
+    ],
 )
 def test_a_runs_config_tells_each_app_tool_the_app_file_the_chat_and_the_run(
     library, tmp_path, monkeypatch, tool, factory
 ):
     monkeypatch.chdir(library.parent)
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "granting", f"tools: [{tool}]\n")
     config = engine_config(Path(library.name), ROOT, tmp_path / "tools", CHAT, RUN)
     assert config["tools"][tool] == {
         "factory_from": str(APP_TOOLS_FILE),
@@ -563,7 +594,7 @@ def test_a_runs_config_tells_each_app_tool_the_app_file_the_chat_and_the_run(
         assert connection.execute("SELECT count(*) FROM tools").fetchone() == (0,)
 
 
-@pytest.mark.parametrize("tool", ["history", "library"])
+@pytest.mark.parametrize("tool", ["history", "library", "page"])
 def test_an_import_may_not_give_a_tool_an_app_tools_name(library, tmp_path, tool):
     config = tmp_path / "tool.yaml"
     config.write_text(f"tools:\n  {tool}: {{factory: llm}}\n")
@@ -575,12 +606,17 @@ def test_an_import_may_not_give_a_tool_an_app_tools_name(library, tmp_path, tool
 
 @pytest.mark.parametrize(
     ("tool", "description"),
-    [("history", HISTORY_DESCRIPTION), ("library", LIBRARY_DESCRIPTION)],
+    [
+        ("history", HISTORY_DESCRIPTION),
+        ("library", LIBRARY_DESCRIPTION),
+        ("page", PAGE_DESCRIPTION),
+    ],
 )
 def test_a_shared_files_tool_named_as_an_app_tool_is_shadowed_by_the_apps(
     library, tmp_path, tool, description
 ):
     with closing(open_library(library)) as connection:
+        add_namespace(connection, "granting", f"tools: [{tool}]\n")
         connection.execute(
             "INSERT INTO tools VALUES (?, ?, ?)",
             (tool, f"factory: build\nfactory_from: {tool}.py\n", "def build(): 1\n"),

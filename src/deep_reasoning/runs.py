@@ -42,15 +42,18 @@ RUNS = "runs"
 SPEC = "spec.yaml"
 # What a library.change event says of a change the library tool made to the Library.
 CHANGE_FIELDS = ("what", "namespace", "name", "before", "after")
+# What a page.open event says of a page the page tool saved.
+PAGE_FIELDS = ("page", "title")
 ADD_RUN = "INSERT INTO runs VALUES (?, ?)"
 ADD_EVENT = "INSERT INTO events VALUES (?, ?, ?)"
 FORWARD = "SELECT seq, data FROM events WHERE run = ? ORDER BY seq"
 BACKWARD = "SELECT seq, data FROM events WHERE run = ? ORDER BY seq DESC"
-# Runs of no chat in the file; NOT IN would match none were a chat's id NULL.
+# Runs and pages of no chat in the file; NOT IN would match none were a chat's id NULL.
 ORPHANS = (
     "SELECT id FROM runs"
     " WHERE NOT EXISTS (SELECT 1 FROM chats WHERE chats.id = runs.chat)"
 )
+ORPHAN_PAGES = "NOT EXISTS (SELECT 1 FROM chats WHERE chats.id = pages.chat)"
 # libyaml's where PyYAML has it: the pure-Python one takes ~0.6 s a MiB, on the loop.
 YAML_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
 RUN_ID = r"^\d{8}-\d{6}-\d{6}$"
@@ -301,7 +304,8 @@ def chat_turns(
 
 
 def delete_runs(connection: sqlite3.Connection, chat: str) -> list[str]:
-    """Delete the chat's runs and their events from the app file; their ids."""
+    """Delete the chat's runs, their events and the pages they made from the app file;
+    the runs' ids."""
     with writing(connection):
         runs = chat_runs(connection, chat)
         connection.execute(
@@ -309,16 +313,19 @@ def delete_runs(connection: sqlite3.Connection, chat: str) -> list[str]:
             (chat,),
         )
         connection.execute("DELETE FROM runs WHERE chat = ?", (chat,))
+        connection.execute("DELETE FROM pages WHERE chat = ?", (chat,))
     return runs
 
 
 def delete_orphans(connection: sqlite3.Connection) -> None:
-    """Delete the runs, and their events, of chats no longer in the file, as when the app
-    stopped between deleting a chat and its runs; a file it can't write keeps them."""
+    """Delete the runs, their events and pages, of chats no longer in the file, as when
+    the app stopped between deleting a chat and its runs; a file it can't write keeps
+    them."""
     try:
         with writing(connection):
             connection.execute(f"DELETE FROM events WHERE run IN ({ORPHANS})")
             connection.execute(f"DELETE FROM runs WHERE id IN ({ORPHANS})")
+            connection.execute(f"DELETE FROM pages WHERE {ORPHAN_PAGES}")
     except sqlite3.Error as error:
         log.warning("runs.orphans_kept", error=str(error))
 

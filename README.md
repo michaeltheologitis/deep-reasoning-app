@@ -35,6 +35,11 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   and needs nothing. For the historian, run `reset`, which deletes the Library and every chat, or add `historian` in
   the panel (`tools: [history]`, `spawn: []`, and the examples a new Library has) and give root the two hand-off
   examples in place of its own `explain an earlier answer`.
+- The agent can show you something on a page of its own, with the app's `page` tool: Markdown text, tables, and steps
+  or sub-agents of the chat's earlier messages, copied from their record and drawn as the chat draws them. A line
+  under the answer, and a step in its tree, open the page in a new tab. Pages are kept in the Library file and
+  deleted with their chat. No namespace grants `page` in a new Library: add it to a namespace's tools in the
+  decompositions panel; the agent finds the steps to show with `history`, which a new Library grants in `historian`.
 - Each chat has its own model, namespace and working folder, picked under the message box; a change applies from
   the next message.
 - Light and dark themes; works at phone width.
@@ -60,7 +65,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 
 **The Library**
 - One SQLite file of namespaces, decompositions, custom tools and run settings, and your chats, with their past
-  messages and runs, and settings: `~/.deep-reasoning/library.sqlite`, or another with `--library PATH`. Sharing the
+  messages, runs and pages, and settings: `~/.deep-reasoning/library.sqlite`, or another with `--library PATH`. Sharing the
   file shares all of it but your keys, which stay in `.env`, and the runs' working files and scratch folders, which
   each file keeps in a folder of its own in `~/.deep-reasoning`.
 - Copy the file while the app is stopped: while a run is going, the newest changes may still be in
@@ -78,7 +83,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   `library` tool; a chat in a namespace without it can't, even through a sub-agent. A tool it writes is built once
   to check it, only in a chat whose namespace runs the local REPL, and can't take a built-in's or the app's name or
   replace a tool root grants or one built into the engine. The tool never
-  changes root, a namespace's REPL or backbone (`repl`, `reasoner`), which namespaces grant `library` or `history`,
+  changes root, a namespace's REPL or backbone (`repl`, `reasoner`), which namespaces grant `library`, `history` or `page`,
   the system prompt or the run settings; never grants a tool that runs Claude Code, which would bill your
   subscription; adds no namespace under one that grants `library` or runs Claude Code; never deletes, and never
   writes a key. A change applies from your next message. These limits guard the tool, not the file: the agent's Python isn't sandboxed, and could open the file
@@ -92,7 +97,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   (`--yes` skips the question). Your keys in `.env` and the folders you picked stay. Stop the app first. It
   deletes only a Library file: a folder, a symlink or any other file is refused and left as it is.
 - The Tools tab lists the app's own tools beside the built-in ones, and every tool in the Library; a tool of yours can't
-  be named `history` or `library`.
+  be named `history`, `library` or `page`.
 - Every run builds every tool some namespace grants, whatever namespace its chat is in (only which agents can call a
   tool is per namespace): once any namespace grants a tool, its code runs at the start of every message in every
   chat, and a granted tool that stops building stops every chat until you take it out of the namespaces' tools in

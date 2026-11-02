@@ -130,6 +130,13 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .yaml-label { margin: 3px 0 -3px 4ch; }
 .code.yaml { max-height: 24em; overflow-y: auto; }
 .changes { display: flex; flex-direction: column; gap: 3px; }
+/* a page the agent opened: a step in the tree and a line under the answer, each a link to its tab */
+.page-step .line { color: inherit; text-decoration: none; }
+.page-step .glyph, .page-line { color: var(--accent); }
+.page-step .head b { margin-right: 1ch; }
+.pages { display: flex; flex-direction: column; gap: 3px; }
+.page-line { text-decoration: none; overflow-wrap: anywhere; }
+.page-line:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 .node { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 1ch; }
 .node .line { flex: 1 1 16ch; min-width: 0; }
@@ -211,6 +218,23 @@ textarea::placeholder { color: var(--dim); }
 .folder-browser { display: flex; flex-direction: column; gap: 1px; max-height: min(16rem, 40vh); overflow-y: auto; padding: 4px 0; border-block: 1px solid var(--faint); }
 .folder-browser .row { width: 100%; margin: 0; }
 .folder-here { color: var(--dim); padding: 0 4px 2px; overflow-wrap: anywhere; }
+
+/* a page's own tab: its title, then its blocks down one column */
+.page {
+  box-sizing: border-box; max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px;
+  padding-block: 20px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.page-head { display: flex; flex-direction: column; gap: 2px; padding-bottom: 12px; border-bottom: 1px solid var(--faint); }
+.page-brand { color: var(--accent); }
+/* above the Markdown headings its text may hold */
+.page-title { margin: 0; font: inherit; font-size: 1.6em; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.page-blocks { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.ref { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-left: 1.5ch; border-left: 2px solid var(--faint); }
+.ref-from { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.table-scroll { overflow-x: auto; }
+.page-table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.page-table th, .page-table td { text-align: left; vertical-align: top; padding: 3px 2ch 3px 0; border-bottom: 1px solid var(--faint); }
+.page-table th { color: var(--dim); font-weight: 600; }
 
 @keyframes blink { 50% { opacity: 0.25; } }
 @media (prefers-reduced-motion: reduce) { .glyph.running { animation: none; } }

@@ -20,7 +20,9 @@ from deep_reasoning.chats import (
     title_new_chat,
 )
 from deep_reasoning.library import (
+    ADDED_IN,
     BEFORE_EVENTS,
+    BEFORE_PAGES,
     HISTORIAN,
     LIBRARIAN,
     LIBRARY_ONLY,
@@ -30,6 +32,7 @@ from deep_reasoning.library import (
     schema_version,
     stored_config,
 )
+from deep_reasoning.pages import add_page, read_page
 from deep_reasoning.runs import chat_runs, read_events, save_event
 from deep_reasoning.settings import (
     LAST_MODEL,
@@ -45,9 +48,14 @@ ADVISORS_NAMESPACES = {"root", "router", "course_advisor", "health_advisor"}
 
 def as_made_by(version, library):
     """The file as *version* made it, without the tables of the versions after it."""
-    later = {LIBRARY_ONLY: ["events", "runs", "chats", "app_settings"]}
+    later = [
+        table
+        for added, (tables, _) in ADDED_IN.items()
+        if added > version
+        for table in tables
+    ]
     with closing(open_library(library)) as connection:
-        for table in later.get(version, ["events", "runs"]):
+        for table in later:
             connection.execute(f"DROP TABLE {table}")
         connection.execute(f"PRAGMA user_version = {version}")
 
@@ -98,6 +106,31 @@ def test_a_version_2_file_opens_with_its_chats_and_settings_kept_and_gains_runs(
     assert read_settings(imported) == settings
     assert settings[LAST_MODEL] == {"provider": "OpenAI", "name": "gpt-6-luna"}
     assert (runs, events) == ([run], [started])
+
+
+def test_a_version_3_file_opens_with_all_it_holds_kept_and_gains_pages(
+    imported, tmp_path
+):
+    chat = create_chat(imported, str(tmp_path))["id"]
+    remember_pick(imported, "OpenAI", "gpt-6-luna")
+    run = "20261025-120000-000000"
+    started = {"seq": 1, "t": 100.0, "kind": "turn.start", "chat": chat}
+    with closing(open_library(imported)) as connection:
+        save_event(connection, run, started)
+        library = stored_config(connection)
+    chats, settings = list_chats(imported), read_settings(imported)
+    as_made_by(BEFORE_PAGES, imported)
+    blocks = [{"type": "text", "text": "Kept."}]
+    with closing(open_library(imported)) as connection:
+        version = schema_version(connection)
+        kept = (stored_config(connection), chat_runs(connection, chat))
+        events = read_events(connection, run)
+        page = read_page(connection, add_page(connection, chat, run, 1, "New", blocks))
+    assert version == SCHEMA_VERSION
+    assert (list_chats(imported), read_settings(imported)) == (chats, settings)
+    assert kept == (library, [run])
+    assert events == [started]
+    assert page["blocks"] == blocks
 
 
 def test_new_chats_are_titled_new_chat_and_listed_newest_first(library):

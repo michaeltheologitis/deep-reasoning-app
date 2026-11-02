@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from deep_reasoning import cli
 from deep_reasoning.chats import create_chat
 from deep_reasoning.folders import data_folder
-from deep_reasoning.library import LIBRARY_ONLY, open_library
+from deep_reasoning.library import ADDED_IN, open_library
 
 WAIT_SECONDS = 0.5
 KEY_IN_A_FRAME = "sk-held-in-a-frame"
@@ -214,9 +214,14 @@ def app_file(app_home, library):
 
 def as_made_by(version, library):
     """A Library file as *version* made it, without the tables of the versions after it."""
-    later = {LIBRARY_ONLY: ["events", "runs", "chats", "app_settings"]}
+    later = [
+        table
+        for added, (tables, _) in ADDED_IN.items()
+        if added > version
+        for table in tables
+    ]
     with closing(open_library(library)) as connection:
-        for table in later.get(version, ["events", "runs"]):
+        for table in later:
             connection.execute(f"DROP TABLE {table}")
         connection.execute(f"PRAGMA user_version = {version}")
 
@@ -397,7 +402,7 @@ def test_reset_leaves_side_files_with_no_library_beside_them(tmp_path, capsys):
     assert all(side.read_text() == "mine\n" for side in sides)
 
 
-@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("version", [1, 2, 3])
 def test_a_declined_reset_leaves_an_older_library_as_it_was(
     app_home, monkeypatch, version
 ):
