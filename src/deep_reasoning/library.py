@@ -106,7 +106,8 @@ why an answer was reached, what a sub-agent did) from what was recorded. Read it
 history, drilling into the sub-agents involved, and quote their real code and outputs. \
 Never redo the work or guess; answer in a later cell, from what you printed.
 """
-FRESH_HISTORIAN = {"tools": ["history"], "system_suffix": HISTORIAN_SUFFIX}
+# A leaf: copying root's hand-off, the last cell of its own conversation, can't nest one.
+FRESH_HISTORIAN = {"tools": ["history"], "spawn": [], "system_suffix": HISTORIAN_SUFFIX}
 FRESH_NAMESPACES = {
     ROOT: FRESH_ROOT,
     HISTORIAN: FRESH_HISTORIAN,
@@ -114,11 +115,10 @@ FRESH_NAMESPACES = {
 }
 # The historian's worked examples: without them, models answer in the cell that prints
 # history. Each opens with the question and root's hand-off.
-HISTORY_EXAMPLE, SUB_AGENTS_EXAMPLE = (
-    Path(__file__).with_name(f"{name}_example.yaml").read_text(encoding="utf-8")
-    for name in ("history", "sub_agents")
-)
-HISTORIANS_EXAMPLES = [HISTORY_EXAMPLE, SUB_AGENTS_EXAMPLE]
+HISTORIANS_EXAMPLES = [
+    Path(__file__).with_name(file).read_text(encoding="utf-8")
+    for file in ("history_example.yaml", "sub_agents_example.yaml")
+]
 # Root's are those two turns of each, under the same name: every namespace inherits them,
 # but in historian its own take their place.
 HAND_OFF_TURNS = 2
@@ -163,9 +163,8 @@ ROLES = "user, assistant or system"
 THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
 REPL = "<repl>"
 OBSERVATION = re.compile(r"<observation>.*?</observation>", re.DOTALL)
-# ASCII, as web/turns.js reads it; a whole-line comment calls nothing. switch_namespace
-# answers too: the engine defines it as FinalAnswer(subagent(...)).
-ANSWERING = re.compile(r"\b(FinalAnswer|switch_namespace)[ \t]*\(", re.ASCII)
+# ASCII, as web/turns.js reads it; a whole-line comment calls nothing.
+FINAL_ANSWER = re.compile(r"\bFinalAnswer[ \t]*\(", re.ASCII)
 COMMENT_LINE = re.compile(r"[ \t]*#")
 BLANK_NAME = 'The name should be text, like "name: count the open tickets".'
 BETWEEN = {
@@ -738,10 +737,12 @@ def running_code(content):
 
 
 def answers(content):
-    """Whether the code the engine runs from *content* calls FinalAnswer or
-    switch_namespace, outside a whole-line comment."""
+    """Whether the code the engine runs from *content* calls FinalAnswer, outside a
+    whole-line comment."""
     lines = running_code(content).split("\n")
-    return any(ANSWERING.search(line) for line in lines if not COMMENT_LINE.match(line))
+    return any(
+        FINAL_ANSWER.search(line) for line in lines if not COMMENT_LINE.match(line)
+    )
 
 
 def reply_problems(label, content):

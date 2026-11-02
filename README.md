@@ -28,9 +28,13 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   worked out or what its sub-agents did. A new Library has a `historian` namespace, which reads the chat's earlier
   runs (each message's sub-agents, thoughts and cells) with the app's own `history` tool, and root hands such
   questions to a sub-agent there, with the conversation so far: root's worked examples, which every namespace
-  inherits, show the hand-off, and the historian's show reading `history` before answering. In an older Library,
-  add a `historian` namespace with `tools: [history]` in the panel, with examples like a new Library's, or run
-  `reset`.
+  inherits, show the hand-off, and the historian's show reading `history` before answering. A namespace with a
+  `spawn` list hands off only if it lists `historian`. If you delete `historian` or take `history` out of it, delete
+  root's two hand-off examples in the panel too: they send questions where nothing can read the history.
+- An older Library keeps what it has: one made since `history` came reads it at root, with a worked example there,
+  and needs nothing. For the historian, run `reset`, which deletes the Library and every chat, or add `historian` in
+  the panel (`tools: [history]`, `spawn: []`, and the examples a new Library has) and give root the two hand-off
+  examples in place of its own `explain an earlier answer`.
 - Each chat has its own model, namespace and working folder, picked under the message box; a change applies from
   the next message.
 - Light and dark themes; works at phone width.
@@ -65,8 +69,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   secrets a cell reads from your shell.
 - The **decompositions** panel (top right) adds decompositions as YAML, and adds, edits and deletes namespaces.
   It marks each decomposition ✓ or ✗ by whether its turns make a worked example like `deep_reasoner`'s own (the
-  task; each assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last, or
-  `switch_namespace`, which hands the chat to another namespace's agent and answers with its answer),
+  task; each assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last),
   and opening a ✗ says why. The add form warns as you type but still adds it, so a draft can be saved. The code
   isn't run, so an observation isn't checked against it.
 - In a chat in the `librarian` namespace, picked under the message box, the agent can add or edit a decomposition in

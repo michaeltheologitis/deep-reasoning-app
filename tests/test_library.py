@@ -27,6 +27,7 @@ from structlog.testing import capture_logs
 from deep_reasoning.library import (
     APP_TOOLS_FILE,
     BEFORE_EVENTS,
+    HAND_OFF_TURNS,
     HISTORIAN,
     HISTORIAN_SUFFIX,
     HISTORIANS_EXAMPLES,
@@ -170,6 +171,7 @@ def test_a_fresh_library_grants_llm_at_root_history_to_the_historian_and_library
     build_namespace_registry(config).check(declared_tool_names(config))
     assert config.namespaces[ROOT].tools == ["llm"]
     assert config.namespaces[HISTORIAN].tools == ["history"]
+    assert config.namespaces[HISTORIAN].spawn == []
     assert config.namespaces[HISTORIAN].system_suffix == HISTORIAN_SUFFIX
     assert config.namespaces[LIBRARIAN].tools == ["library"]
 
@@ -190,8 +192,8 @@ def test_the_historian_reads_history_then_answers_in_a_later_cell(example):
         turn.content for turn in example.messages if turn.role == "assistant"
     ]
     assert HAND_OFF in handing_off
-    # The historian's task is the user's message, after root's hand-off.
-    assert example.messages[2] == example.messages[0]
+    # After root's hand-off, the historian's task is the user's message.
+    assert example.messages[HAND_OFF_TURNS] == example.messages[0]
     assert reading
     assert all("history." in each and "FinalAnswer" not in each for each in reading)
     assert "FinalAnswer" in answering and "history." not in answering

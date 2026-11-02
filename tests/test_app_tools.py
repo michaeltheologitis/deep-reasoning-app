@@ -22,7 +22,6 @@ from deep_reasoning.app_tools import (
 from deep_reasoning.library import (
     HISTORIAN,
     HISTORIANS_EXAMPLES,
-    HISTORY_EXAMPLE,
     UPSERT_TOOL,
     LibraryError,
     add_namespace,
@@ -389,7 +388,7 @@ def test_show_gives_every_namespace_with_its_decompositions_as_plain_data(fresh)
 
 @pytest.mark.parametrize(
     ("text", "problems"),
-    [(HISTORY_EXAMPLE, []), (EXAMPLE, ONLY_THE_TASK)],
+    [(HISTORIANS_EXAMPLES[0], []), (EXAMPLE, ONLY_THE_TASK)],
     ids=["worked-example", "only-the-task"],
 )
 def test_a_written_decomposition_is_stored_and_the_result_gives_its_problems(
