@@ -765,7 +765,9 @@ async def ask_as_the_example(library_on, connect, text):
 async def test_root_hands_show_me_on_a_page_to_the_historian_whose_page_its_turn_links(
     library_on, connect
 ):
-    [text] = [each for each in HISTORIANS_EXAMPLES if "page.new" in each]
+    [text] = [
+        each for each in HISTORIANS_EXAMPLES if parsed(each).name == "show it on a page"
+    ]
     _, _, events, turns, pages = await ask_as_the_example(library_on, connect, text)
     _, historian = kinds(events, "agent.start")
     [opened] = kinds(events, "page.open")
@@ -1080,6 +1082,10 @@ NAMESPACE_REFUSALS = [
     (
         library_cell("change_namespace", "drafts", "repl: {type: local}\n"),
         "tools may not add or take out history",
+    ),
+    (
+        library_cell("change_namespace", "historian", "tools: [history]\nspawn: []\n"),
+        "tools may not add or take out page",
     ),
     (
         library_cell("add_namespace", "re search", ""),

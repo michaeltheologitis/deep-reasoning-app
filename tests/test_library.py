@@ -201,8 +201,9 @@ def test_the_historian_reads_history_then_answers_in_a_later_cell(example):
     assert HAND_OFF in handing_off
     # After root's hand-off, the historian's task is the user's message.
     assert example.messages[HAND_OFF_TURNS] == example.messages[0]
-    # It reads first; what it does with what it read (more reading, a page) answers nothing.
+    # It reads first, then reads more or builds a page, answering in none of those cells.
     assert "history." in reading
+    assert all("history." in each or "page." in each for each in working)
     assert all("FinalAnswer" not in each for each in [reading, *working])
     assert "FinalAnswer" in answering and "history." not in answering
 

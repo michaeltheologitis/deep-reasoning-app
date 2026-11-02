@@ -23,7 +23,7 @@ messages:
       </observation>
   - role: assistant
     content: |
-      <think>Step 1 gave the two parts to sub-agents 2 and 3, and step 2 added their answers. Show both steps and the first sub-agent's own work, each with a note saying what it did.</think>
+      <think>The cell at index 1 gave the two parts to sub-agents 2 and 3, and the one at index 2 added their answers. Show both steps and the first sub-agent's own work, each with a note saying what it did.</think>
       <repl>
       p = page.new("How the answer to message 1 was reached")
       p.text("The answer, **184**, came in two parts: two sub-agents worked them out, and the top agent added their results.")
