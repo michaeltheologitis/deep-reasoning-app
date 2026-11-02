@@ -7,6 +7,7 @@ from genai_prices import Usage, calc_price
 from deep_reasoning.worker import Recorder, cost_of, final_answer_of
 
 ROOT, CHILD = 1, 2
+TRACEBACK = 'Traceback (most recent call last):\n  File "<repl>"\nKeyError: 3'
 
 
 def recorded(*engine_events):
@@ -100,10 +101,20 @@ def test_a_cell_open_when_its_agent_stops_ends_stopped():
     assert events[-1]["kind"] == "agent.end" and events[-1]["status"] == "stopped"
 
 
-def test_a_cell_that_prints_a_traceback_failed():
-    traceback = 'Traceback (most recent call last):\n  File "<repl>"\nKeyError: 3'
-    events = recorded(agent_start(ROOT, None), cell_ran(ROOT, "{}[3]", traceback))
+@pytest.mark.parametrize(
+    "printed", [TRACEBACK, f"counting\n{TRACEBACK}"], ids=["alone", "after output"]
+)
+def test_a_cell_that_raised_failed(printed):
+    events = recorded(agent_start(ROOT, None), cell_ran(ROOT, "{}[3]", printed))
     assert events[-1]["status"] == "failed"
+
+
+def test_a_cell_that_prints_a_recorded_traceback_inside_data_is_done():
+    steps = [{"kind": "cell", "output": TRACEBACK, "status": "failed"}]
+    events = recorded(
+        agent_start(ROOT, None), cell_ran(ROOT, "print(steps)", repr(steps))
+    )
+    assert events[-1]["status"] == "done"
 
 
 def test_an_agent_that_answers_has_its_final_answer_as_result():

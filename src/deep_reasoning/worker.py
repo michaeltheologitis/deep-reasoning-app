@@ -63,6 +63,13 @@ def output_of(observation: str) -> str:
     return match.group(1) if match else observation
 
 
+def raised(output: str) -> bool:
+    """The cell raised: its output has a line that starts a traceback. repl.execute logs
+    no other sign of it, and puts the traceback on a line of its own, while a printed
+    repr, such as a recorded step's, escapes its newlines."""
+    return "\n" + TRACEBACK in "\n" + output
+
+
 def final_answer_of(output: str) -> str | None:
     """The repr after the last line that starts with "FinalAnswer: ", to the end."""
     at = ("\n" + output).rfind("\n" + FINAL_ANSWER)
@@ -254,7 +261,7 @@ class Recorder:
         agent = self._agents[node]
         if agent.cell is None:
             self._open_cell(node, source)
-        status = "failed" if TRACEBACK in output else "done"
+        status = "failed" if raised(output) else "done"
         self._close_cell(node, source, output, status)
         if (answer := final_answer_of(output)) is not None:
             agent.answer = answer
