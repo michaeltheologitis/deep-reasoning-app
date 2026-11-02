@@ -140,7 +140,9 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 
 .node { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 1ch; }
 .node .line { flex: 1 1 16ch; min-width: 0; }
-.show-code { flex: none; color: var(--dim); opacity: 0; }
+/* the code toggle leads the meta, set off as its items are, its separator fading with it */
+.show-code { color: var(--dim); opacity: 0; }
+.show-code::after { content: " · "; white-space: pre; color: var(--dim); }
 .show-code:hover { color: var(--fg); }
 .node:hover .show-code, .show-code:focus-visible, .show-code[aria-expanded="true"] { opacity: 1; }
 @media (hover: none) { .show-code { opacity: 1; } }

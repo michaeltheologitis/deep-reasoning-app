@@ -31,7 +31,12 @@ const openDrawn = (cell) => {
   return renderStep(cell, false);
 };
 const parts = (el) => el.children.map((kid) => kid.className.trim().split(" ")[0]);
-const metaOf = (el) => el.children[0].children.find((kid) => kid.className === "meta").textContent;
+// The meta's words after the code toggle that leads it, which CSS sets off with a separator.
+const metaOf = (el) => {
+  const [toggle, ...rest] = el.children[0].children.find((kid) => kid.className === "meta").children;
+  assert.equal(toggle.className, "show-code");
+  return rest.map((kid) => (typeof kid === "object" ? kid.textContent : String(kid))).join("");
+};
 
 test("a key on Object.prototype is no table's entry", () => {
   const table = { failed: ["failed", "err"] };
