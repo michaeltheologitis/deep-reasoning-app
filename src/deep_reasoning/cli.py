@@ -237,8 +237,8 @@ def reset_or_exit(library, home, yes):
         sys.exit("Nothing was deleted.")
     delete_all([path for path, _ in doomed])
     print(
-        "Deleted them. The next start makes a fresh Library, with history and a "
-        "worked example of reading it at root, and the librarian namespace."
+        "Deleted them. The next start makes a fresh Library, with the historian and "
+        "librarian namespaces."
     )
 
 

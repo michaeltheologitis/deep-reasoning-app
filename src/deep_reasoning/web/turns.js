@@ -3,7 +3,8 @@ const THINK = /<think>[\s\S]*?<\/think>/;
 const REPL = "<repl>";
 const REPL_END = "</repl>";
 const OBSERVATION = /<observation>[\s\S]*?<\/observation>/;
-const FINAL_ANSWER = /\bFinalAnswer[ \t]*\(/;
+// switch_namespace answers too: the engine defines it as FinalAnswer(subagent(...))
+const ANSWERING = /\b(FinalAnswer|switch_namespace)[ \t]*\(/;
 const COMMENT_LINE = /^[ \t]*#/;
 // what Python's str.strip() strips, as the engine strips the code it runs: JS's trim() strips a different set
 const PYTHON_SPACE = /[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/.source;
@@ -23,7 +24,7 @@ function runningCode(content) {
   return (end === -1 ? rest : rest.slice(0, end)).replace(PYTHON_STRIPPED, "");
 }
 
-const answers = (content) => runningCode(content).split("\n").some((line) => !COMMENT_LINE.test(line) && FINAL_ANSWER.test(line));
+const answers = (content) => runningCode(content).split("\n").some((line) => !COMMENT_LINE.test(line) && ANSWERING.test(line));
 
 function replyProblems(label, content) {
   const blocks = content.split(REPL).length - 1;

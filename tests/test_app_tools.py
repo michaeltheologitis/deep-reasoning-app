@@ -20,6 +20,8 @@ from deep_reasoning.app_tools import (
     open_existing,
 )
 from deep_reasoning.library import (
+    HISTORIAN,
+    HISTORIANS_EXAMPLES,
     HISTORY_EXAMPLE,
     UPSERT_TOOL,
     LibraryError,
@@ -340,14 +342,20 @@ def library_tool(library, namespace="librarian"):
     return build_library(None, told).value
 
 
-FRESH = [("root", parsed(HISTORY_EXAMPLE).name)]
+# A fresh app file's decompositions: root's hand-offs, then the historian's examples of the
+# same names.
+FRESH = [
+    (namespace, parsed(text).name)
+    for namespace in ("root", HISTORIAN)
+    for text in HISTORIANS_EXAMPLES
+]
 
 
 def stored(library):
     """Each decomposition in the app file, as (namespace, name)."""
     with closing(open_library(library)) as connection:
         return connection.execute(
-            "SELECT namespace, name FROM decompositions"
+            "SELECT namespace, name FROM decompositions ORDER BY rowid"
         ).fetchall()
 
 
@@ -372,7 +380,7 @@ def test_show_gives_every_namespace_with_its_decompositions_as_plain_data(fresh)
         "problems": ONLY_THE_TASK,
     }
     assert json.loads(json.dumps(shown)) == shown
-    assert list(by_name) == ["root", "drafts", "librarian"]
+    assert list(by_name) == ["root", "drafts", HISTORIAN, "librarian"]
     assert by_name["librarian"]["yaml"] == "tools:\n- library\n"
     assert by_name["librarian"]["decompositions"] == [
         {"name": "count the tickets", "yaml": EXAMPLE, "problems": ONLY_THE_TASK}

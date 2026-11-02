@@ -80,10 +80,11 @@ NOT_ENDED = (*UNREADABLE, KeyError, IndexError, sqlite3.Error)
 EARLIER_TURNS_NOTE = """\
 This conversation began before this run: the user's earlier messages and your answers \
 follow, then the user's next message. Their runs have ended, so their variables are gone \
-and their sub-agents can't be called again. How each answer was worked out (its \
-thoughts, cells and its sub-agents' steps) is kept: to explain an earlier answer, print \
-it with the history tool, when you have it, and answer in a later cell from what it \
-printed. Each earlier answer is shown as the FinalAnswer it gave."""
+and their sub-agents can't be called again. Each earlier answer is shown as the \
+FinalAnswer it gave. How it was worked out (its thoughts, cells and its sub-agents' \
+steps) is in neither this conversation nor ctx, but it is kept: to say how an earlier \
+answer was worked out or what its sub-agents did, do as the worked examples do; never \
+guess or redo it."""
 # An earlier turn's assistant turn: the cell that gave its answer, as the engine's worked
 # examples show one, or why it has none.
 ANSWER = jinja2.Template(

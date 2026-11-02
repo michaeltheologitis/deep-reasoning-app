@@ -1,0 +1,46 @@
+name: say what each sub-agent did
+messages:
+  - {role: user, content: "What did each sub-agent do for my first message?"}
+  - role: assistant
+    content: |
+      <think>The user asks what earlier sub-agents did. That is recorded, not shown here, so answering from memory would be a guess: the historian reads the record. Hand it over: switch_namespace calls FinalAnswer itself with the historian's answer, so it stands alone.</think>
+      <repl>
+      switch_namespace("historian")
+      </repl>
+  - role: user
+    content: "You are now in namespace 'historian': this conversation was handed over from namespace 'root'. Continue from where it left off and answer the request it was working on."
+  - role: assistant
+    content: |
+      <think>Find message 1's sub-agents first, then read each one's own steps.</think>
+      <repl>
+      print(history.agents(1))
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      [{'node': 2, 'parent': 1, 'drive': 1, 'task': 'Sum the first 10 primes.', 'namespace': 'root', 'status': 'done', 'result': '129', 'cost': 0.0001053, 'steps': 2}, {'node': 3, 'parent': 1, 'drive': 1, 'task': 'Find the 10th Fibonacci number.', 'namespace': 'root', 'status': 'done', 'result': '55', 'cost': 0.0001023, 'steps': 2}]
+      </observation>
+  - role: assistant
+    content: |
+      <think>Two sub-agents, nodes 2 and 3. Read what each one did, not only its result.</think>
+      <repl>
+      for node in (2, 3):
+          print(node, history.steps(1, node=node))
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      2 [{'kind': 'think', 'text': 'The primes below 30 are the first 10; sum them.', 'drive': 1}, {'kind': 'cell', 'code': 'primes = [n for n in range(2, 30) if all(n % d for d in range(2, n))]\nFinalAnswer(sum(primes))', 'output': 'FinalAnswer: 129', 'status': 'done', 'agents': [], 'drive': 1}]
+      3 [{'kind': 'think', 'text': 'Step the pair ten times.', 'drive': 1}, {'kind': 'cell', 'code': 'a, b = 0, 1\nfor _ in range(10):\n    a, b = b, a + b\nFinalAnswer(a)', 'output': 'FinalAnswer: 55', 'status': 'done', 'agents': [], 'drive': 1}]
+      </observation>
+  - role: assistant
+    content: |
+      <think>Node 2 summed the primes below 30 with a comprehension; node 3 stepped a Fibonacci pair ten times. Say what each did, quoting its code and result.</think>
+      <repl>
+      FinalAnswer(
+          "Two sub-agents worked on it. The first (node 2), asked to sum the first 10 primes, "
+          "listed the primes below 30 with [n for n in range(2, 30) if all(n % d for d in range(2, n))] "
+          "and answered with their sum, 129. The second (node 3), asked for the 10th Fibonacci "
+          "number, started from a, b = 0, 1, ran a, b = b, a + b ten times, and answered with a, 55."
+      )
+      </repl>

@@ -137,6 +137,40 @@
     "problems": []
   },
   {
+    "case": "a hand-off to another namespace, which answers",
+    "messages": [
+      {"role": "user", "content": "How did you count them?"},
+      {"role": "assistant", "content": "<think>The historian reads how. Hand it over.</think>\n<repl>\nswitch_namespace(\"historian\")\n</repl>\n"}
+    ],
+    "problems": []
+  },
+  {
+    "case": "the conversation continued after a hand-off",
+    "messages": [
+      {"role": "user", "content": "How did you count them?"},
+      {"role": "assistant", "content": "<think>The historian reads how. Hand it over.</think>\n<repl>\nswitch_namespace(\"historian\")\n</repl>\n"},
+      {"role": "user", "content": "You are now in namespace 'historian'. Continue."},
+      {"role": "assistant", "content": "<think>With len(tickets).</think>\n<repl>\nFinalAnswer(\"with len(tickets)\")\n</repl>\n"}
+    ],
+    "problems": []
+  },
+  {
+    "case": "switch_namespace in a whole-line comment",
+    "messages": [
+      {"role": "user", "content": "How did you count them?"},
+      {"role": "assistant", "content": "<think>Hand it over, later.</think>\n<repl>\n# switch_namespace(\"historian\")\nprint(1)\n</repl>\n"}
+    ],
+    "problems": ["Turn 2 (assistant), the last, should call FinalAnswer(...) in its <repl>."]
+  },
+  {
+    "case": "a name that ends in switch_namespace",
+    "messages": [
+      {"role": "user", "content": "How did you count them?"},
+      {"role": "assistant", "content": "<think>Not the engine's.</think>\n<repl>\nmy_switch_namespace(\"historian\")\n</repl>\n"}
+    ],
+    "problems": ["Turn 2 (assistant), the last, should call FinalAnswer(...) in its <repl>."]
+  },
+  {
     "case": "FinalAnswer after a letter outside ASCII",
     "messages": [
       {"role": "user", "content": "How many tickets are open?"},
