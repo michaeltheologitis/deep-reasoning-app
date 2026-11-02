@@ -11,10 +11,12 @@ from structlog.testing import capture_logs
 
 from deep_reasoning.app_tools import (
     EMPTY,
+    MAX_VALUE_CHARS,
     MAX_YAML_CHARS,
     NOT_A_REF,
     NOT_A_TOOL,
     NOT_AN_INDEX,
+    NOT_FINDABLE,
     NOT_LOCAL,
     NOT_MARKDOWN,
     NOT_ROWS,
@@ -22,6 +24,8 @@ from deep_reasoning.app_tools import (
     NOT_SHOWN,
     NOT_TEXT,
     NOT_VALUES,
+    OPENED,
+    SAVED_AGAIN,
     SETS_OWN_KEYS,
     TITLE,
     TOO_DEEP,
@@ -33,6 +37,7 @@ from deep_reasoning.app_tools import (
 from deep_reasoning.library import (
     HISTORIAN,
     HISTORIANS_EXAMPLES,
+    HISTORY_DESCRIPTION,
     UPSERT_TOOL,
     LibraryError,
     add_namespace,
@@ -326,6 +331,151 @@ def test_a_message_or_node_that_is_not_there_is_refused_in_plain_words(library):
         history.steps(1, node=7)
     with pytest.raises(ValueError, match="no earlier messages"):
         history_of(library, ANOTHER_CHAT).agents(1)
+
+
+MODEL_DOWN = (
+    "InternalServerError: Error code: 500 - {'error': {'message': 'the fake model is"
+    " down'}}"
+)
+
+
+def test_errors_list_each_failed_cell_the_top_agents_included_and_each_failed_agent(
+    library,
+):
+    plant(library, CHAT, recorded("nested"))
+    plant(library, CHAT, recorded("failing"))
+    history = history_of(library)
+    top = {"turn": 2, "node": None, "task": "Survive failures."}
+    assert history.errors(1) == []
+    assert history.errors(2) == [
+        top
+        | {"index": 1, "error": "ZeroDivisionError: division by zero"}
+        | {"code": "print(1 / 0)"},
+        top
+        | {"index": 2, "error": f"openai.{MODEL_DOWN}"}
+        | {"code": "r = subagent('Break the model.')\nprint(r)"},
+        {"turn": 2, "node": 2, "task": "Break the model.", "index": None}
+        | {"error": f"It ended failed: {MODEL_DOWN}", "code": None},
+    ]
+    assert history.errors() == history.errors(2)
+    for error in history.errors(2)[:2]:
+        assert history.steps(2)[error["index"]]["code"] == error["code"]
+
+
+@pytest.mark.parametrize(
+    ("name", "top", "sub_agent"),
+    [
+        ("stopped", "It ended stopped.", "It ended stopped."),
+        ("exhausted", f"It ended exhausted: {EXHAUSTED}", "It ended exhausted."),
+    ],
+)
+def test_errors_list_each_agent_that_stopped_or_ran_out_of_turns(
+    library, name, top, sub_agent
+):
+    plant(library, CHAT, recorded(name))
+    assert [(each["node"], each["error"]) for each in history_of(library).errors()] == [
+        (None, top),
+        (2, sub_agent),
+    ]
+
+
+def test_errors_list_a_run_the_app_stopped_under_as_failed(library):
+    plant(library, CHAT, recorded("killed")[:-1])
+    top, _ = history_of(library).errors(1)
+    assert (top["node"], top["error"]) == (None, f"It ended failed: {LOST}")
+
+
+def test_turns_and_agents_count_the_failed_cells_the_turns_its_sub_agents_too(library):
+    plant(library, CHAT, recorded("nested"))
+    plant(library, CHAT, recorded("failing"))
+    history = history_of(library)
+    assert [turn["failed"] for turn in history.turns()] == [0, 2]
+    assert [agent["failed"] for agent in history.agents(2)] == [0]
+
+
+def test_find_looks_through_every_agents_tasks_code_outputs_and_results_ignoring_case(
+    library,
+):
+    plant(library, CHAT, recorded("nested"))
+    plant(library, CHAT, recorded("failing"))
+    history = history_of(library)
+    found = history.find("cs101")
+    assert [(each["node"], each["index"], each["kind"]) for each in found] == [
+        (None, 0, "output"),
+        (None, 1, "output"),
+        (None, None, "result"),
+        (2, 0, "code"),
+        (2, 0, "output"),
+        (2, 1, "output"),
+        (2, None, "result"),
+        (3, None, "task"),
+        (3, 0, "code"),
+        (3, 0, "output"),
+        (3, None, "result"),
+    ]
+    assert {each["turn"] for each in found} == {1}
+    assert found[0]["snippet"] == "CS: CS101 is light"
+    [thought] = history.find("THIS CELL", turn=2)
+    assert (thought["node"], thought["index"], thought["kind"]) == (None, 0, "think")
+    assert history.find("CS101", turn=2) == []
+
+
+def test_find_shows_a_snippet_around_the_match(library):
+    long = "x" * 100 + "Needle" + "y" * 100
+    found = {"kind": "cell.end", "node": 1, "cell": 1, "code": "", "output": long}
+    plant(library, CHAT, crafted(*ROOT_AND_CELL, found | {"status": "done"}))
+    [match] = history_of(library).find("needle")
+    assert match["snippet"] == f"…{'x' * 60}Needle{'y' * 60}…"
+
+
+@pytest.mark.parametrize("text", ["", 5, None])
+def test_find_takes_text(library, text):
+    plant(library, CHAT, recorded("nested"))
+    with pytest.raises(ValueError, match=re.escape(NOT_FINDABLE)):
+        history_of(library).find(text)
+
+
+def test_errors_and_find_in_a_chat_with_no_earlier_messages_say_so(library):
+    plant(library, ANOTHER_CHAT, recorded("failing"))
+    history = history_of(library)
+    for call in (history.errors, lambda: history.find("x")):
+        with pytest.raises(ValueError, match="no earlier messages"):
+            call()
+
+
+LONG = "7" * (MAX_VALUE_CHARS + 500)
+CUT = f"{'7' * MAX_VALUE_CHARS}…(+500 chars)"
+
+
+def test_history_cuts_each_long_text_and_full_gives_a_step_whole(library):
+    run = crafted(
+        *ROOT_CELL_AND_SUB_AGENT,
+        {"kind": "agent.end", "node": 2, "status": "done", "result": LONG},
+        {"kind": "cell.end", "node": 1, "cell": 1, "code": LONG, "output": LONG}
+        | {"status": "failed"},
+    )
+    plant(library, CHAT, run)
+    history = history_of(library)
+    [cell] = history.steps(1)
+    [error] = history.errors(1)
+    assert (cell["code"], cell["output"]) == (CUT, CUT)
+    assert history.agents(1)[0]["result"] == CUT
+    assert (error["error"], error["code"]) == (CUT, CUT)
+    assert {each["snippet"] for each in history.find("7")} == {f"7{'7' * 60}…"}
+    assert history.full(1, None, 0)["output"] == LONG
+    assert history.full(1, node=None, index=-1)["code"] == LONG
+    assert f"{MAX_VALUE_CHARS:,} characters" in HISTORY_DESCRIPTION
+    p = page_of(library).new("Whole")
+    p.step(1, index=0)
+    assert saved(library, p)[0]["step"]["output"] == LONG
+
+
+def test_full_refuses_a_step_that_isnt_there_in_words(library):
+    plant(library, CHAT, recorded("nested"))
+    with pytest.raises(ValueError, match="top agent has 2 steps, numbered from 0"):
+        history_of(library).full(1, None, 2)
+    with pytest.raises(ValueError, match=re.escape(NOT_AN_INDEX)):
+        history_of(library).full(1, None, "0")
 
 
 def test_the_tool_reads_the_app_file_without_writing_it_or_running_its_own_sql(
@@ -814,9 +964,10 @@ def page_of(library, chat=CHAT, key_names=()):
 
 def saved(library, p):
     """The blocks page *p* saves when opened, as the reader reads them back."""
-    link = p.open()
+    p.open()
+    [(page, *_), *_] = stored_pages(library)[::-1]
     with closing(open_library(library)) as connection:
-        return read_page(connection, link.rpartition("/")[2])["blocks"]
+        return read_page(connection, page)["blocks"]
 
 
 def as_listed(step):
@@ -840,13 +991,19 @@ AGENT_FIELDS = ("node", "drive", "task", "namespace", "status", "result", "cost"
 RECORDED = ["fanout", "nested", "drives", "failing", "stopped", "librarian", "pages"]
 
 
+def whole_steps(history, turn, node):
+    """history.steps(turn, node), each step whole, as history.full gives it."""
+    listed = history.steps(turn, node=node)
+    return [history.full(turn, node, index) for index in range(len(listed))]
+
+
 @pytest.mark.parametrize("name", RECORDED)
-def test_a_step_on_a_page_is_the_step_history_lists_there(library, name):
+def test_a_step_on_a_page_is_the_step_history_lists_there_whole(library, name):
     plant(library, CHAT, recorded(name))
     history, page = history_of(library), page_of(library)
     nodes = [None, *dict.fromkeys(agent["node"] for agent in history.agents(1))]
     for node in nodes:
-        listed = history.steps(1, node=node)
+        listed = whole_steps(history, 1, node)
         p = page.new("Steps")
         for index in range(len(listed)):
             p.step(1, node, index=index)
@@ -872,7 +1029,7 @@ def test_a_sub_agent_on_a_page_is_its_drives_history_lists_with_their_steps_belo
             agent["steps"] for agent in listed
         ]
         for row in drives_in(block["agents"]):
-            steps = history.steps(1, node=row["node"])
+            steps = whole_steps(history, 1, row["node"])
             of_drive = [step for step in steps if step["drive"] == row["drive"]]
             assert [as_listed(step) for step in row["steps"]] == of_drive
 
@@ -1051,11 +1208,12 @@ def test_a_page_is_saved_only_when_opened_and_reads_back_as_it_was_made(library)
     p.agent(1, 3)
     p.table([["CS101", 3], ["CS201", None]], columns=["course", "seats"])
     assert stored_pages(library) == []
-    link = p.open()
+    opened = p.open()
     [(page, chat, run, node, title, blocks)] = stored_pages(library)
     with closing(open_library(library)) as connection:
         read = read_page(connection, page)
-    assert link == f"/pages/{page}"
+    assert opened == OPENED.format(title="How the term was planned")
+    assert page not in opened
     assert (chat, run, node, title) == (CHAT, CURRENT, None, "How the term was planned")
     assert read == {"id": page, "title": title, "blocks": json.loads(blocks)}
     assert [block["type"] for block in read["blocks"]] == [
@@ -1088,18 +1246,30 @@ def test_an_empty_page_is_not_opened(library):
     assert stored_pages(library) == []
 
 
-def test_each_open_saves_the_page_as_it_stands_then(library):
+def test_a_page_opened_again_is_saved_as_it_stands_in_its_place(library):
     p = page_of(library).new("Twice")
     p.text("First.")
     first = p.open()
     p.text("Second.")
     second = p.open()
+    [(page, *_)] = stored_pages(library)
     with closing(open_library(library)) as connection:
-        read = [
-            read_page(connection, link.rpartition("/")[2]) for link in (first, second)
-        ]
-    assert first != second
-    assert [len(page["blocks"]) for page in read] == [1, 2]
+        read = read_page(connection, page)
+    assert [block["text"] for block in read["blocks"]] == ["First.", "Second."]
+    assert (first, second) == (
+        OPENED.format(title="Twice"),
+        SAVED_AGAIN.format(title="Twice"),
+    )
+
+
+def test_a_page_deleted_before_it_is_opened_again_is_a_refusal_in_words(library):
+    p = page_of(library).new("Gone")
+    p.text("First.")
+    p.open()
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute("DELETE FROM pages")
+    with pytest.raises(LibraryError, match="no longer in the Library file"):
+        p.open()
 
 
 def test_a_providers_key_is_withheld_from_all_a_page_holds(library, monkeypatch):

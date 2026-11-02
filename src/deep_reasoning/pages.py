@@ -29,6 +29,7 @@ ID_WORDS = 3
 ID_TRIES = 10
 ID_TAKEN = "SQLITE_CONSTRAINT_PRIMARYKEY"
 NO_FREE_ID = f"The Library file had no free page id in {ID_TRIES} tries; try again."
+PAGE_GONE = "The page is no longer in the Library file, so it wasn't saved again."
 MAX_TITLE_CHARS = 200
 MAX_BLOCKS = 200
 MAX_TEXT_CHARS = 100_000
@@ -86,10 +87,6 @@ DRIVE = {
     "unpriced": (bool,),
     "steps": (list,),
 }
-
-
-def page_link(page: str) -> str:
-    return f"/pages/{page}"
 
 
 def shape_of(value: Any, shapes: dict[str, dict], key: str) -> dict | None:
@@ -197,6 +194,23 @@ def add_page(
                 return page["id"]
             page["id"] = generate_slug(ID_WORDS)
     raise LibraryError(NO_FREE_ID)
+
+
+def update_page(
+    connection: sqlite3.Connection,
+    chat: str,
+    run: str,
+    page: str,
+    blocks: list[dict[str, Any]],
+) -> None:
+    """Save *blocks* in place of those of page *page*, which *chat*'s run *run* made."""
+    with writing(connection):
+        updated = connection.execute(
+            "UPDATE pages SET blocks = ? WHERE id = ? AND chat = ? AND run = ?",
+            (json.dumps(blocks), page, chat, run),
+        )
+    if updated.rowcount == 0:
+        raise LibraryError(PAGE_GONE)
 
 
 def inserted(connection: sqlite3.Connection, page: dict[str, Any]) -> bool:

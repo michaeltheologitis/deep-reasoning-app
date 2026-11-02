@@ -1,13 +1,13 @@
 name: explain an earlier answer
 messages:
-  - {role: user, content: "How did you get your answer to my first message?"}
+  - {role: user, content: "How did you get that?"}
   - role: assistant
     content: |
-      <think>The user asks how an earlier answer was worked out. That is recorded, not shown here, so answering from memory would be a guess: the historian reads the record. Hand the question and this conversation to a sub-agent there, and answer with what it finds.</think>
+      <think>The user asks how an earlier answer was worked out. That is recorded, not shown here, so answering from memory would be a guess: the historian reads the record. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
       <repl>
       FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))
       </repl>
-  - {role: user, content: "How did you get your answer to my first message?"}
+  - {role: user, content: "How did you get that?"}
   - role: assistant
     content: |
       <think>Read what I actually did, not guess; answer once I have seen it.</think>

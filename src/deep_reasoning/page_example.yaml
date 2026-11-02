@@ -3,7 +3,7 @@ messages:
   - {role: user, content: "Show me on a page how you got your answer to my first message."}
   - role: assistant
     content: |
-      <think>The user asks to see on a page how an earlier answer was worked out. I can't open a page, and how it was worked out is recorded, not shown here: the historian reads the record and opens pages. Hand the question and this conversation to a sub-agent there, and answer with what it finds.</think>
+      <think>The user asks to see on a page how an earlier answer was worked out. I can't open a page, and how it was worked out is recorded, not shown here: the historian reads the record and opens pages. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
       <repl>
       FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))
       </repl>
@@ -19,7 +19,7 @@ messages:
     content: |
       <observation>
       [{'kind': 'think', 'text': 'Give each part to its own sub-agent, then add the two.', 'drive': 1}, {'kind': 'cell', 'code': 'primes = subagent("Sum the first 10 primes.")\nfib = subagent("Find the 10th Fibonacci number.")\nprint(primes, fib)', 'output': '129 55', 'status': 'done', 'agents': [2, 3], 'drive': 1}, {'kind': 'cell', 'code': 'FinalAnswer(primes + fib)', 'output': 'FinalAnswer: 184', 'status': 'done', 'agents': [], 'drive': 1}]
-      [{'node': 2, 'parent': 1, 'drive': 1, 'task': 'Sum the first 10 primes.', 'namespace': 'root', 'status': 'done', 'result': '129', 'cost': 0.0001157, 'steps': 2}, {'node': 3, 'parent': 1, 'drive': 1, 'task': 'Find the 10th Fibonacci number.', 'namespace': 'root', 'status': 'done', 'result': '55', 'cost': 0.0001127, 'steps': 2}]
+      [{'node': 2, 'parent': 1, 'drive': 1, 'task': 'Sum the first 10 primes.', 'namespace': 'root', 'status': 'done', 'result': '129', 'cost': 0.0001305, 'steps': 2, 'failed': 0}, {'node': 3, 'parent': 1, 'drive': 1, 'task': 'Find the 10th Fibonacci number.', 'namespace': 'root', 'status': 'done', 'result': '55', 'cost': 0.0001275, 'steps': 2, 'failed': 0}]
       </observation>
   - role: assistant
     content: |
@@ -35,15 +35,15 @@ messages:
   - role: user
     content: |
       <observation>
-      /pages/fabulous-caracal-of-karma
+      Opened the page "How the answer to message 1 was reached"; the chat links it under your answer.
       </observation>
   - role: assistant
     content: |
-      <think>The page is saved, and the chat links it under my answer. Answer with what it shows, in short.</think>
+      <think>The page is open, and the chat links it under my answer. Say what I found, in short.</think>
       <repl>
       FinalAnswer(
-          "I put it on a page, linked below: the step that gave each part to a sub-agent, "
-          "the first sub-agent's own work (it summed the primes below 30 to 129), and the "
-          "step that added 129 and 55 to make 184."
+          "The answer, 184, came in two parts: the top agent gave each to a sub-agent, one "
+          "summing the primes below 30 to 129 and the other finding the 10th Fibonacci number, "
+          "55, then added them. The page shows those two steps and the first sub-agent's work."
       )
       </repl>

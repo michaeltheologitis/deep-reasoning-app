@@ -1,0 +1,33 @@
+name: say when there is nothing to show
+messages:
+  - {role: user, content: "Show me the error in the second sub-agent of my first message."}
+  - role: assistant
+    content: |
+      <think>The user asks to see an error in an earlier message. That is recorded, not shown here, so answering from memory would be a guess: the historian reads the record and opens pages. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
+      <repl>
+      FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))
+      </repl>
+  - {role: user, content: "Show me the error in the second sub-agent of my first message."}
+  - role: assistant
+    content: |
+      <think>Check what went wrong in message 1, in any of its agents, and list its sub-agents, before showing anything.</think>
+      <repl>
+      print(history.errors(1))
+      print(history.agents(1))
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      []
+      [{'node': 2, 'parent': 1, 'drive': 1, 'task': 'Sum the first 10 primes.', 'namespace': 'root', 'status': 'done', 'result': '129', 'cost': 0.0001305, 'steps': 2, 'failed': 0}, {'node': 3, 'parent': 1, 'drive': 1, 'task': 'Find the 10th Fibonacci number.', 'namespace': 'root', 'status': 'done', 'result': '55', 'cost': 0.0001275, 'steps': 2, 'failed': 0}]
+      </observation>
+  - role: assistant
+    content: |
+      <think>No cell failed in any agent, and both sub-agents finished: the second (node 3) answered 55. There is no error to show, so say so in words and make no page.</think>
+      <repl>
+      FinalAnswer(
+          "There was no error in message 1: no cell failed, in either sub-agent or in my own "
+          "cells. The second sub-agent (node 3), asked for the 10th Fibonacci number, answered "
+          "55 in one cell, so there is nothing to show."
+      )
+      </repl>

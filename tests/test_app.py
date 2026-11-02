@@ -685,6 +685,40 @@ SUB_AGENTS_FIRST_MESSAGE = (
         ],
     },
 )
+# Message 1 of the example that finds an error where the user didn't say: the top agent's
+# cell that started the sub-agents fails on what one of them answered, and the next one
+# recovers.
+FAILED_IN_THE_TOP_AGENT = (
+    "How many primes are below 20,000?",
+    {
+        "How many primes are below 20,000?": [
+            repl(
+                "parts = [subagent(f'Count the primes in [{a}, {a + 10_000}).')"
+                " for a in (0, 10_000)]",
+                "print(parts)",
+                "print(sum(int(part) for part in parts))",
+                think="Split the range between two sub-agents, then add their counts.",
+            ),
+            repl(
+                "total = sum(int(str(part).replace(',', '')) for part in parts)",
+                "FinalAnswer(total)",
+            ),
+        ],
+        "Count the primes in [0, 10000).": [
+            repl(
+                "FinalAnswer(sum(all(n % d for d in range(2, int(n**0.5) + 1))"
+                " for n in range(2, 10_000)))"
+            )
+        ],
+        "Count the primes in [10000, 20000).": [
+            repl(
+                "count = sum(all(n % d for d in range(2, int(n**0.5) + 1))"
+                " for n in range(10_000, 20_000))",
+                "FinalAnswer(f'{count:,}')",
+            )
+        ],
+    },
+)
 # The first message each of the historian's examples explains, as the fake answers it.
 EXAMPLES_FIRST_MESSAGE = {
     "explain an earlier answer": (
@@ -693,16 +727,16 @@ EXAMPLES_FIRST_MESSAGE = {
     ),
     "say what each sub-agent did": SUB_AGENTS_FIRST_MESSAGE,
     "show it on a page": SUB_AGENTS_FIRST_MESSAGE,
+    "find where it really went wrong": FAILED_IN_THE_TOP_AGENT,
+    "say when there is nothing to show": SUB_AGENTS_FIRST_MESSAGE,
 }
-# A cost depends on the prompt, which the examples are part of, and each page opened gets
-# an id of its own.
+# A cost depends on the prompt, which the examples are part of.
 COST = re.compile(r"'cost': [^,}]+")
-PAGE_LINK = re.compile(r"/pages/[A-Za-z0-9_-]+")
 
 
 def as_recorded(observation):
-    """*observation* as any run of an example prints it: its costs and page links masked."""
-    return PAGE_LINK.sub("/pages/…", COST.sub("'cost': …", observation))
+    """*observation* as any run of an example prints it: its costs masked."""
+    return COST.sub("'cost': …", observation)
 
 
 # How a hand-off reaches the historian: the question, root's hand-off, then the question
@@ -778,7 +812,7 @@ async def test_root_hands_show_me_on_a_page_to_the_historian_whose_page_its_turn
         "How the answer to message 1 was reached",
     )
     assert kinds(turns[1]["events"], "page.open") == [opened]
-    assert events[-1]["answer"].startswith("I put it on a page, linked below")
+    assert events[-1]["answer"].startswith("The answer, 184, came in two parts")
     first = turns[0]["events"]
     first_root = kinds(first, "agent.start")[0]
     delegating, adding = [
@@ -805,6 +839,30 @@ async def test_root_hands_show_me_on_a_page_to_the_historian_whose_page_its_turn
         "Sum the first 10 primes.",
         "129",
     )
+
+
+@pytest.mark.anyio
+async def test_the_historian_shows_an_error_put_in_a_sub_agent_where_it_really_was(
+    library_on, connect
+):
+    [text] = [
+        each
+        for each in HISTORIANS_EXAMPLES
+        if parsed(each).name == "find where it really went wrong"
+    ]
+    _, _, events, turns, pages = await ask_as_the_example(library_on, connect, text)
+    first = turns[0]["events"]
+    top = kinds(first, "agent.start")[0]
+    [failed] = [each for each in kinds(first, "cell.end") if each["status"] == "failed"]
+    [[block]] = [page["blocks"] for page in pages]
+    assert failed["node"] == top["node"]
+    assert (block["node"], block["step"]["code"], block["step"]["status"]) == (
+        None,
+        failed["code"],
+        "failed",
+    )
+    assert [row["status"] for row in block["step"]["agents"]] == ["done", "done"]
+    assert events[-1]["answer"].startswith("No sub-agent had an error")
 
 
 # What EXAMPLE and REWORDED lack as worked examples: their one reply is prose.
@@ -1407,6 +1465,7 @@ SHOWN_PLAN = {
             "p.text('It split the work in **two**.')",
             "p.step(1, index=1, note='Here it fans out.')",
             "p.agent(1, history.agents(1)[0]['node'])",
+            "print(p.open())",
             "p.table([{'course': 'C1', 'credits': 3}])",
             "print(p.open())",
         ),
@@ -1416,7 +1475,7 @@ SHOWN_PLAN = {
 
 
 @pytest.mark.anyio
-async def test_a_follow_up_shows_an_earlier_messages_steps_on_a_page_its_turn_links(
+async def test_a_follow_up_shows_an_earlier_messages_steps_on_a_page_its_turn_links_once(
     library_on, connect
 ):
     with FakeOpenAI(scripted(SHOWN_PLAN)) as fake:
@@ -1439,7 +1498,11 @@ async def test_a_follow_up_shows_an_earlier_messages_steps_on_a_page_its_turn_li
         "cell": cell["cell"],
         "title": "Why it fanned out",
     }
-    assert cell["output"] == f"/pages/{opened['page']}"
+    assert cell["output"] == (
+        'Opened the page "Why it fanned out"; the chat links it under your answer.\n'
+        'Saved the page "Why it fanned out" again, as it stands now; the chat still'
+        " links it."
+    )
     assert kinds(turns[1]["events"], "page.open") == [opened]
     assert shown[-1]["outcome"] == "answered", shown[-1]
     text, step, agent, table = page["blocks"]
