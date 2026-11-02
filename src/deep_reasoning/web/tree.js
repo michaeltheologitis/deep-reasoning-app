@@ -44,6 +44,8 @@ function element(tag, props = {}, ...kids) {
   return el;
 }
 
+// A table's entry for key, or none: a crafted key such as "constructor" mustn't reach Object.prototype.
+const known = (table, key) => (Object.hasOwn(table, key) ? table[key] : []);
 const join = (items, separator) => items.flatMap((item, i) => (i ? [separator, item] : [item]));
 const since = (start) => Date.now() / MS_PER_SECOND - start;
 const isFinal = (cell) => cell.code.startsWith("FinalAnswer(");
@@ -201,9 +203,10 @@ function delegationMeta(cell) {
     const count = agents.filter((agent) => agent.status === status).length;
     return count > 0 && element("span", { class: `word ${tone}` }, `${formatCount(count)} ${word}`);
   });
-  const running = agents.filter((agent) => agent.status === "running");
-  const longest = running.length
-    ? clock(Math.min(...running.map((agent) => agent.started)))
+  // a copied drive has no start, so it shows no clock
+  const starts = agents.filter((agent) => agent.status === "running" && agent.started != null).map((agent) => agent.started);
+  const longest = starts.length
+    ? clock(Math.min(...starts))
     : formatSeconds(Math.max(...agents.map((agent) => agent.seconds ?? 0)));
   const costs = agents.map((agent) => agent.cost).filter((cost) => cost != null);
   const unpriced = agents.some((agent) => agent.unpriced);
@@ -274,7 +277,7 @@ function renderStep(step, root) {
 }
 
 function renderUnder(agent) {
-  const [, tone] = STATUS[agent.status] ?? [];
+  const [, tone] = known(STATUS, agent.status);
   if (agent.status === "running") {
     const last = agent.steps.at(-1);
     return last ? out(stepLabel(last)) : null;
@@ -286,11 +289,11 @@ function renderUnder(agent) {
 function renderAgent(agent) {
   const open = opened.has(agent);
   const running = agent.status === "running";
-  const [word, tone] = STATUS[agent.status] ?? [];
+  const [word, tone] = known(STATUS, agent.status);
   const tags = [agent.namespace !== "root" && agent.namespace, agent.drive > 1 && `message ${agent.drive}`];
   const meta = [
     agent.status !== "done" && element("span", { class: `word ${tone}` }, word),
-    running ? clock(agent.started) : formatSeconds(agent.seconds),
+    running ? agent.started != null && clock(agent.started) : formatSeconds(agent.seconds),
     costView(agent),
   ].filter(Boolean);
   const el = element(
@@ -350,6 +353,7 @@ export {
   formatCost,
   formatSeconds,
   join,
+  known,
   opened,
   out,
   pageLink,

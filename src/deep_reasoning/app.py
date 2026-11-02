@@ -12,7 +12,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from fastapi import Path as InPath
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, StringConstraints
@@ -53,7 +53,7 @@ from deep_reasoning.library import (
     open_library,
     panel,
 )
-from deep_reasoning.pages import read_page
+from deep_reasoning.pages import page_exists, page_text
 from deep_reasoning.runs import (
     RUN_ID,
     RunInProgress,
@@ -459,22 +459,22 @@ def create_app(library, home):
         async for event in runs.events(run, after=max(after, last_event_id)):
             yield ServerSentEvent(data=event, id=str(event["seq"]))
 
-    def page_in_file(page):
-        with closing(open_library(library)) as connection:
-            return read_page(connection, page)
-
+    # Written by the reader: FastAPI's own encoder recurses, and a shared file may nest a
+    # record deep.
     @app.get("/api/pages/{page}")
     def read_a_page(page: str):
-        found = page_in_file(page)
-        if found is None:
+        with closing(open_library(library)) as connection:
+            text = page_text(connection, page)
+        if text is None:
             raise HTTPException(HTTPStatus.NOT_FOUND, NO_PAGE)
-        # As it is: FastAPI's own encoder recurses, and a shared file may nest a record deep.
-        return JSONResponse(found)
+        return Response(text, media_type="application/json")
 
     # The tab a page's link opens: page.js reads the page from the API and draws it.
     @app.get("/pages/{page}")
     def page_tab(page: str):
-        if page_in_file(page) is None:
+        with closing(open_library(library)) as connection:
+            found = page_exists(connection, page)
+        if not found:
             return PlainTextResponse(NO_PAGE, status_code=HTTPStatus.NOT_FOUND)
         return FileResponse(WEB / "page.html")
 

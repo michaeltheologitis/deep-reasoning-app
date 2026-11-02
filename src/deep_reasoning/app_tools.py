@@ -67,15 +67,17 @@ from deep_reasoning.library import (
     tool_text,
 )
 from deep_reasoning.pages import (
+    DRIVE,
     MAX_BLOCKS,
     MAX_COLUMNS,
     MAX_PAGE_CHARS,
     MAX_ROWS,
     MAX_TEXT_CHARS,
     MAX_TITLE_CHARS,
+    NODE,
     add_page,
     page_link,
-    well_formed,
+    stored_text,
 )
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
@@ -138,9 +140,6 @@ NOT_LOCAL = (
     "write_tool works only in a chat whose namespace runs the local REPL: building the"
     " tool to check it runs its code outside any sandbox."
 )
-# A sub-agent's drive as a page copies it: the fields fold.js folds a row into.
-DRIVE_FIELDS = ("node", "drive", "task", "namespace", "status", "result", "seconds")
-NODES = (int, str, type(None))
 TITLE = f"A page's title should be text of 1 to {MAX_TITLE_CHARS} characters."
 NOT_MARKDOWN = "text takes Markdown, as text (a str)."
 NOT_A_REF = (
@@ -156,6 +155,10 @@ NOT_VALUES = "Each value in a table should be text, a number, True, False or Non
 NOT_SHOWN = (
     "That can't be shown: the record it copies isn't one a run of the app writes."
 )
+NOT_SAVED = (
+    "The page can't be saved as it is: open() saves only what the page's methods added."
+)
+TOO_DEEP = "That nests too deep to show on a page."
 EMPTY = "The page is empty: add text, a step, an agent or a table first."
 
 
@@ -170,6 +173,8 @@ class Tree:
     rows: list[Holder] = field(default_factory=list)
     nodes: dict[Any, tuple[Holder, Any]] = field(default_factory=dict)
     cells: dict[Any, dict[str, Any]] = field(default_factory=dict)
+    # The drives each cell started, by the cell's id(), for a page's copy of it.
+    started: dict[int, list[Holder]] = field(default_factory=dict)
 
 
 def start_agent(tree: Tree, event: Event) -> None:
@@ -183,11 +188,13 @@ def start_agent(tree: Tree, event: Event) -> None:
         return
     row = {key: event.get(key) for key in STARTED_WITH}
     row |= {"status": "running", "result": None, "costs": [], "steps": []}
-    # Where it started and when, for a page, which draws it as fold.js folds it.
-    row |= {"cell": cell, "started": event["t"], "seconds": None}
+    # When it started, for a page, which times it as fold.js does; the cell it started
+    # in, so the cell's id() in tree.started names no other while the row lives.
+    row |= {"started": event["t"], "seconds": None, "cell": cell}
     if node not in cell["agents"]:
         cell["agents"].append(node)
     tree.rows.append(row)
+    tree.started.setdefault(id(cell), []).append(row)
     tree.nodes[node] = (row, parent)
 
 
@@ -412,7 +419,7 @@ def shown_drive(tree: Tree, row: Holder) -> dict[str, Any]:
     """A sub-agent's drive as fold.js folds it, for a page: its steps, and its own
     sub-agents' drives under the cells that started them."""
     cost = total_cost(row["costs"])
-    return {key: row[key] for key in DRIVE_FIELDS} | {
+    return {key: row.get(key) for key in DRIVE} | {
         "cost": cost if row["costs"] else None,
         "unpriced": cost is None,
         "steps": [shown_step(tree, step) for step in row["steps"]],
@@ -423,8 +430,33 @@ def shown_step(tree: Tree, step: dict[str, Any]) -> dict[str, Any]:
     """A step as fold.js folds it, for a page: a cell's sub-agents as their drives."""
     if step["kind"] != "cell":
         return step
-    drives = [row for row in tree.rows if row["cell"] is step]
+    drives = tree.started.get(id(step), [])
     return step | {"agents": [shown_drive(tree, row) for row in drives]}
+
+
+def copied(show: Callable[[Tree, Any], Any], tree: Tree, item: Any) -> Any:
+    """*item* as *show* copies it from *tree*; a ValueError when it nests too deep to
+    copy, as a record in a shared file may."""
+    try:
+        return show(tree, item)
+    except RecursionError as error:
+        raise ValueError(TOO_DEEP) from error
+
+
+def keys_withheld(value: Any, secrets: list[str]) -> Any:
+    """*value* with each of *secrets* withheld; a ValueError when it nests too deep to
+    walk."""
+    try:
+        return withheld(value, secrets)
+    except RecursionError as error:
+        raise ValueError(TOO_DEEP) from error
+
+
+def checked_title(title: Any, secrets: list[str]) -> str:
+    title = withheld(title, secrets) if type(title) is str else ""
+    if not title.strip() or len(title) > MAX_TITLE_CHARS:
+        raise ValueError(TITLE)
+    return title
 
 
 def table_block(rows: Any, columns: Any) -> dict[str, Any]:
@@ -470,10 +502,8 @@ class Page:
         secrets: list[str],
         save: Callable[[str, list[dict[str, Any]]], str],
     ) -> None:
-        title = withheld(title, secrets) if type(title) is str else ""
-        if not title.strip() or len(title) > MAX_TITLE_CHARS:
-            raise ValueError(TITLE)
-        self.title, self.blocks = title, []
+        self._title = checked_title(title, secrets)
+        self._blocks = []
         self._history, self._secrets, self._save = history, secrets, save
         self._chars = len(json.dumps([]))
 
@@ -507,7 +537,7 @@ class Page:
             "index": index % len(steps),
             "task": row.get("task"),
             "note": note,
-            "step": shown_step(self._history.tree(turn), step),
+            "step": copied(shown_step, self._history.tree(turn), step),
         }
         self._add(block)
 
@@ -516,19 +546,18 @@ class Page:
         own sub-agents' below, with a Markdown *note*."""
         check_ref(node, note)
         tree = self._history.tree(turn)
-        drives = [row for row in tree.rows if row["node"] == node]
-        if not drives:
-            nodes = list(dict.fromkeys(row["node"] for row in tree.rows))
+        drives = self._history.drives(turn, node)
+        if drives[0] is tree.root:
             raise ValueError(
-                f"Message {turn} has no sub-agent {node!r}: its sub-agents' nodes are"
-                f" {nodes}."
+                f"Message {turn}'s top agent is no sub-agent: show its steps with"
+                f" p.step({turn}, index=...)."
             )
         block = {
             "type": "agent",
             "turn": turn,
             "node": node,
             "note": note,
-            "agents": [shown_drive(tree, row) for row in drives],
+            "agents": [copied(shown_drive, tree, row) for row in drives],
         }
         self._add(block)
 
@@ -538,40 +567,47 @@ class Page:
         self._add(table_block(rows, columns))
 
     def open(self) -> str:
-        """Save the page; its link, which the chat shows under the answer."""
-        if not self.blocks:
+        """Save the page; its link, which the chat shows under the answer. What it saves
+        is checked again, as a cell may have set the page's state itself."""
+        title = checked_title(self._title, self._secrets)
+        if not self._blocks:
             raise ValueError(EMPTY)
-        page = self._save(self.title, self.blocks)
-        log.info("page.open", page=page, title=self.title)
+        blocks = keys_withheld(self._blocks, self._secrets)
+        if stored_text(blocks) is None:
+            raise ValueError(NOT_SAVED)
+        page = self._save(title, blocks)
+        log.info("page.open", page=page, title=title)
         return page_link(page)
 
     def _add(self, block: dict[str, Any]) -> None:
-        if len(self.blocks) == MAX_BLOCKS:
+        if len(self._blocks) == MAX_BLOCKS:
             raise ValueError(
                 f"A page holds at most {MAX_BLOCKS} blocks: open this one, and put the"
                 " rest on another."
             )
-        block = withheld(block, self._secrets)
+        block = keys_withheld(block, self._secrets)
         for key in ("text", "note"):
             if len(block.get(key) or "") > MAX_TEXT_CHARS:
                 raise ValueError(
                     f"A {key} may be at most {MAX_TEXT_CHARS:,} characters; this one"
                     f" is {len(block[key]):,}."
                 )
-        if not well_formed(block):
+        # As it reads back once saved: a number a crafted record sums past ±2**53 won't.
+        stored = stored_text([block])
+        if stored is None:
             raise ValueError(NOT_SHOWN)
-        chars = len(json.dumps(block)) + (len(", ") if self.blocks else 0)
+        chars = len(stored) - len("[]") + (len(", ") if self._blocks else 0)
         if self._chars + chars > MAX_PAGE_CHARS:
             raise ValueError(
                 f"With this, the page would be {self._chars + chars:,} characters as"
                 f" saved, past {MAX_PAGE_CHARS:,}: show less, or put it on another page."
             )
-        self.blocks.append(block)
+        self._blocks.append(block)
         self._chars += chars
 
 
 def check_ref(node: Any, note: Any) -> None:
-    if type(node) not in NODES or not (note is None or type(note) is str):
+    if type(node) not in NODE or not (note is None or type(note) is str):
         raise ValueError(NOT_A_REF)
 
 

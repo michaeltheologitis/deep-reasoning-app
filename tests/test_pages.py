@@ -4,8 +4,9 @@ from contextlib import closing
 import pytest
 from structlog.testing import capture_logs
 
-from deep_reasoning.library import open_library, writing
-from deep_reasoning.pages import MAX_PAGE_CHARS, add_page, read_page
+from deep_reasoning import pages
+from deep_reasoning.library import LibraryError, open_library, writing
+from deep_reasoning.pages import ID_TRIES, MAX_PAGE_CHARS, add_page, read_page
 
 CHAT = "a-chat"
 RUN = "20261027-120000-000000"
@@ -148,6 +149,9 @@ def with_field(block, **fields):
         with_field(BLOCKS[2], agents=[DRIVE | {"unpriced": 0}]),
         with_field(BLOCKS[2], agents=[DRIVE | {"task": None}]),
         with_field(BLOCKS[2], agents=[DRIVE | {"steps": [{"kind": "think"}]}]),
+        with_field(BLOCKS[2], agents=[DRIVE | {"status": "constructor"}]),
+        with_field(BLOCKS[2], agents=[DRIVE | {"status": ["done"]}]),
+        with_field(BLOCKS[1], step=CELL | {"status": "exhausted", "agents": []}),
         with_field(BLOCKS[3], columns=[1]),
         with_field(BLOCKS[3], rows=[[1]]),
         with_field(BLOCKS[3], rows=["CS101"]),
@@ -176,6 +180,9 @@ def with_field(block, **fields):
         "unpriced-not-a-bool",
         "a-task-not-text",
         "a-sub-agents-thought-with-no-text",
+        "a-status-no-drive-has",
+        "a-status-not-text",
+        "a-status-no-cell-has",
         "a-column-not-text",
         "a-value-not-text",
         "a-row-not-a-list",
@@ -213,3 +220,31 @@ def deep_agent(levels):
 def test_a_record_nested_past_pythons_recursion_limit_is_still_checked(library):
     blocks = [deep_agent(1_000)]
     assert read(library, saved(library, blocks))["blocks"] == blocks
+
+
+def test_a_taken_id_is_tried_again_with_another(library, monkeypatch):
+    taken = saved(library, BLOCKS)
+    ids = iter([taken, taken, "a-fresh-id"])
+    monkeypatch.setattr(pages, "generate_slug", lambda words: next(ids))
+    assert saved(library, BLOCKS) == "a-fresh-id"
+
+
+def test_a_page_whose_every_id_tried_is_taken_is_refused_in_words(library, monkeypatch):
+    taken = saved(library, BLOCKS)
+    monkeypatch.setattr(pages, "generate_slug", lambda words: taken)
+    with pytest.raises(LibraryError, match=f"no free page id in {ID_TRIES} tries"):
+        saved(library, BLOCKS)
+
+
+def test_a_shared_files_pages_table_that_refuses_every_row_refuses_the_page_in_words(
+    library,
+):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute("DROP TABLE pages")
+        connection.execute(
+            "CREATE TABLE pages (id TEXT PRIMARY KEY, chat TEXT NOT NULL,"
+            " run TEXT NOT NULL, node, title TEXT NOT NULL, blocks TEXT NOT NULL,"
+            " created REAL NOT NULL, CHECK (0))"
+        )
+    with pytest.raises(LibraryError, match="refused the page: CHECK constraint failed"):
+        saved(library, BLOCKS)

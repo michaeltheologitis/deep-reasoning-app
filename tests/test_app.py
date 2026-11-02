@@ -1928,6 +1928,49 @@ def test_a_page_whose_record_nests_deep_is_served(client):
     assert client.get(f"/api/pages/{page}").status_code == 200
 
 
+def plant_page(library, blocks_text):
+    """A page row holding *blocks_text* as it is, as a file from someone else might; its
+    id."""
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute("DELETE FROM pages WHERE id = 'planted'")
+        connection.execute(
+            "INSERT INTO pages VALUES ('planted', 'a-chat', ?, 1, 'Planted', ?, 0)",
+            (GOOD, blocks_text),
+        )
+    return "planted"
+
+
+def deep_agent_text(levels):
+    """An agent block whose sub-agent nests *levels* deep, as JSON written by hand, as
+    json.dumps may not reach that deep."""
+    drive = '{"task": "Go.", "status": "done", "unpriced": false, "steps": '
+    cell = '[{"kind": "cell", "code": "", "status": "done", "agents": ['
+    chain = (drive + cell) * levels + drive + "[]}" + "]}]}" * levels
+    return '[{"type": "agent", "turn": 1, "node": 2, "agents": [' + chain + "]}]"
+
+
+def test_a_page_nested_about_as_deep_as_json_reads_is_served_or_a_404_never_a_500(
+    client,
+):
+    library = client.app.state.runs.library
+    # Around 10,000 deep, JSON reads a little deeper than it writes back.
+    statuses = {
+        client.get(
+            f"/api/pages/{plant_page(library, deep_agent_text(levels))}"
+        ).status_code
+        for levels in range(2480, 2520)
+    }
+    assert statuses == {200, 404}
+
+
+def test_a_pages_tab_opens_on_any_page_there_and_the_api_says_whether_it_can_be_shown(
+    client,
+):
+    page = plant_page(client.app.state.runs.library, "not json")
+    assert client.get(f"/pages/{page}").status_code == 200
+    assert client.get(f"/api/pages/{page}").status_code == 404
+
+
 def test_deleting_a_chat_deletes_its_pages_and_no_other(client):
     library = client.app.state.runs.library
     chat, other = (client.post("/api/chats").json()["id"] for _ in range(2))

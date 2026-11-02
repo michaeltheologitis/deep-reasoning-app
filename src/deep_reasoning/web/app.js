@@ -12,6 +12,7 @@ import {
   formatCost,
   formatSeconds,
   join,
+  known,
   opened,
   out,
   pageLink,
@@ -81,7 +82,7 @@ function renderListedChange(entry) {
 }
 
 function summary(turn, switched) {
-  const [word, tone] = OUTCOME[turn.outcome] ?? [];
+  const [word, tone] = known(OUTCOME, turn.outcome);
   const seconds = formatSeconds(turn.seconds);
   const agents = countAgents(turn);
   const lead = word ? [element("span", { class: `word ${tone}` }, word), ` after ${seconds}`] : `Reasoned for ${seconds}`;

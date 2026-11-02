@@ -34,18 +34,18 @@ async function start() {
   // the chat's theme toggle, in another tab
   addEventListener("storage", useStoredTheme);
   const id = location.pathname.split("/").at(-1);
-  let page;
   try {
     const response = await fetch(`/api/pages/${id}`);
-    page = await response.json();
+    const page = await response.json();
     if (!response.ok) throw new Error(page.detail ?? `the app answered ${response.status}`);
+    // drawn before any of it shows, so a block that fails to draw leaves the error, not a blank tab
+    const blocks = page.blocks.map(renderBlock);
+    document.title = `${page.title} · Deep Reasoning`;
+    byId("title").textContent = page.title;
+    byId("blocks").replaceChildren(...blocks);
   } catch (error) {
     byId("blocks").replaceChildren(element("p", { class: "word err" }, `This page can't be shown: ${error.message}`));
-    return;
   }
-  document.title = `${page.title} · Deep Reasoning`;
-  byId("title").textContent = page.title;
-  byId("blocks").replaceChildren(...page.blocks.map(renderBlock));
 }
 
 start();
