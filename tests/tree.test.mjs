@@ -24,6 +24,24 @@ const drive = (fields) => ({ node: 2, drive: 1, task: "Count.", namespace: "root
 const ON_THE_PROTOTYPE = ["constructor", "__proto__", "toString", "hasOwnProperty"];
 const ROOMS = ["A", "B", "C", "D"].map((room) => drive({ task: `Count room ${room}.` }));
 const RAISED = "Traceback (most recent call last):\n  File \"<string>\", line 2\nValueError: invalid literal for int() with base 10: 'five'";
+const GROUP = [
+  "  + Exception Group Traceback (most recent call last):",
+  "  |   File \"<string>\", line 1, in <module>",
+  "  | ExceptionGroup: x (2 sub-exceptions)",
+  "  +-+---------------- 1 ----------------",
+  "    | ValueError: 1",
+  "    +---------------- 2 ----------------",
+  "    | KeyError: 2",
+  "    +------------------------------------",
+].join("\n");
+// What a failed cell printed, and the line it shows closed.
+const ERRORS = [
+  ["a traceback", RAISED, "ValueError: invalid literal for int() with base 10: 'five'"],
+  ["a traceback, then the answer it gave before raising", `${RAISED}\nFinalAnswer: 'x'`, "ValueError: invalid literal for int() with base 10: 'five'"],
+  ["a message over lines", "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nValueError: 2 problems:\ntools: bad", "ValueError: 2 problems:"],
+  ["an exception group", GROUP, "ExceptionGroup: x (2 sub-exceptions)"],
+  ["no traceback, then an answer", "worker gone\nFinalAnswer: 'x'", "worker gone"],
+];
 // A delegating cell, opened onto its sub-agents' rows; and its parts, by class, in the order drawn.
 const delegation = (fields) => ({ kind: "cell", code: "seats = run_all(...)\nprint(sum(map(int, seats)))", agents: ROOMS, ...fields });
 const openDrawn = (cell) => {
@@ -69,5 +87,21 @@ test("a delegating cell that raised after its sub-agents answered says so, and s
 test("a delegating cell that is done shows its sub-agents' rows under its line, and no failure", () => {
   const el = openDrawn(delegation({ output: "72", status: "done" }));
   assert.doesNotMatch(metaOf(el), /failed/);
+  assert.deepEqual(parts(el), ["node", "rows"]);
+});
+
+for (const [name, output, shown] of ERRORS) {
+  test(`a failed cell that printed ${name} shows "${shown}" closed`, () => {
+    const el = renderStep({ kind: "cell", code: "seats = count()", output, status: "failed", agents: [] }, false);
+    assert.deepEqual(parts(el), ["line", "out"]);
+    assert.equal(el.children[1].textContent, `⎿${shown}`);
+  });
+}
+
+test("a cell closed failed as its agent ended, with no output, draws no empty error line, alone or delegating", () => {
+  const closed = { code: "seats = count()", output: "", status: "failed" };
+  assert.deepEqual(parts(renderStep({ kind: "cell", ...closed, agents: [] }, false)), ["line"]);
+  const el = openDrawn(delegation(closed));
+  assert.match(metaOf(el), /^cell failed · 4 done/);
   assert.deepEqual(parts(el), ["node", "rows"]);
 });

@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
+from itertools import takewhile
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
 
@@ -36,7 +37,18 @@ from deep_reasoning.runs import CHANGE_FIELDS, PAGE_FIELDS, SPEC
 log = structlog.get_logger()
 
 FINAL_ANSWER = "FinalAnswer: "
-TRACEBACK = "Traceback (most recent call last):"
+TRACEBACK_HEAD = re.compile(
+    r"^(?:Traceback|  \+ Exception Group Traceback) \(most recent call last\):$",
+    re.MULTILINE,
+)
+FRAME = "  "
+EXCEPTION_LINE = re.compile(r"[^\s:]+(?:: .*)?")
+# Each line of an exception group's traceback hangs off its frame: "  |", "  +-+", "    |".
+GROUP_LINE = re.compile(r" +[|+]")
+# Where 0.3.0's REPL runs a cell: a traceback a cell raised starts here.
+REPL_EXEC = re.compile(
+    r'  File ".*[/\\]deep_reasoner[/\\].*", line \d+, in (?:run_code|_exec_and_capture)'
+)
 CLOSE_RUN_WATCHDOG_S = 2.0
 REPL_BLOCK = re.compile(r"<repl>.*?(?:</repl>|$)", re.DOTALL)
 THINK_TAG = re.compile(r"</?think>")
@@ -64,10 +76,25 @@ def output_of(observation: str) -> str:
 
 
 def raised(output: str) -> bool:
-    """The cell raised: its output has a line that starts a traceback. repl.execute logs
-    no other sign of it, and puts the traceback on a line of its own, while a printed
-    repr, such as a recorded step's, escapes its newlines."""
-    return "\n" + TRACEBACK in "\n" + output
+    """The cell raised. repl.execute logs no sign of it but the observation, which the
+    engine ends with the traceback, in format_exc's shape, then at most a FinalAnswer
+    line. A raised traceback starts at the REPL's exec, and its message may run on over
+    lines; one the cell printed starts in the cell, so it must end at its exception
+    line. A printed repr, such as a recorded step's, escapes its newlines."""
+    body, _, last = output.rpartition("\n")
+    if not last.startswith(FINAL_ANSWER):
+        body = output
+    heads = list(TRACEBACK_HEAD.finditer(body))
+    if not heads:
+        return False
+    head, *lines = body[heads[-1].start() :].rstrip("\n").split("\n")
+    if head.startswith(" "):
+        return bool(lines) and all(GROUP_LINE.match(line) for line in lines)
+    frames = list(takewhile(lambda line: line.startswith(FRAME), lines))
+    rest = lines[len(frames) :]
+    if not frames or not rest or not EXCEPTION_LINE.fullmatch(rest[0]):
+        return False
+    return len(rest) == 1 or REPL_EXEC.fullmatch(frames[0]) is not None
 
 
 def final_answer_of(output: str) -> str | None:

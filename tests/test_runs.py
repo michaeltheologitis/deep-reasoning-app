@@ -186,6 +186,15 @@ async def test_a_cell_failed_only_when_it_raised(home, library, fake_config):
     plan = {
         "Check.": [
             repl("print('counting')", "{}[3]"),
+            repl("raise ValueError('2 problems:\\ntools: bad\\nspawn: bad')"),
+            repl(
+                "import traceback",
+                "try:",
+                "    {}[3]",
+                "except KeyError:",
+                "    print(traceback.format_exc())",
+                "print('carried on')",
+            ),
             repl(f"print([{{'output': {recorded!r}, 'status': 'failed'}}])"),
             repl("FinalAnswer('checked')"),
         ]
@@ -195,7 +204,7 @@ async def test_a_cell_failed_only_when_it_raised(home, library, fake_config):
             Runs(library, home), "Check.", fake_config(fake)
         )
     statuses = [event["status"] for event in of_kind(events, "cell.end")]
-    assert statuses == ["failed", "done", "done"]
+    assert statuses == ["failed", "failed", "done", "done", "done"]
 
 
 async def test_a_run_works_in_its_folder_and_keeps_its_own_files_in_the_run_folder(
