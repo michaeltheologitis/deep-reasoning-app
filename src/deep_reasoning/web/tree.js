@@ -181,6 +181,9 @@ function renderCell(cell, root) {
 function renderDelegation(cell) {
   const open = opened.has(cell);
   const code = showingCode.has(cell);
+  // the cell's own error goes under its line, above the rows, so it never reads as the last sub-agent's result
+  const failed = cell.status === "failed";
+  const output = renderOutput(cell, code, false);
   return element(
     "div",
     { class: "cell" },
@@ -192,8 +195,9 @@ function renderDelegation(cell) {
       element("span", { class: "meta" }, delegationMeta(cell)),
     ),
     code && element("pre", { class: "code" }, cell.code),
+    failed && output,
     open && renderRows(cell),
-    renderOutput(cell, code, false),
+    !failed && output,
   );
 }
 
@@ -211,7 +215,8 @@ function delegationMeta(cell) {
   const costs = agents.map((agent) => agent.cost).filter((cost) => cost != null);
   const unpriced = agents.some((agent) => agent.unpriced);
   const total = costView({ cost: costs.length > 0 ? costs.reduce((sum, cost) => sum + cost, 0) : null, unpriced });
-  return join([...counts, longest, total].filter(Boolean), " · ");
+  const failed = cell.status === "failed" && element("span", { class: "word err" }, "cell failed");
+  return join([failed, ...counts, longest, total].filter(Boolean), " · ");
 }
 
 function renderRows(cell) {
