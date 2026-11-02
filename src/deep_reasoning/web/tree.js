@@ -11,6 +11,11 @@ const UNKNOWN_COST = "N/A";
 // no-break spaces keep a cost whole where its line wraps
 const COST_NA = `cost\u00a0${UNKNOWN_COST}`;
 const PRICE_UNKNOWN = "this model's price isn't known";
+const FINAL_ANSWER = "FinalAnswer: ";
+const TRACEBACK = /^(?:Traceback| {2}\+ Exception Group Traceback) \(most recent call last\):$/;
+// an exception group's lines hang off its frame, "  | "; the exception's own line is the first after the head not indented within it
+const GROUP_FRAME = /^ {2}\| /;
+const EXCEPTION = /^(?: {2}\| )?[^\s|+]/;
 // ︎ keeps ✳ a text glyph where the system would draw it as an emoji
 const SPIN = ["·", "✢", "✳︎", "✶", "✻", "✽", "✻", "✶", "✳︎", "✢"];
 const STATUS = {
@@ -141,13 +146,24 @@ function out(text, { tone = "", full = false, more = null } = {}) {
   );
 }
 
+// A failed cell's error: its last traceback's exception line, plain or an exception group's; else its last line, before the
+// FinalAnswer line the engine adds after a traceback.
+function errorLine(lines) {
+  const head = lines.findLastIndex((line) => TRACEBACK.test(line));
+  const exception = head < 0 ? null : lines.slice(head + 1).find((line) => EXCEPTION.test(line));
+  if (exception) return exception.replace(GROUP_FRAME, "");
+  return lines.length > 1 && lines.at(-1).startsWith(FINAL_ANSWER) ? lines.at(-2) : lines.at(-1);
+}
+
 function renderOutput(cell, full, root) {
   const tone = cell.status === "failed" ? "err" : "";
   if (cell.status === "stopped") return null;
   if (cell.output == null) return cell.agents.length ? null : out("Running…");
+  // a cell closed as its agent ended has no output, and an empty red line would read as one
+  if (cell.status === "failed" && !cell.output.trim()) return null;
   if (full) return out(cell.output, { tone, full: true });
   const lines = cell.output.trimEnd().split("\n");
-  if (cell.status === "failed") return out(lines.at(-1), { tone });
+  if (cell.status === "failed") return out(errorLine(lines), { tone });
   // each sub-agent's row opens onto its answer, and the answer below shows the root's
   if (cell.agents.length || (root && isFinal(cell))) return null;
   if (isFinal(cell)) return out(finalValue(cell.output));
@@ -181,6 +197,8 @@ function renderCell(cell, root) {
 function renderDelegation(cell) {
   const open = opened.has(cell);
   const code = showingCode.has(cell);
+  const output = renderOutput(cell, code, false);
+  const rows = open && renderRows(cell);
   return element(
     "div",
     { class: "cell" },
@@ -188,12 +206,16 @@ function renderDelegation(cell) {
       "div",
       { class: "node" },
       toggler(cell, { class: "line" }, [caret(open), glyph(cell), headline(cell)]),
-      toggler(cell, { class: "show-code", "aria-label": "code and output" }, "code", showingCode, `${keyOf(cell)}:code`),
-      element("span", { class: "meta" }, delegationMeta(cell)),
+      element(
+        "span",
+        { class: "meta" },
+        toggler(cell, { class: "show-code", "aria-label": "code and output" }, "code", showingCode, `${keyOf(cell)}:code`),
+        delegationMeta(cell),
+      ),
     ),
     code && element("pre", { class: "code" }, cell.code),
-    open && renderRows(cell),
-    renderOutput(cell, code, false),
+    // the cell's own error goes under its line, above the rows, so it never reads as the last sub-agent's result
+    cell.status === "failed" ? [output, rows] : [rows, output],
   );
 }
 
@@ -211,7 +233,8 @@ function delegationMeta(cell) {
   const costs = agents.map((agent) => agent.cost).filter((cost) => cost != null);
   const unpriced = agents.some((agent) => agent.unpriced);
   const total = costView({ cost: costs.length > 0 ? costs.reduce((sum, cost) => sum + cost, 0) : null, unpriced });
-  return join([...counts, longest, total].filter(Boolean), " · ");
+  const failed = cell.status === "failed" && element("span", { class: "word err" }, "cell failed");
+  return join([failed, ...counts, longest, total].filter(Boolean), " · ");
 }
 
 function renderRows(cell) {

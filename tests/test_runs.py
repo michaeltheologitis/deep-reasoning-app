@@ -181,6 +181,32 @@ async def test_a_fan_out_streams_one_tree_in_order(home, library, fake_config):
     assert saved(library, run) == events
 
 
+async def test_a_cell_failed_only_when_it_raised(home, library, fake_config):
+    recorded = 'Traceback (most recent call last):\n  File "<string>"\nKeyError: 3'
+    plan = {
+        "Check.": [
+            repl("print('counting')", "{}[3]"),
+            repl("raise ValueError('2 problems:\\ntools: bad\\nspawn: bad')"),
+            repl(
+                "import traceback",
+                "try:",
+                "    {}[3]",
+                "except KeyError:",
+                "    print(traceback.format_exc())",
+                "print('carried on')",
+            ),
+            repl(f"print([{{'output': {recorded!r}, 'status': 'failed'}}])"),
+            repl("FinalAnswer('checked')"),
+        ]
+    }
+    with FakeOpenAI(scripted(plan)) as fake:
+        _, events = await run_to_the_end(
+            Runs(library, home), "Check.", fake_config(fake)
+        )
+    statuses = [event["status"] for event in of_kind(events, "cell.end")]
+    assert statuses == ["failed", "failed", "done", "done", "done"]
+
+
 async def test_a_run_works_in_its_folder_and_keeps_its_own_files_in_the_run_folder(
     home, library, fake_config, tmp_path
 ):

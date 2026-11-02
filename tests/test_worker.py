@@ -1,12 +1,33 @@
+import asyncio
 import io
 import json
 
 import pytest
+from deep_reasoner.v2.messages import code
+from deep_reasoner.v2.repl_coro import REPL
 from genai_prices import Usage, calc_price
 
-from deep_reasoning.worker import Recorder, cost_of, final_answer_of
+from deep_reasoning.worker import Recorder, cost_of, final_answer_of, output_of
 
 ROOT, CHILD = 1, 2
+TASK_GROUP = """\
+import asyncio, concurrent.futures
+async def boom():
+    raise ValueError('room D')
+async def main():
+    async with asyncio.TaskGroup() as group:
+        group.create_task(boom())
+concurrent.futures.ThreadPoolExecutor().submit(asyncio.run, main()).result()"""
+RAISING = {
+    "alone": "{}[3]",
+    "after output": "print('counting')\n{}[3]",
+    "message over lines": "raise ValueError('2 problems:\\ntools: bad\\nspawn: bad')",
+    "chained": "try:\n    {}[3]\nexcept KeyError:\n    raise ValueError('no key')",
+    "a syntax error": "print(",
+    "after its answer": "FinalAnswer('x')\nraise ValueError('after')",
+    "an exception group": "raise ExceptionGroup('x', [ValueError(1), KeyError(2)])",
+    "a task group": TASK_GROUP,
+}
 
 
 def recorded(*engine_events):
@@ -50,6 +71,13 @@ def cell_ran(node, source, printed):
         "source": source,
         "observation": f"<observation>\n{printed}\n</observation>",
     }
+
+
+def observed(source):
+    """What deep_reasoner's REPL observes of running *source*, without the tags."""
+    repl = REPL()
+    repl.send(code(f"<repl>\n{source}\n</repl>"))
+    return output_of(asyncio.run(anext(repl)).text)
 
 
 def agent_end(node, status):
@@ -100,10 +128,29 @@ def test_a_cell_open_when_its_agent_stops_ends_stopped():
     assert events[-1]["kind"] == "agent.end" and events[-1]["status"] == "stopped"
 
 
-def test_a_cell_that_prints_a_traceback_failed():
-    traceback = 'Traceback (most recent call last):\n  File "<repl>"\nKeyError: 3'
-    events = recorded(agent_start(ROOT, None), cell_ran(ROOT, "{}[3]", traceback))
+@pytest.mark.parametrize("source", RAISING.values(), ids=RAISING.keys())
+def test_a_cell_that_raised_failed(source):
+    events = recorded(agent_start(ROOT, None), cell_ran(ROOT, source, observed(source)))
     assert events[-1]["status"] == "failed"
+
+
+def test_a_cell_that_prints_a_recorded_traceback_inside_data_is_done():
+    steps = [{"kind": "cell", "output": observed("{}[3]"), "status": "failed"}]
+    source = f"print({steps!r})"
+    events = recorded(agent_start(ROOT, None), cell_ran(ROOT, source, observed(source)))
+    assert events[-1]["status"] == "done"
+
+
+def test_a_cell_that_prints_a_traceback_it_caught_and_carries_on_is_done():
+    source = """\
+import traceback
+try:
+    {}[3]
+except KeyError:
+    print(traceback.format_exc())
+print('carried on')"""
+    events = recorded(agent_start(ROOT, None), cell_ran(ROOT, source, observed(source)))
+    assert events[-1]["status"] == "done"
 
 
 def test_an_agent_that_answers_has_its_final_answer_as_result():
