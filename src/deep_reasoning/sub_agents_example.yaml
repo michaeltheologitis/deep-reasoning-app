@@ -3,12 +3,11 @@ messages:
   - {role: user, content: "What did each sub-agent do for my first message?"}
   - role: assistant
     content: |
-      <think>The user asks what earlier sub-agents did. That is recorded, not shown here, so answering from memory would be a guess: the historian reads the record. Hand it over: switch_namespace calls FinalAnswer itself with the historian's answer, so it stands alone.</think>
+      <think>The user asks what earlier sub-agents did. That is recorded, not shown here, so answering from memory would be a guess: the historian reads the record. Hand the question and this conversation to a sub-agent there, and answer with what it finds.</think>
       <repl>
-      switch_namespace("historian")
+      FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))
       </repl>
-  - role: user
-    content: "You are now in namespace 'historian': this conversation was handed over from namespace 'root'. Continue from where it left off and answer the request it was working on."
+  - {role: user, content: "What did each sub-agent do for my first message?"}
   - role: assistant
     content: |
       <think>Find message 1's sub-agents first, then read each one's own steps.</think>
@@ -18,7 +17,7 @@ messages:
   - role: user
     content: |
       <observation>
-      [{'node': 2, 'parent': 1, 'drive': 1, 'task': 'Sum the first 10 primes.', 'namespace': 'root', 'status': 'done', 'result': '129', 'cost': 0.0001053, 'steps': 2}, {'node': 3, 'parent': 1, 'drive': 1, 'task': 'Find the 10th Fibonacci number.', 'namespace': 'root', 'status': 'done', 'result': '55', 'cost': 0.0001023, 'steps': 2}]
+      [{'node': 2, 'parent': 1, 'drive': 1, 'task': 'Sum the first 10 primes.', 'namespace': 'root', 'status': 'done', 'result': '129', 'cost': 0.0001083, 'steps': 2}, {'node': 3, 'parent': 1, 'drive': 1, 'task': 'Find the 10th Fibonacci number.', 'namespace': 'root', 'status': 'done', 'result': '55', 'cost': 0.0001053, 'steps': 2}]
       </observation>
   - role: assistant
     content: |

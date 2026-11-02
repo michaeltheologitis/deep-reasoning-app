@@ -27,9 +27,10 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 - Follow-ups see the chat's earlier messages and answers as the conversation's own turns, and can ask how one was
   worked out or what its sub-agents did. A new Library has a `historian` namespace, which reads the chat's earlier
   runs (each message's sub-agents, thoughts and cells) with the app's own `history` tool, and root hands such
-  questions to it: root's worked examples, which every namespace inherits, show the hand-off, and the historian's
-  show reading `history` before answering. In an older Library, add a `historian` namespace with `tools: [history]`
-  in the panel, with examples like a new Library's, or run `reset`.
+  questions to a sub-agent there, with the conversation so far: root's worked examples, which every namespace
+  inherits, show the hand-off, and the historian's show reading `history` before answering. In an older Library,
+  add a `historian` namespace with `tools: [history]` in the panel, with examples like a new Library's, or run
+  `reset`.
 - Each chat has its own model, namespace and working folder, picked under the message box; a change applies from
   the next message.
 - Light and dark themes; works at phone width.

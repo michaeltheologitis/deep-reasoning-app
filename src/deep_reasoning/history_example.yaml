@@ -3,12 +3,11 @@ messages:
   - {role: user, content: "How did you get your answer to my first message?"}
   - role: assistant
     content: |
-      <think>The user asks how an earlier answer was worked out. That is recorded, not shown here, so answering from memory would be a guess: the historian reads the record. Hand it over: switch_namespace calls FinalAnswer itself with the historian's answer, so it stands alone.</think>
+      <think>The user asks how an earlier answer was worked out. That is recorded, not shown here, so answering from memory would be a guess: the historian reads the record. Hand the question and this conversation to a sub-agent there, and answer with what it finds.</think>
       <repl>
-      switch_namespace("historian")
+      FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))
       </repl>
-  - role: user
-    content: "You are now in namespace 'historian': this conversation was handed over from namespace 'root'. Continue from where it left off and answer the request it was working on."
+  - {role: user, content: "How did you get your answer to my first message?"}
   - role: assistant
     content: |
       <think>Read what I actually did, not guess; answer once I have seen it.</think>

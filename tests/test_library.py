@@ -106,6 +106,8 @@ messages:
 HISTORIANS = [parsed(text) for text in HISTORIANS_EXAMPLES]
 HAND_OFFS = [parsed(hand_off(text)) for text in HISTORIANS_EXAMPLES]
 SEEDED_ROWS = [(each.name, []) for each in HAND_OFFS]
+# Root spawns a sub-agent into historian, with the user's message and this conversation.
+HAND_OFF = 'FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))'
 # What the app puts in for a chat on OpenAI's gpt-6-luna.
 CHATS_MODEL = {
     "model": "gpt-6-luna",
@@ -179,9 +181,7 @@ def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_mess
     shown = {name: registry.resolve(name).decompositions for name in registry.names}
     assert shown == {ROOT: HAND_OFFS, HISTORIAN: HISTORIANS, LIBRARIAN: HAND_OFFS}
     for example in HAND_OFFS:
-        assert example.messages[-1].content.endswith(
-            '<repl>\nswitch_namespace("historian")\n</repl>\n'
-        )
+        assert example.messages[-1].content.endswith(f"<repl>\n{HAND_OFF}\n</repl>\n")
 
 
 @pytest.mark.parametrize("example", HISTORIANS, ids=lambda example: example.name)
@@ -189,7 +189,9 @@ def test_the_historian_reads_history_then_answers_in_a_later_cell(example):
     handing_off, *reading, answering = [
         turn.content for turn in example.messages if turn.role == "assistant"
     ]
-    assert 'switch_namespace("historian")' in handing_off
+    assert HAND_OFF in handing_off
+    # The historian's task is the user's message, after root's hand-off.
+    assert example.messages[2] == example.messages[0]
     assert reading
     assert all("history." in each and "FinalAnswer" not in each for each in reading)
     assert "FinalAnswer" in answering and "history." not in answering

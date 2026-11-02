@@ -44,6 +44,7 @@ from deep_reasoning.library import (
     HISTORIAN_SUFFIX,
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
+    HISTORY_EXAMPLE,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
     UPSERT_TOOL,
@@ -52,6 +53,7 @@ from deep_reasoning.library import (
     import_config,
     open_library,
     parsed,
+    running_code,
     writing,
 )
 from deep_reasoning.runs import CHANGE_FIELDS, EARLIER_TURNS_NOTE, LOST, save_event
@@ -554,25 +556,41 @@ async def test_a_run_on_a_fresh_library_gets_the_llm_tools_answer(library_on, co
     assert events[-1]["answer"] == "7"
 
 
-# What the engine's switch_namespace tells the agent it hands the conversation to.
-HANDED_OVER = f"namespace '{HISTORIAN}'"
+def historian_or(replies, others):
+    """A responder that gives the historian, whose system prompt holds its suffix,
+    *replies*, one per turn of its drive (the last repeats), and asks *others* for every
+    other agent: the historian's task is the user's message, as root's is."""
+
+    def respond(messages):
+        system = [each["content"] for each in messages if each["role"] == "system"]
+        if not any(HISTORIAN_SUFFIX.strip() in each for each in system):
+            return others(messages)
+        _, turn = task_and_turn(messages)
+        return replies[min(turn, len(replies) - 1)]
+
+    return respond
+
+
+# Root's hand-off, as its worked example writes it.
+HANDING_OFF = parsed(HISTORY_EXAMPLE).messages[1].content
 HISTORY_PLAN = {
     "Count to two.": [repl("print(1)"), repl("FinalAnswer(2)")],
-    "How did you count?": [repl('switch_namespace("historian")')],
-    HANDED_OVER: [
-        repl("t = history.turns()", "print(len(t), t[0]['message'], t[0]['answer'])"),
-        repl("print(history.steps(1))"),
-        repl("print(history.steps(9))"),
-        repl("FinalAnswer('by printing 1')"),
-    ],
+    "How did you count?": [HANDING_OFF],
 }
+HISTORIANS_REPLIES = [
+    repl("t = history.turns()", "print(len(t), t[0]['message'], t[0]['answer'])"),
+    repl("print(history.steps(1))"),
+    repl("print(history.steps(9))"),
+    repl("FinalAnswer('by printing 1')"),
+]
 
 
 @pytest.mark.anyio
 async def test_root_hands_a_question_about_an_earlier_message_to_the_historian(
     library_on, connect
 ):
-    with FakeOpenAI(scripted(HISTORY_PLAN)) as fake:
+    responder = historian_or(HISTORIANS_REPLIES, scripted(HISTORY_PLAN))
+    with FakeOpenAI(responder) as fake:
         async with connect(library_on(fake)) as api:
             chat = await new_chat(api)
             await run_events(api, await send(api, chat, "Count to two."))
@@ -580,8 +598,9 @@ async def test_root_hands_a_question_about_an_earlier_message_to_the_historian(
             events = await run_events(api, await send(api, chat, "How did you count?"))
     root, historian = kinds(events, "agent.start")
     assert (historian["namespace"], historian["parent"]) == (HISTORIAN, root["node"])
+    assert historian["task"] == "How did you count?"
     turns, steps, refused, _, handed_off = kinds(events, "cell.end")
-    assert handed_off["code"] == 'switch_namespace("historian")'
+    assert handed_off["code"] == running_code(HANDING_OFF)
     assert turns["output"] == "1 Count to two. 2"
     assert "'code': 'print(1)'" in steps["output"]
     assert "'code': 'FinalAnswer(2)'" in steps["output"]
@@ -646,15 +665,24 @@ COST = re.compile(r"'cost': [^,}]+")
 async def test_the_historians_examples_show_what_history_really_prints(
     library_on, connect, text
 ):
-    question, handing_off, _, *rest = parsed(text).messages
-    first, plan = EXAMPLES_FIRST_MESSAGE[parsed(text).name]
+    example = parsed(text)
+    opening, rest = example.messages[:3], example.messages[3:]
+    question, handing_off, _ = opening
+    first, plan = EXAMPLES_FIRST_MESSAGE[example.name]
     replies = [turn.content for turn in rest if turn.role == "assistant"]
-    plan |= {question.content: [handing_off.content], HANDED_OVER: replies}
-    with FakeOpenAI(scripted(plan)) as fake:
+    plan |= {question.content: [handing_off.content]}
+    with FakeOpenAI(historian_or(replies, scripted(plan))) as fake:
         async with connect(library_on(fake)) as api:
             chat = await new_chat(api)
             await run_events(api, await send(api, chat, first))
+            asked = len(fake.calls)
             events = await run_events(api, await send(api, chat, question.content))
+    # The historian's conversation ends as the example opens: the question, root's
+    # hand-off, then the question again as its task.
+    historians_first = fake.calls[asked + 1].messages
+    assert [
+        (each["role"], each["content"].strip()) for each in historians_first[-3:]
+    ] == [(each.role, each.content.strip()) for each in opening]
     shown = [turn.content for turn in rest if turn.role == "user"]
     printed = [
         f"<observation>\n{cell['output']}\n</observation>\n"
