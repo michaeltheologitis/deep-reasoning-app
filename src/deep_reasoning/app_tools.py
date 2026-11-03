@@ -539,8 +539,13 @@ class History:
         return cut([step for _, _, step in indexed(self.drives(turn, node))])
 
     def full(self, turn: int, node: Any, index: int) -> dict[str, Any]:
-        """steps(turn, node)[index], nothing cut."""
-        return copy.deepcopy(self.located(turn, node, index)[2])
+        """steps(turn, node)[index], nothing cut; a ValueError when it nests too deep to
+        copy, as a record in a shared file may."""
+        step = self.located(turn, node, index)[2]
+        try:
+            return copy.deepcopy(step)
+        except RecursionError as error:
+            raise ValueError(TOO_DEEP) from error
 
     def errors(self, turn: int | None = None) -> list[dict[str, Any]]:
         """What went wrong in message *turn*, or in every earlier one: each failed cell of

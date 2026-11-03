@@ -464,6 +464,17 @@ def test_a_value_nested_too_deep_is_marked_where_it_nests_too_deep_and_prints(li
     assert code == NESTED_TOO_DEEP
 
 
+def test_full_refuses_a_step_nested_too_deep_to_copy_in_words(library):
+    run = crafted(
+        *ROOT_AND_CELL,
+        {"kind": "cell.end", "node": 1, "cell": 1, "code": DEEP, "output": "kept"}
+        | {"status": "done"},
+    )
+    plant(library, CHAT, run)
+    with pytest.raises(ValueError, match=re.escape(TOO_DEEP)):
+        history_of(library).full(1, None, 0)
+
+
 @pytest.mark.parametrize("node", [None, 1])
 def test_a_crafted_sub_agent_named_as_the_top_agent_is_never_listed_as_it(
     library, node
