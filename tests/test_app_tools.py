@@ -24,8 +24,6 @@ from deep_reasoning.app_tools import (
     NOT_SHOWN,
     NOT_TEXT,
     NOT_VALUES,
-    OPENED,
-    SAVED_AGAIN,
     SETS_OWN_KEYS,
     TITLE,
     TOO_DEEP,
@@ -1212,7 +1210,9 @@ def test_a_page_is_saved_only_when_opened_and_reads_back_as_it_was_made(library)
     [(page, chat, run, node, title, blocks)] = stored_pages(library)
     with closing(open_library(library)) as connection:
         read = read_page(connection, page)
-    assert opened == OPENED.format(title="How the term was planned")
+    assert opened == (
+        'Opened the page "How the term was planned"; the chat links it under your answer.'
+    )
     assert page not in opened
     assert (chat, run, node, title) == (CHAT, CURRENT, None, "How the term was planned")
     assert read == {"id": page, "title": title, "blocks": json.loads(blocks)}
@@ -1257,8 +1257,8 @@ def test_a_page_opened_again_is_saved_as_it_stands_in_its_place(library):
         read = read_page(connection, page)
     assert [block["text"] for block in read["blocks"]] == ["First.", "Second."]
     assert (first, second) == (
-        OPENED.format(title="Twice"),
-        SAVED_AGAIN.format(title="Twice"),
+        'Opened the page "Twice"; the chat links it under your answer.',
+        'Saved the page "Twice" again, as it stands now; the chat still links it.',
     )
 
 

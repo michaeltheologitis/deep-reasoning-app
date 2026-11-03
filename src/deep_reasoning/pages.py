@@ -175,17 +175,17 @@ def add_page(
     run: str,
     node: int | str | None,
     title: str,
-    blocks: list[dict[str, Any]],
+    blocks: str,
 ) -> str:
-    """Save a page of *chat*'s, which agent *node* made in *run*, under a readable id no
-    other page has; its id."""
+    """Save a page of *chat*'s, which agent *node* made in *run*, holding *blocks* as
+    JSON, under a readable id no other page has; its id."""
     page = {
         "id": generate_slug(ID_WORDS),
         "chat": chat,
         "run": run,
         "node": node,
         "title": title,
-        "blocks": json.dumps(blocks),
+        "blocks": blocks,
         "created": time.time(),
     }
     with writing(connection):
@@ -201,14 +201,18 @@ def update_page(
     chat: str,
     run: str,
     page: str,
-    blocks: list[dict[str, Any]],
+    blocks: str,
 ) -> None:
-    """Save *blocks* in place of those of page *page*, which *chat*'s run *run* made."""
-    with writing(connection):
-        updated = connection.execute(
-            "UPDATE pages SET blocks = ? WHERE id = ? AND chat = ? AND run = ?",
-            (json.dumps(blocks), page, chat, run),
-        )
+    """Save *blocks*, as JSON, in place of those of page *page*, which *chat*'s run *run*
+    made. A refusal, as a shared file's own constraints may make, is a LibraryError."""
+    try:
+        with writing(connection):
+            updated = connection.execute(
+                "UPDATE pages SET blocks = ? WHERE id = ? AND chat = ? AND run = ?",
+                (blocks, page, chat, run),
+            )
+    except sqlite3.IntegrityError as error:
+        raise refused(error) from error
     if updated.rowcount == 0:
         raise LibraryError(PAGE_GONE)
 
@@ -221,8 +225,12 @@ def inserted(connection: sqlite3.Connection, page: dict[str, Any]) -> bool:
     except sqlite3.IntegrityError as error:
         if error.sqlite_errorname == ID_TAKEN:
             return False
-        raise LibraryError(f"The Library file refused the page: {error}.") from error
+        raise refused(error) from error
     return True
+
+
+def refused(error: sqlite3.IntegrityError) -> LibraryError:
+    return LibraryError(f"The Library file refused the page: {error}.")
 
 
 def page_exists(connection: sqlite3.Connection, page: str) -> bool:

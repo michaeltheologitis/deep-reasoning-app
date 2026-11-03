@@ -164,10 +164,6 @@ NOT_SAVED = (
 )
 TOO_DEEP = "That nests too deep to show on a page."
 EMPTY = "The page is empty: add text, a step, an agent or a table first."
-OPENED = 'Opened the page "{title}"; the chat links it under your answer.'
-SAVED_AGAIN = (
-    'Saved the page "{title}" again, as it stands now; the chat still links it.'
-)
 NO_EARLIER = "This chat has no earlier messages: this is its first."
 # history cuts each text it returns past this, so one huge output can't swamp the prompt;
 # history.full gives a step whole.
@@ -671,11 +667,13 @@ class Page:
         title: str,
         history: History,
         secrets: list[str],
-        save: Callable[[str, list[dict[str, Any]], str | None], str],
+        add: Callable[[str, str], str],
+        update: Callable[[str, str], None],
     ) -> None:
         self._title = checked_title(title, secrets)
         self._blocks = []
-        self._history, self._secrets, self._save = history, secrets, save
+        self._history, self._secrets = history, secrets
+        self._add_page, self._update_page = add, update
         self._chars = len(json.dumps([]))
         # Its id once opened, so opening it again saves it in its place.
         self._page = None
@@ -736,15 +734,18 @@ class Page:
         title = checked_title(self._title, self._secrets)
         if not self._blocks:
             raise ValueError(EMPTY)
-        blocks = keys_withheld(self._blocks, self._secrets)
-        if stored_text(blocks) is None:
+        blocks = stored_text(keys_withheld(self._blocks, self._secrets))
+        if blocks is None:
             raise ValueError(NOT_SAVED)
         if self._page is not None:
-            self._save(title, blocks, self._page)
-            return SAVED_AGAIN.format(title=title)
-        self._page = self._save(title, blocks, None)
+            self._update_page(self._page, blocks)
+            return (
+                f'Saved the page "{title}" again, as it stands now; the chat still'
+                " links it."
+            )
+        self._page = self._add_page(title, blocks)
         log.info("page.open", page=self._page, title=title)
-        return OPENED.format(title=title)
+        return f'Opened the page "{title}"; the chat links it under your answer.'
 
     def _add(self, block: dict[str, Any]) -> None:
         if len(self._blocks) == MAX_BLOCKS:
@@ -785,19 +786,21 @@ def build_page(client: Any, params: dict[str, Any]) -> Func:
     history = History(library, chat, run)
     secrets = secrets_of(os.environ, params["key_names"])
 
-    def save(title: str, blocks: list[dict[str, Any]], page: str | None) -> str:
-        """Save a new page, or *page* again, of this run's; its id."""
+    def add(title: str, blocks: str) -> str:
+        """Save a new page of this run's, its *blocks* as JSON; its id."""
         # The agent whose cell opens the page, as its page.open event names it.
         node = structlog.contextvars.get_contextvars().get("agent_id")
         with app_file(library, "rw") as connection:
-            if page is None:
-                return add_page(connection, chat, run, node, title, blocks)
+            return add_page(connection, chat, run, node, title, blocks)
+
+    def update(page: str, blocks: str) -> None:
+        """Save page *page* of this run's again, with *blocks*, as JSON."""
+        with app_file(library, "rw") as connection:
             update_page(connection, chat, run, page, blocks)
-            return page
 
     def new(title: str) -> Page:
         """A page titled *title*, saved when its open() is called."""
-        return Page(title, history, secrets, save)
+        return Page(title, history, secrets, add, update)
 
     return Func(SimpleNamespace(new=new), description=PAGE_DESCRIPTION)
 

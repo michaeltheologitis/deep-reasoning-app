@@ -2021,7 +2021,7 @@ TEXT_ONLY = [{"type": "text", "text": "It **counted**."}]
 def a_page(library, chat):
     """A page of *chat*'s, as the page tool saves one; its id."""
     with closing(open_library(library)) as connection:
-        return add_page(connection, chat, GOOD, 1, "Counted", TEXT_ONLY)
+        return add_page(connection, chat, GOOD, 1, "Counted", json.dumps(TEXT_ONLY))
 
 
 def pages_in(library):
@@ -2064,7 +2064,7 @@ def test_a_page_whose_record_nests_deep_is_served(client):
         drive = drive | {"steps": [cell]}
     blocks = [{"type": "agent", "turn": 1, "node": 2, "agents": [drive]}]
     with closing(open_library(library)) as connection:
-        page = add_page(connection, "a-chat", GOOD, 1, "Deep", blocks)
+        page = add_page(connection, "a-chat", GOOD, 1, "Deep", json.dumps(blocks))
     assert client.get(f"/api/pages/{page}").status_code == 200
 
 

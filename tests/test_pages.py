@@ -6,7 +6,13 @@ from structlog.testing import capture_logs
 
 from deep_reasoning import pages
 from deep_reasoning.library import LibraryError, open_library, writing
-from deep_reasoning.pages import ID_TRIES, MAX_PAGE_CHARS, add_page, read_page
+from deep_reasoning.pages import (
+    ID_TRIES,
+    MAX_PAGE_CHARS,
+    add_page,
+    read_page,
+    update_page,
+)
 
 CHAT = "a-chat"
 RUN = "20261027-120000-000000"
@@ -52,7 +58,7 @@ BLOCKS = [
 def saved(library, blocks, title="Counted"):
     """A page holding *blocks*, saved as the page tool saves one; its id."""
     with closing(open_library(library)) as connection:
-        return add_page(connection, CHAT, RUN, 1, title, blocks)
+        return add_page(connection, CHAT, RUN, 1, title, json.dumps(blocks))
 
 
 def read(library, page):
@@ -248,3 +254,37 @@ def test_a_shared_files_pages_table_that_refuses_every_row_refuses_the_page_in_w
         )
     with pytest.raises(LibraryError, match="refused the page: CHECK constraint failed"):
         saved(library, BLOCKS)
+
+
+def saved_again(library, page, blocks, chat=CHAT, run=RUN):
+    with closing(open_library(library)) as connection:
+        update_page(connection, chat, run, page, json.dumps(blocks))
+
+
+@pytest.mark.parametrize(
+    ("chat", "run"), [("another-chat", RUN), (CHAT, "20261027-120000-000001")]
+)
+def test_a_page_is_saved_again_only_by_the_chat_and_run_that_made_it(
+    library, chat, run
+):
+    page = saved(library, BLOCKS[:1])
+    with pytest.raises(LibraryError, match="no longer in the Library file"):
+        saved_again(library, page, BLOCKS, chat, run)
+    assert read(library, page)["blocks"] == BLOCKS[:1]
+
+
+def test_a_shared_files_pages_table_that_refuses_a_page_saved_again_says_so_in_words(
+    library,
+):
+    page = saved(library, BLOCKS[:1])
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute("ALTER TABLE pages RENAME TO kept")
+        connection.execute(
+            "CREATE TABLE pages (id TEXT PRIMARY KEY, chat TEXT NOT NULL,"
+            " run TEXT NOT NULL, node, title TEXT NOT NULL, blocks TEXT NOT NULL,"
+            " created REAL NOT NULL, CHECK (length(blocks) < 100))"
+        )
+        connection.execute("INSERT INTO pages SELECT * FROM kept")
+    with pytest.raises(LibraryError, match="refused the page: CHECK constraint failed"):
+        saved_again(library, page, BLOCKS)
+    assert read(library, page)["blocks"] == BLOCKS[:1]
