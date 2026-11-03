@@ -1,0 +1,47 @@
+name: find where it really went wrong
+messages:
+  - {role: user, content: "Show me the error that happened to the sub-agent in my first message."}
+  - role: assistant
+    content: |
+      <think>The user asks to see an error in an earlier message. That is recorded, not shown here, so answering from memory would be a guess: the historian reads the record and opens pages. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
+      <repl>
+      FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))
+      </repl>
+  - {role: user, content: "Show me the error that happened to the sub-agent in my first message."}
+  - role: assistant
+    content: |
+      <think>The user places the error in a sub-agent, but it may be in any agent's cells, the top agent's included. List every error in message 1, and the sub-agents beside them.</think>
+      <repl>
+      print(history.errors(1))
+      print(history.agents(1))
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      [{'turn': 1, 'node': None, 'task': 'How many primes are below 20,000?', 'index': 1, 'error': "ValueError: invalid literal for int() with base 10: '1,033'", 'code': "parts = [subagent(f'Count the primes in [{a}, {a + 10_000}).') for a in (0, 10_000)]\nprint(parts)\nprint(sum(int(part) for part in parts))"}]
+      [{'node': 2, 'parent': 1, 'drive': 1, 'task': 'Count the primes in [0, 10000).', 'namespace': 'root', 'status': 'done', 'result': '1229', 'cost': 0.0001236, 'steps': 1, 'failed': 0}, {'node': 3, 'parent': 1, 'drive': 1, 'task': 'Count the primes in [10000, 20000).', 'namespace': 'root', 'status': 'done', 'result': '1,033', 'cost': 0.0001251, 'steps': 1, 'failed': 0}]
+      </observation>
+  - role: assistant
+    content: |
+      <think>The one failed cell is the top agent's own (node None), at index 1: it started both sub-agents, then int() couldn't read the second one's count, '1,033'. Both sub-agents finished, with no failed cell. The user asked to see the error, and I found it: show that cell, saying where it really was.</think>
+      <repl>
+      p = page.new("The error in message 1")
+      p.step(1, index=1, note="The error was in the top agent's own cell, not a sub-agent's: after both sub-agents answered, int() couldn't read the second count, '1,033', because of its comma.")
+      print(p.open())
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      Opened the page "The error in message 1"; the chat links it under your answer.
+      </observation>
+  - role: assistant
+    content: |
+      <think>The page is open and the chat links it. Say where the error really was and what it was.</think>
+      <repl>
+      FinalAnswer(
+          "No sub-agent had an error: both finished, answering 1229 and '1,033'. The error was "
+          "in my own cell that started them: int() couldn't read the second count, '1,033', "
+          "because of its comma (ValueError: invalid literal for int() with base 10: '1,033'). "
+          "The page shows the cell that failed."
+      )
+      </repl>

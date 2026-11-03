@@ -1,16 +1,16 @@
 name: explain an earlier answer
 messages:
-  - {role: user, content: "How did you get your answer to my first message?"}
+  - {role: user, content: "How did you get that?"}
   - role: assistant
     content: |
-      <think>The user asks how an earlier answer was worked out. That is recorded, not shown here, so answering from memory would be a guess: the historian reads the record. Hand the question and this conversation to a sub-agent there, and answer with what it finds.</think>
+      <think>The user asks how I got an earlier answer: what I actually did then, not how it could be done. The earlier turn shows only the answer. What I did (my code, its output, any sub-agents) is recorded, not shown here: naming a method now, however likely, would be a guess, and redoing the work would show a new run, not the one that answered. The historian reads the record. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
       <repl>
       FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))
       </repl>
-  - {role: user, content: "How did you get your answer to my first message?"}
+  - {role: user, content: "How did you get that?"}
   - role: assistant
     content: |
-      <think>Read what I actually did, not guess; answer once I have seen it.</think>
+      <think>"That" is my last answer, to message 1. Read what I actually did then, not guess; answer once I have seen it.</think>
       <repl>
       print(history.steps(1))
       </repl>

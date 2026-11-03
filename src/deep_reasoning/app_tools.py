@@ -7,10 +7,13 @@ a moved or deleted one afresh.
 
 history reads the chat's earlier runs from the app file, read-only, as the page reads them:
 runs.py checks each row, and folded() folds a run's events into its tree as fold.js does.
+Each long text it returns is cut, so one huge output can't swamp the prompt; full() gives a
+step whole.
 
 page builds a page for the user from the same trees: each step or sub-agent it points to
-is copied from the record, as fold.js folds it, into the pages table; a page opened is
-logged as page.open, which the worker records as a run event.
+is copied from the record, whole, as fold.js folds it, into the pages table; a page opened
+is logged as page.open, which the worker records as a run event, once: opened again, it is
+saved in its place.
 
 library reads and writes the Library through library.py, with the panel's checks and
 transactions; the locks are here, as the panel may still edit root, a namespace's repl and
@@ -26,6 +29,7 @@ import copy
 import json
 import keyword
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -76,13 +80,14 @@ from deep_reasoning.pages import (
     MAX_TITLE_CHARS,
     NODE,
     add_page,
-    page_link,
     stored_text,
+    update_page,
 )
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
     PAGE_FIELDS,
     chat_turns,
+    raised_error,
     secrets_of,
     total_cost,
     withheld,
@@ -160,6 +165,27 @@ NOT_SAVED = (
 )
 TOO_DEEP = "That nests too deep to show on a page."
 EMPTY = "The page is empty: add text, a step, an agent or a table first."
+NO_EARLIER = "This chat has no earlier messages: this is its first."
+# history cuts each text it returns past this, so one huge output can't swamp the prompt;
+# history.full gives a step whole.
+MAX_VALUE_CHARS = 2_000
+# And each list or dict nested deeper than this: no run of the app's nests one past a
+# few levels, and a file from someone else may nest one thousands deep.
+MAX_VALUE_DEPTH = 20
+NESTED_TOO_DEEP = "…(nested too deep)"
+# errors and find list at most this many rows, then one saying how many more.
+MAX_FOUND = 50
+# What find shows on each side of a match.
+SNIPPET_CHARS = 60
+NOT_FINDABLE = (
+    "find takes the text to look for, as text (a str) of one character or more."
+)
+ENDED_BADLY = ("failed", "stopped", "exhausted")
+# What find searches in each kind of step, as (kind, field).
+SEARCHED = {
+    "think": [("think", "text")],
+    "cell": [("code", "code"), ("output", "output")],
+}
 
 
 @dataclass
@@ -297,6 +323,21 @@ def folded(events: list[Event]) -> Tree:
     return tree
 
 
+def failed(step: Event) -> bool:
+    return step["kind"] == "cell" and step["status"] == "failed"
+
+
+def failed_cells(holder: Holder) -> int:
+    return sum(map(failed, holder["steps"]))
+
+
+def indexed(drives: list[Holder]) -> Iterator[tuple[int, Holder, Event]]:
+    """Each step of *drives* as steps() lists them: its place from 0, its drive, and the
+    step."""
+    steps = ((row, step) for row in drives for step in row["steps"])
+    return ((index, row, step) for index, (row, step) in enumerate(steps))
+
+
 def turn_row(number: int, events: list[Event], tree: Tree) -> dict[str, Any]:
     start, end = events[0], events[-1]
     return {
@@ -306,12 +347,61 @@ def turn_row(number: int, events: list[Event], tree: Tree) -> dict[str, Any]:
         "model": start.get("model"),
         **{key: end.get(key) for key in ENDED_WITH},
         "agents": len(tree.rows),
+        "failed": sum(map(failed_cells, [tree.root, *tree.rows])),
     }
 
 
 def agent_row(row: Holder) -> dict[str, Any]:
     fields = {key: row[key] for key in AGENT_FIELDS}
-    return fields | {"cost": total_cost(row["costs"]), "steps": len(row["steps"])}
+    return fields | {
+        "cost": total_cost(row["costs"]),
+        "steps": len(row["steps"]),
+        "failed": failed_cells(row),
+    }
+
+
+def cut(value: Any, depth: int = 0) -> Any:
+    """*value*, copied, with each text past MAX_VALUE_CHARS cut there, saying how much is
+    left out, and each list or dict past MAX_VALUE_DEPTH levels marked in its place."""
+    if isinstance(value, str) and len(value) > MAX_VALUE_CHARS:
+        return f"{value[:MAX_VALUE_CHARS]}…(+{len(value) - MAX_VALUE_CHARS:,} chars)"
+    if not isinstance(value, dict | list):
+        return value
+    if depth == MAX_VALUE_DEPTH:
+        return NESTED_TOO_DEEP
+    if isinstance(value, dict):
+        return {name: cut(each, depth + 1) for name, each in value.items()}
+    return [cut(each, depth + 1) for each in value]
+
+
+def error_of(output: Any) -> str | None:
+    """What a failed cell raised, as its traceback's exception lines; else, as in a record
+    from someone else, its output's last line."""
+    if not isinstance(output, str):
+        return None
+    lines = output.strip().splitlines()
+    return raised_error(output) or (lines[-1] if lines else None)
+
+
+def capped(found: list[dict[str, Any]], narrower: str) -> list[dict[str, Any]]:
+    """*found*, at most MAX_FOUND rows of it, then a row saying how many more were left
+    out and how to list them: *narrower*."""
+    more = len(found) - MAX_FOUND
+    if more <= 0:
+        return found
+    note = f"{more:,} more not listed: {narrower}"
+    return [*found[:MAX_FOUND], {"more": more, "note": note}]
+
+
+def ending(drive: Holder) -> str:
+    """How an agent's drive that didn't answer ended, in words."""
+    why = drive["result"]
+    return f"It ended {drive['status']}" + (f": {why}" if why else ".")
+
+
+def snippet(text: str, match: re.Match) -> str:
+    start, end = max(match.start() - SNIPPET_CHARS, 0), match.end() + SNIPPET_CHARS
+    return f"{'…' * (start > 0)}{text[start:end]}{'…' * (end < len(text))}"
 
 
 def open_existing(library: str | Path, mode: str = "ro") -> sqlite3.Connection:
@@ -365,7 +455,7 @@ class History:
         """Message *turn*'s run, folded."""
         runs = self._runs
         if not runs:
-            raise ValueError("This chat has no earlier messages: this is its first.")
+            raise ValueError(NO_EARLIER)
         if type(turn) is not int or not 1 <= turn <= len(runs):
             raise ValueError(
                 f"There is no message {turn!r}: this chat's earlier messages are"
@@ -389,20 +479,127 @@ class History:
             )
         return drives
 
+    def located(self, turn: int, node: Any, index: int) -> tuple[int, Holder, Event]:
+        """Step *index* of message *turn*'s top agent, or of sub-agent *node*, as steps()
+        lists them: its place from 0, the drive it is in, and the step."""
+        if type(index) is not int:
+            raise ValueError(NOT_AN_INDEX)
+        steps = list(indexed(self.drives(turn, node)))
+        if not -len(steps) <= index < len(steps):
+            who = "top agent" if node is None else f"agent {node!r}"
+            raise ValueError(
+                f"Message {turn}'s {who} has {count(len(steps), 'step')}, numbered from"
+                f" 0: there is no step {index}."
+            )
+        return steps[index]
+
+    def numbered(self, turn: int | None) -> list[int]:
+        """Message *turn*, once it is checked, or every earlier one when None."""
+        if turn is not None:
+            self.tree(turn)
+            return [turn]
+        if not self._runs:
+            raise ValueError(NO_EARLIER)
+        return list(range(1, len(self._runs) + 1))
+
+    def agents_of(self, turn: int) -> Iterator[tuple[Any, list[Holder]]]:
+        """Message *turn*'s agents as drives() reaches them, each as its node and drives:
+        the top agent first, as node None, its drive with the task, status and result a
+        sub-agent's has. A sub-agent's row named None or the root's node, as a file from
+        someone else may hold, is the top agent's to drives(), so it is left out."""
+        events, tree = self._runs[turn - 1]
+        start, end = events[0], events[-1]
+        outcome = end.get("outcome")
+        top = tree.root | {
+            "task": start["prompt"],
+            "status": "done" if outcome == "answered" else outcome,
+            "result": end.get("answer") or end.get("detail"),
+        }
+        yield None, [top]
+        sub_agents: dict[Any, list[Holder]] = {}
+        for row in tree.rows:
+            if row["node"] is not None and row["node"] != tree.root["node"]:
+                sub_agents.setdefault(row["node"], []).append(row)
+        yield from sub_agents.items()
+
     def turns(self) -> list[dict[str, Any]]:
         """This chat's earlier messages, numbered from 1, with how each ended."""
-        return [turn_row(number, *each) for number, each in enumerate(self._runs, 1)]
+        return cut(
+            [turn_row(number, *each) for number, each in enumerate(self._runs, 1)]
+        )
 
     def agents(self, turn: int) -> list[dict[str, Any]]:
         """Each sub-agent drive of message *turn*."""
-        return [agent_row(row) for row in self.tree(turn).rows]
+        return cut([agent_row(row) for row in self.tree(turn).rows])
 
     def steps(self, turn: int, node: Any = None) -> list[dict[str, Any]]:
         """The thoughts, cells, Library changes and pages of message *turn*'s top agent,
         or of sub-agent *node*."""
         # A copy: the folded runs are kept for the next call.
-        drives = self.drives(turn, node)
-        return copy.deepcopy([step for row in drives for step in row["steps"]])
+        return cut([step for _, _, step in indexed(self.drives(turn, node))])
+
+    def full(self, turn: int, node: Any, index: int) -> dict[str, Any]:
+        """steps(turn, node)[index], nothing cut; a ValueError when it nests too deep to
+        copy, as a record in a shared file may."""
+        step = self.located(turn, node, index)[2]
+        try:
+            return copy.deepcopy(step)
+        except RecursionError as error:
+            raise ValueError(TOO_DEEP) from error
+
+    def errors(self, turn: int | None = None) -> list[dict[str, Any]]:
+        """What went wrong in message *turn*, or in every earlier one: each failed cell of
+        any of its agents, the top one included, and each drive that didn't answer."""
+        found = [
+            each for number in self.numbered(turn) for each in self.failures(number)
+        ]
+        return cut(capped(found, "pass a turn to list only that message's."))
+
+    def failures(self, turn: int) -> Iterator[dict[str, Any]]:
+        """Message *turn*'s failed cells and drives that didn't answer, agent by agent."""
+        for node, drives in self.agents_of(turn):
+            at = {"turn": turn, "node": node}
+            yield from (
+                at
+                | {"task": row["task"], "index": index}
+                | {"error": error_of(step["output"]), "code": step["code"]}
+                for index, row, step in indexed(drives)
+                if failed(step)
+            )
+            yield from (
+                at
+                | {"task": row["task"], "index": None}
+                | {"error": ending(row), "code": None}
+                for row in drives
+                if row["status"] in ENDED_BADLY
+            )
+
+    def find(self, text: str, turn: int | None = None) -> list[dict[str, Any]]:
+        """Where *text* is, ignoring case, in message *turn* or every earlier one: in any
+        agent's tasks, thoughts, code, outputs and results."""
+        if type(text) is not str or not text:
+            raise ValueError(NOT_FINDABLE)
+        pattern = re.compile(re.escape(text), re.IGNORECASE)
+        found = [
+            {"turn": number, "node": node, "index": index, "kind": kind}
+            | {"snippet": snippet(value, match)}
+            for number in self.numbered(turn)
+            for node, index, kind, value in self.texts(number)
+            if isinstance(value, str) and (match := pattern.search(value))
+        ]
+        return cut(capped(found, "pass a turn, or longer text, to list fewer."))
+
+    def texts(self, turn: int) -> Iterator[tuple[Any, int | None, str, Any]]:
+        """Each text of message *turn* that find searches, as its agent's node, its step's
+        index (None for a task or result), its kind and the text."""
+        for node, drives in self.agents_of(turn):
+            yield from ((node, None, "task", row["task"]) for row in drives)
+            yield from (
+                (node, index, kind, step[key])
+                for index, _, step in indexed(drives)
+                for kind, key in SEARCHED.get(step["kind"], [])
+            )
+            yield from ((node, None, "result", row["result"]) for row in drives)
 
 
 def build_history(client: Any, params: dict[str, Any]) -> Func:
@@ -410,7 +607,12 @@ def build_history(client: Any, params: dict[str, Any]) -> Func:
     in the run's config names them."""
     history = History(params["library"], params["chat"], params["run"])
     methods = SimpleNamespace(
-        turns=history.turns, agents=history.agents, steps=history.steps
+        turns=history.turns,
+        agents=history.agents,
+        steps=history.steps,
+        errors=history.errors,
+        find=history.find,
+        full=history.full,
     )
     return Func(methods, description=HISTORY_DESCRIPTION)
 
@@ -500,12 +702,16 @@ class Page:
         title: str,
         history: History,
         secrets: list[str],
-        save: Callable[[str, list[dict[str, Any]]], str],
+        add: Callable[[str, str], str],
+        update: Callable[[str, str], None],
     ) -> None:
         self._title = checked_title(title, secrets)
         self._blocks = []
-        self._history, self._secrets, self._save = history, secrets, save
+        self._history, self._secrets = history, secrets
+        self._add_page, self._update_page = add, update
         self._chars = len(json.dumps([]))
+        # Its id once opened, so opening it again saves it in its place.
+        self._page = None
 
     def text(self, markdown: str) -> None:
         """Add *markdown*, a paragraph or more."""
@@ -519,22 +725,12 @@ class Page:
         """Add history.steps(turn, node)[index], drawn as the chat draws it, with a
         Markdown *note*."""
         check_ref(node, note)
-        if type(index) is not int:
-            raise ValueError(NOT_AN_INDEX)
-        drives = self._history.drives(turn, node)
-        steps = [(row, step) for row in drives for step in row["steps"]]
-        if not -len(steps) <= index < len(steps):
-            who = "top agent" if node is None else f"agent {node!r}"
-            raise ValueError(
-                f"Message {turn}'s {who} has {count(len(steps), 'step')}, numbered from"
-                f" 0: there is no step {index}."
-            )
-        row, step = steps[index]
+        index, row, step = self._history.located(turn, node, index)
         block = {
             "type": "step",
             "turn": turn,
             "node": node,
-            "index": index % len(steps),
+            "index": index,
             "task": row.get("task"),
             "note": note,
             "step": copied(shown_step, self._history.tree(turn), step),
@@ -567,17 +763,24 @@ class Page:
         self._add(table_block(rows, columns))
 
     def open(self) -> str:
-        """Save the page; its link, which the chat shows under the answer. What it saves
-        is checked again, as a cell may have set the page's state itself."""
+        """Save the page, which the chat links under the answer; opened again, it is saved
+        as it stands then, in its place, and linked no second time. What it saves is
+        checked again, as a cell may have set the page's state itself."""
         title = checked_title(self._title, self._secrets)
         if not self._blocks:
             raise ValueError(EMPTY)
-        blocks = keys_withheld(self._blocks, self._secrets)
-        if stored_text(blocks) is None:
+        blocks = stored_text(keys_withheld(self._blocks, self._secrets))
+        if blocks is None:
             raise ValueError(NOT_SAVED)
-        page = self._save(title, blocks)
-        log.info("page.open", page=page, title=title)
-        return page_link(page)
+        if self._page is not None:
+            self._update_page(self._page, blocks)
+            return (
+                f'Saved the page "{title}" again, as it stands now; the chat still'
+                " links it."
+            )
+        self._page = self._add_page(title, blocks)
+        log.info("page.open", page=self._page, title=title)
+        return f'Opened the page "{title}"; the chat links it under your answer.'
 
     def _add(self, block: dict[str, Any]) -> None:
         if len(self._blocks) == MAX_BLOCKS:
@@ -618,15 +821,21 @@ def build_page(client: Any, params: dict[str, Any]) -> Func:
     history = History(library, chat, run)
     secrets = secrets_of(os.environ, params["key_names"])
 
-    def save(title: str, blocks: list[dict[str, Any]]) -> str:
+    def add(title: str, blocks: str) -> str:
+        """Save a new page of this run's, its *blocks* as JSON; its id."""
         # The agent whose cell opens the page, as its page.open event names it.
         node = structlog.contextvars.get_contextvars().get("agent_id")
         with app_file(library, "rw") as connection:
             return add_page(connection, chat, run, node, title, blocks)
 
+    def update(page: str, blocks: str) -> None:
+        """Save page *page* of this run's again, with *blocks*, as JSON."""
+        with app_file(library, "rw") as connection:
+            update_page(connection, chat, run, page, blocks)
+
     def new(title: str) -> Page:
         """A page titled *title*, saved when its open() is called."""
-        return Page(title, history, secrets, save)
+        return Page(title, history, secrets, add, update)
 
     return Func(SimpleNamespace(new=new), description=PAGE_DESCRIPTION)
 

@@ -25,24 +25,31 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 - Each message is a run, shown live as a tree of sub-agents you open level by level. Esc stops it.
 - Each run shows its time, sub-agent count, cost (N/A when the model's price isn't known) and model.
 - Follow-ups see the chat's earlier messages and answers as the conversation's own turns, and can ask how one was
-  worked out or what its sub-agents did. A new Library has a `historian` namespace, which reads the chat's earlier
-  runs (each message's sub-agents, thoughts and cells) with the app's own `history` tool, and root hands such
-  questions to a sub-agent there, with the conversation so far: root's worked examples, which every namespace
-  inherits, show the hand-off, and the historian's show reading `history` before answering. A namespace with a
-  `spawn` list hands off only if it lists `historian`. If you delete `historian` or take `history` out of it, delete
-  root's three hand-off examples in the panel too: they send questions where nothing can read the history. If you
-  take `page` out of it, delete `show it on a page` from root and historian.
+  worked out, what its sub-agents did or what went wrong. A new Library has a `historian` namespace, which reads the
+  chat's earlier runs (each message's sub-agents, thoughts and cells) with the app's own `history` tool, and root
+  hands such questions to a sub-agent there, with your message as you wrote it and the conversation so far: root's
+  worked examples, which every namespace inherits, show the hand-off, and the historian's show reading `history`
+  before answering. `history` lists what went wrong anywhere in a message, the top agent's own cells included
+  (`errors`), finds any text you name (`find`), and cuts each text past 2,000 characters, so a huge output can't
+  swamp the model (`full` reads one step whole). A namespace with a `spawn` list hands off only if it lists
+  `historian`. If you delete `historian` or take `history` out of it, delete root's five hand-off examples in the
+  panel too: they send questions where nothing can read the history. If you take `page` out of it, delete `show it
+  on a page` and `find where it really went wrong` from root and historian.
 - An older Library keeps what it has: one made since `history` came reads it at root, with a worked example there,
   and needs nothing. For the historian, run `reset`, which deletes the Library and every chat, or add `historian` in
-  the panel (`tools: [history, page]`, `spawn: []`, and the examples a new Library has) and give root the three
+  the panel (`tools: [history, page]`, `spawn: []`, and the examples a new Library has) and give root the five
   hand-off examples in place of its own `explain an earlier answer`. If your historian lacks `page`, add it to its
-  tools and give root and historian the `show it on a page` examples a new Library has.
+  tools and give root and historian the examples a new Library has. One made after `page` came but before `errors`
+  has a `show it on a page` that prints the page's `/pages/…` link: replace it in root and historian with a new
+  Library's, and add a new Library's `find where it really went wrong` and `say when there is nothing to show` to
+  both.
 - The agent can show you something on a page of its own, with the app's `page` tool: Markdown text, tables, and steps
   or sub-agents of the chat's earlier messages, copied from their record and drawn as the chat draws them. A line
-  under the answer, and a step in its tree, open the page in a new tab. Pages are kept in the Library file and
-  deleted with their chat. A new Library grants `page` in `historian`, beside `history`, with a worked example of
-  showing an earlier answer on a page (`show it on a page`), so asking to be shown how an answer was reached goes
-  there too.
+  under the answer, and a step in its tree, open the page in a new tab; the answer itself says what was found, and
+  never holds the link. A page opened again in the same message is updated in place, so it is linked once. Pages
+  are kept in the Library file and deleted with their chat. A new Library grants `page` in `historian`, beside
+  `history`, with worked examples of showing an earlier answer or an error on a page, and of making none when
+  there is nothing to show, so asking to be shown how an answer was reached goes there too.
 - Each chat has its own model, namespace and working folder, picked under the message box; a change applies from
   the next message.
 - Light and dark themes; works at phone width.

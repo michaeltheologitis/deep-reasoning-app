@@ -114,9 +114,18 @@ FRESH_LIBRARIAN = {"tools": [LIBRARY_TOOL]}
 HISTORIAN = "historian"
 HISTORIAN_SUFFIX = """\
 You are the historian: you answer questions about this chat's earlier messages (how or \
-why an answer was reached, what a sub-agent did) from what was recorded. Read it with \
-history, drilling into the sub-agents involved, and quote their real code and outputs. \
-Never redo the work or guess; answer in a later cell, from what you printed.
+why an answer was reached, what an agent did, what went wrong) from what was recorded. \
+Read it with history and quote the real code and outputs. Never redo the work or guess; \
+answer in a later cell, from what you printed.
+The user sees each run as one tree and may call any agent in it a sub-agent, so what \
+they point at may be the top agent's own cell, such as the one that delegated and then \
+combined the sub-agents' results. Find an error with history.errors(turn), which reads \
+every agent, the top one included, and anything else the user names with history.find. \
+If it isn't where the user says, say where it is.
+Make a page only when the user asks to see something and you found it; when you found \
+nothing, say so in words and make no page. Your answer is all that later messages will \
+see of this run, so say what you found, in a sentence or two, even when you make a page. \
+Never write the page's link: the chat shows it under your answer.
 """
 # A leaf: copying root's hand-off, the last cell of its own conversation, can't nest one.
 FRESH_HISTORIAN = {
@@ -133,7 +142,13 @@ FRESH_NAMESPACES = {
 # history. Each opens with the question and root's hand-off.
 HISTORIANS_EXAMPLES = [
     Path(__file__).with_name(file).read_text(encoding="utf-8")
-    for file in ("history_example.yaml", "sub_agents_example.yaml", "page_example.yaml")
+    for file in (
+        "history_example.yaml",
+        "sub_agents_example.yaml",
+        "page_example.yaml",
+        "wrong_place_example.yaml",
+        "nothing_example.yaml",
+    )
 ]
 # Root's are those two turns of each, under the same name: every namespace inherits them,
 # but in historian its own take their place.
@@ -198,27 +213,38 @@ BUILTIN_DESCRIPTIONS = {
     "claude_code": DEFAULT_CLAUDE_DESCRIPTION,
 }
 HISTORY_DESCRIPTION = """\
-When the user asks how you got an earlier answer, why you did something, or what an \
-earlier sub-agent did or found, read what you actually did with `history`: \
-print(history.steps(1)) prints message 1's thoughts and cells (code and output). For \
-what a sub-agent did, find its node with history.agents(1) and print \
-history.steps(1, node=<its node>): its own thoughts and cells. Then answer in a later \
-cell, from what it printed, not by redoing the work or guessing a method. The earlier \
-turns, in ctx.history too, hold only each message and its answer; history holds every \
-step of the earlier runs. Its methods return plain data (lists of dicts), and the REPL \
-shows only what you print: print what you need.
-  history.turns(): the earlier messages, numbered from 1, the chat's first message: \
-turn, message, namespace, model, outcome, answer, detail, cost, seconds and agents (how \
-many sub-agents it ran).
-  history.agents(turn): each sub-agent drive of message number `turn`: node, parent, \
-drive, task, namespace, status, result, cost (its own sub-agents' included) and steps \
-(how many).
+When the user asks about an earlier message (how you got an answer, why you did \
+something, what an agent did or found, what went wrong), read what was recorded with \
+`history`, then answer in a later cell from what it printed, not by redoing the work or \
+guessing. The earlier turns, in ctx.history too, hold only each message and its answer; \
+history holds every step of the earlier runs. Messages are numbered from 1, the chat's \
+first. In each, the top agent (node None) answered, and its cells may have started \
+sub-agents, each with a node of its own. The methods return plain data (lists of dicts), \
+and the REPL shows only what you print: print what you need.
+  history.turns(): each earlier message: turn, message, namespace, model, outcome, \
+answer, detail, cost, seconds, agents (how many sub-agents it ran) and failed (how many \
+of its cells failed, its sub-agents' included).
+  history.agents(turn): each sub-agent drive of message `turn`: node, parent, drive, \
+task, namespace, status, result, cost (its own sub-agents' included), steps (how many) \
+and failed (how many of its cells failed).
   history.steps(turn, node=None): the thoughts, cells, Library changes and pages, in \
 order, of message `turn`'s top agent, or of the sub-agent whose node is `node`: {kind: \
-"think", text}, {kind: "cell", code, output, status, agents: the nodes of the sub-agents \
-it started}, {kind: "change", what ("decomposition", "namespace" or "tool"), namespace, \
-name, before (None when added), after} or {kind: "page", page, title} (a page opened for \
-the user), each with its drive."""
+"think", text}, {kind: "cell", code, output, status ("done", "failed" or "stopped"), \
+agents: the nodes of the sub-agents it started}, {kind: "change", what, namespace, name, \
+before (None when added), after} or {kind: "page", page, title} (a page opened for the \
+user), each with its drive.
+  history.errors(turn=None): what went wrong anywhere in message `turn`, or in every \
+earlier message: each failed cell of any agent, the top one included, as turn, node, \
+task, index (its place in history.steps(turn, node)), error (what it raised) and code; \
+then each agent that ended failed, stopped or exhausted, with index None. Start here for \
+any question about an error.
+  history.find(text, turn=None): where `text` is, ignoring case, in any agent's task, \
+thoughts, code, outputs and result: turn, node, index (None for a task or result), kind \
+and a snippet. Use it to find anything the user names.
+  history.full(turn, node, index): history.steps(turn, node)[index] whole.
+Each text these return is cut after 2,000 characters, ending "…(+N chars)" with how many \
+were cut; history.full gives a step uncut. errors and find list at most 50 rows, then \
+{more, note}: how many more, and to pass a turn to list fewer."""
 LIBRARY_DESCRIPTION = """\
 The `library` tool reads and writes the app's Library: its namespaces, each with its own \
 fields, the decompositions (worked examples) each one's agents are shown, and the custom \
@@ -273,12 +299,13 @@ panel.
 Each write returns what it did, as {done, what, name} (and namespace, but for a \
 tool); a refusal raises ValueError saying why."""
 PAGE_DESCRIPTION = """\
-When the user asks to be shown something (how an earlier answer was worked out, what a \
-sub-agent did, what you found), or an explanation reads better with the real steps \
-beside it, make a page with `page`: the app opens it in a tab of its own, linked from \
-the chat. You pick what goes on it and the app draws it, copying each step and \
-sub-agent from the record, so write no HTML. Its methods take plain data (text, numbers, \
-True, False, None, and lists and dicts of them), and the REPL shows only what you print.
+When the user asks to see something (how an earlier answer was worked out, what an \
+agent did, an error) and you found it, show it on a page with `page`: the app opens it \
+in a tab of its own, linked under your answer. When you found nothing to show, say so in \
+words and make no page. You pick what goes on it and the app draws it, copying each \
+step and sub-agent from the record, so write no HTML. Its methods take plain data (text, \
+numbers, True, False, None, and lists and dicts of them), and the REPL shows only what \
+you print.
   p = page.new(title): a page in progress, titled `title` (up to 200 characters); \
 nothing is saved until p.open().
   p.text(markdown): a paragraph or more of Markdown.
@@ -288,11 +315,13 @@ the chat draws it, with an optional Markdown note.
 drawn as a tree with its steps and its own sub-agents', with an optional note.
   p.table(rows, columns=None): rows as a table: a list of dicts (the columns are their \
 keys, unless given) or of lists, each value text, a number, True, False or None.
-  p.open(): saves the page and returns its link, which the chat shows under your answer.
-step and agent take a turn, node and index as history shows them, so they reach this \
-chat's earlier messages only. A page holds up to 200 blocks, each text or note up to \
-100,000 characters and each table up to 1,000 rows of 50 columns, and up to 2,000,000 \
-characters in all. A refusal raises ValueError saying why."""
+  print(p.open()): saves the page and says so, and the chat links it under your answer; \
+opened again, it is saved as it stands then, on the same page.
+Never write the page's link yourself, and still say in your answer what you found. step \
+and agent take a turn, node and index as history shows them, so they reach this chat's \
+earlier messages only. A page holds up to 200 blocks, each text or note up to 100,000 \
+characters and each table up to 1,000 rows of 50 columns, and up to 2,000,000 characters \
+in all. A refusal raises ValueError saying why."""
 # Added in code, never stored: a shared file mustn't choose the code they run. Each one's
 # factory in app_tools.py, and what the agent is told it does.
 APP_TOOLS_FILE = Path(__file__).with_name("app_tools.py")

@@ -118,6 +118,21 @@ SCENARIOS = {
         },
         "failing": ("Break the model.", 1),
     },
+    "raising": {
+        "prompt": "Raise three ways.",
+        "plan": {
+            "Raise three ways.": [
+                repl("print(subagent('Raise them.'))"),
+                repl("FinalAnswer('raised')"),
+            ],
+            "Raise them.": [
+                repl("print('counting')"),
+                repl("raise ValueError('2 problems:\\ntools: bad\\nspawn: bad')"),
+                repl("raise ExceptionGroup('x', [ValueError(1), KeyError(2)])"),
+                repl("FinalAnswer('x')", "raise ValueError('after')"),
+            ],
+        },
+    },
     "exhausted": {
         "prompt": "Never finish.",
         "plan": {

@@ -1,3 +1,4 @@
+import json
 import re
 import time
 from contextlib import closing
@@ -125,7 +126,8 @@ def test_a_version_3_file_opens_with_all_it_holds_kept_and_gains_pages(
         version = schema_version(connection)
         kept = (stored_config(connection), chat_runs(connection, chat))
         events = read_events(connection, run)
-        page = read_page(connection, add_page(connection, chat, run, 1, "New", blocks))
+        added = add_page(connection, chat, run, 1, "New", json.dumps(blocks))
+        page = read_page(connection, added)
     assert version == SCHEMA_VERSION
     assert (list_chats(imported), read_settings(imported)) == (chats, settings)
     assert kept == (library, [run])

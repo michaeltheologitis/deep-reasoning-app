@@ -188,9 +188,21 @@ def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_mess
         "explain an earlier answer",
         "say what each sub-agent did",
         "show it on a page",
+        "find where it really went wrong",
+        "say when there is nothing to show",
     ]
     for example in HAND_OFFS:
         assert example.messages[-1].content.endswith(f"<repl>\n{HAND_OFF}\n</repl>\n")
+        assert "as written (ctx.task, never reworded)" in example.messages[-1].content
+
+
+def test_root_is_told_to_pass_the_message_as_written_only_in_its_examples(
+    library, tmp_path
+):
+    # In root's suffix, the historian would inherit it, and hand off itself.
+    namespaces = run_config(library, tmp_path).namespaces
+    assert namespaces[ROOT].system_suffix is None
+    assert "ctx.task" not in namespaces[HISTORIAN].system_suffix
 
 
 @pytest.mark.parametrize("example", HISTORIANS, ids=lambda example: example.name)
@@ -206,6 +218,8 @@ def test_the_historian_reads_history_then_answers_in_a_later_cell(example):
     assert all("history." in each or "page." in each for each in working)
     assert all("FinalAnswer" not in each for each in [reading, *working])
     assert "FinalAnswer" in answering and "history." not in answering
+    # The answer says what was found, and leaves the page's link to the chat.
+    assert "/pages/" not in answering and "linked below" not in answering
 
 
 def test_a_library_made_with_an_empty_root_is_given_a_fresh_root_once(
@@ -868,8 +882,8 @@ def test_the_seeded_examples_and_the_engines_own_namespace_examples_pass(library
         for row in namespaces
         for each in row["decompositions"]
     ]
-    # the six seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
-    assert len(rows) == 13
+    # the ten seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
+    assert len(rows) == 17
     assert rows == [(name, []) for name, _ in rows]
 
 
