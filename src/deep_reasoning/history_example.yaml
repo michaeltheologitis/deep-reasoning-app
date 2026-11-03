@@ -10,7 +10,7 @@ messages:
   - {role: user, content: "How did you get that?"}
   - role: assistant
     content: |
-      <think>Read what I actually did, not guess; answer once I have seen it.</think>
+      <think>"That" is my last answer, to message 1. Read what I actually did then, not guess; answer once I have seen it.</think>
       <repl>
       print(history.steps(1))
       </repl>

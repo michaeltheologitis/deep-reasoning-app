@@ -28,6 +28,6 @@ messages:
       FinalAnswer(
           "There was no error in message 1: no cell failed, in either sub-agent or in my own "
           "cells. The second sub-agent (node 3), asked for the 10th Fibonacci number, answered "
-          "55 in one cell, so there is nothing to show."
+          "55, so there is nothing to show."
       )
       </repl>

@@ -42,6 +42,6 @@ messages:
           "No sub-agent had an error: both finished, answering 1229 and '1,033'. The error was "
           "in my own cell that started them: int() couldn't read the second count, '1,033', "
           "because of its comma (ValueError: invalid literal for int() with base 10: '1,033'). "
-          "My next cell took the comma out and answered 2262. The page shows the cell that failed."
+          "The page shows the cell that failed."
       )
       </repl>
