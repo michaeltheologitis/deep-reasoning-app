@@ -89,6 +89,15 @@ def repl(*lines: str, think: str = "") -> str:
     return head + "<repl>\n" + "\n".join(lines) + "\n</repl>"
 
 
+def folded_answer(literal: str) -> str:
+    """An earlier answer as a follow-up's model is shown it: the cell that gave it, with
+    the note that its work is folded away."""
+    return (
+        "<repl>\n# folded: the work behind this answer (its thoughts, cells and any "
+        f"sub-agents) isn't shown here, only the answer\nFinalAnswer({literal})\n</repl>"
+    )
+
+
 def library_cell(method: str, *args: Any) -> str:
     """A turn whose cell calls the library tool's *method* with *args* and prints what it
     returns."""

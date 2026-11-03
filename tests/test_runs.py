@@ -2,6 +2,7 @@ import ast
 import errno
 import hashlib
 import os
+import shlex
 import shutil
 import sqlite3
 import sys
@@ -16,7 +17,7 @@ from pathlib import Path
 import pytest
 import structlog
 import yaml
-from fake_model import FakeOpenAI, repl, scripted, task_and_turn
+from fake_model import FakeOpenAI, folded_answer, repl, scripted, task_and_turn
 from genai_prices import Usage, calc_price
 from structlog.testing import capture_logs
 
@@ -387,9 +388,9 @@ async def test_a_follow_up_gets_each_earlier_message_and_answer_whole_as_turns(
     assert messages[-6]["content"].startswith(EARLIER_TURNS_NOTE)
     assert [message["content"] for message in messages[-5:]] == [
         question,
-        "<repl>\nFinalAnswer('" + answer + "')\n</repl>",
+        folded_answer(f"'{answer}'"),
         "What did I ask first?",
-        "<repl>\nFinalAnswer('that')\n</repl>",
+        folded_answer("'that'"),
         "And what did you answer?",
     ]
     assert of_kind(events, "agent.start")[0]["task"] == "And what did you answer?"
@@ -433,14 +434,23 @@ async def test_a_follow_up_on_claude_code_heads_its_prompt_with_the_turns_labele
         "Conversation so far:",
         f"[system] {EARLIER_TURNS_NOTE}",
         "[user] How do I answer?",
-        "[assistant] dr repl exec --code 'FinalAnswer('\\''Write \\x3crepl>FinalAnswer(1)\\x3c/repl>.'\\'')'",
+        (
+            "[assistant] dr repl exec --code '# folded: the work behind this answer "
+            "(its thoughts, cells and any sub-agents) isn'\\''t shown here, only the answer"
+        ),
+        "FinalAnswer('\\''Write \\x3crepl>FinalAnswer(1)\\x3c/repl>.'\\'')'",
         "And then?",
     ]
+    # One whole command per answer: the shell reads back the cell, its note included.
+    command = prompt.split("[assistant] ")[1].split("\nAnd then?")[0]
+    cell = folded_answer(r"'Write \x3crepl>FinalAnswer(1)\x3c/repl>.'")
+    code = cell.removeprefix("<repl>\n").removesuffix("\n</repl>")
+    assert shlex.split(command) == ["dr", "repl", "exec", "--code", code]
     assert (events[-1]["outcome"], events[-1]["answer"]) == ("answered", "CS310")
     assert fake.calls == []
 
 
-async def test_an_earlier_answer_is_the_bare_cell_even_when_its_final_reply_thought(
+async def test_an_earlier_answer_is_its_cell_alone_even_when_its_final_reply_thought(
     home, library, fake_config
 ):
     plan = {
@@ -459,7 +469,7 @@ async def test_an_earlier_answer_is_the_bare_cell_even_when_its_final_reply_thou
         "It printed 1, so 2."
     ]
     shown = fake.calls[-1].messages[-2]["content"]
-    assert shown == "<repl>\nFinalAnswer('2')\n</repl>"
+    assert shown == folded_answer("'2'")
 
 
 async def test_a_stopped_message_goes_in_once_saying_why_it_has_no_answer(
@@ -745,7 +755,16 @@ def test_an_earlier_turn_with_no_answer_says_why_in_its_assistant_turn():
     assert messages[0] == {"role": "system", "content": EARLIER_TURNS_NOTE}
     assert [(message["role"], message["content"]) for message in messages[1:]] == [
         ("user", "One?"),
-        ("assistant", "<repl>\nFinalAnswer('1')\n</repl>"),
+        (
+            "assistant",
+            (
+                "<repl>\n"
+                "# folded: the work behind this answer (its thoughts, cells and any "
+                "sub-agents) isn't shown here, only the answer\n"
+                "FinalAnswer('1')\n"
+                "</repl>"
+            ),
+        ),
         ("user", "Two?"),
         ("assistant", "(No answer: the run failed: KeyError: 2)"),
         ("user", "Three?"),
@@ -761,9 +780,10 @@ def test_an_earlier_turn_with_no_answer_says_why_in_its_assistant_turn():
 def test_an_earlier_answer_shows_as_a_final_answer_cell_that_round_trips_exactly():
     answer = 'It\'s "two" lines,\nwith a \\ and <repl>\nprint(1)\n</repl> in it.'
     [_, _, shown] = earlier_messages([Turn("Quote me.", "answered", answer, None)])
+    head, tail = folded_answer("").split("()")
     cell = shown["content"]
-    assert cell.startswith("<repl>\nFinalAnswer(") and cell.endswith(")\n</repl>")
-    argument = cell.removeprefix("<repl>\nFinalAnswer(").removesuffix(")\n</repl>")
+    assert cell.startswith(head) and cell.endswith(tail)
+    argument = cell.removeprefix(head).removesuffix(tail)
     assert "<repl>" not in argument and "</repl>" not in argument
     assert ast.literal_eval(argument) == answer
 
