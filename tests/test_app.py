@@ -27,6 +27,7 @@ from fake_model import (
     WORD_COUNT,
     WORD_COUNT_DOC,
     FakeOpenAI,
+    folded_answer,
     library_cell,
     repl,
     scripted,
@@ -515,9 +516,9 @@ async def test_a_follow_up_gets_the_chat_so_far_as_turns_after_the_examples(
         ("system", DEFAULT_EXAMPLE_FENCE),
         ("system", EARLIER_TURNS_NOTE),
         ("user", "Count to two."),
-        ("assistant", "<repl>\nFinalAnswer('2')\n</repl>"),
+        ("assistant", folded_answer("'2'")),
         ("user", "What did I ask?"),
-        ("assistant", "<repl>\nFinalAnswer('to count')\n</repl>"),
+        ("assistant", folded_answer("'to count'")),
         ("user", "And what did you answer?"),
     ]
     assert [(message["role"], message["content"]) for message in fresh[-2:]] == [
@@ -2008,9 +2009,9 @@ async def test_the_page_and_a_follow_ups_turns_agree_on_how_each_run_started_and
     assert [(message["role"], message["content"]) for message in told] == [
         ("system", EARLIER_TURNS_NOTE),
         ("user", "Count to two."),
-        ("assistant", "<repl>\nFinalAnswer('2')\n</repl>"),
+        ("assistant", folded_answer("'2'")),
         ("user", "Again."),
-        ("assistant", "<repl>\nFinalAnswer('3')\n</repl>"),
+        ("assistant", folded_answer("'3'")),
         ("user", "What did I ask?"),
     ]
 
@@ -2537,7 +2538,7 @@ async def test_switching_namespace_mid_chat_runs_the_next_message_there(
     ]
     assert switched.json()["namespace"] == read["namespace"] == "course_advisor"
     texts = [message["content"] for message in fake.calls[-1].messages]
-    assert texts[-3:] == ["Hi.", "<repl>\nFinalAnswer('hello')\n</repl>", "Hi."]
+    assert texts[-3:] == ["Hi.", folded_answer("'hello'"), "Hi."]
 
 
 def test_a_namespace_or_model_the_app_does_not_have_is_refused(client):

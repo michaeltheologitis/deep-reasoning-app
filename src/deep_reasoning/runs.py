@@ -105,10 +105,13 @@ steps) is in neither this conversation nor ctx, but it is kept: to say how an ea
 answer was worked out or what its sub-agents did, or to show it on a page, do as the \
 worked examples do; never guess or redo it."""
 # An earlier turn's assistant turn: the cell that gave its answer, as the engine's worked
-# examples show one, or why it has none.
+# examples show one, or why it has none. The cell says its work is folded away: shown the
+# answer alone, root took a vague question about it ("did any of them have trouble?") as
+# one it could answer itself, and guessed.
 ANSWER = jinja2.Template(
     """\
 {% if turn.outcome == "answered" and turn.answer is not none %}<repl>
+# folded: the work behind this answer (its thoughts, cells and any sub-agents) isn't shown here, only the answer
 FinalAnswer({{ answer }})
 </repl>
 {%- elif turn.outcome == "failed" %}(No answer: the run failed: {{ turn.detail }})
@@ -436,8 +439,8 @@ def answer_literal(answer: Any) -> str:
 
 def earlier_messages(turns: Sequence[Turn]) -> list[dict[str, str]]:
     """The chat so far as chat messages for a fresh run: a system note, then each earlier
-    message, whole, as the user's turn and its answer, whole, as the assistant's. Nothing
-    for the chat's first message."""
+    message, whole, as the user's turn and its answer, whole, as the assistant's, in the
+    cell that gave it. Nothing for the chat's first message."""
     if not turns:
         return []
     messages = [{"role": "system", "content": EARLIER_TURNS_NOTE}]
