@@ -39,7 +39,10 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   and needs nothing. For the historian, run `reset`, which deletes the Library and every chat, or add `historian` in
   the panel (`tools: [history, page]`, `spawn: []`, and the examples a new Library has) and give root the five
   hand-off examples in place of its own `explain an earlier answer`. If your historian lacks `page`, add it to its
-  tools and give root and historian the examples a new Library has.
+  tools and give root and historian the examples a new Library has. One made after `page` came but before `errors`
+  has a `show it on a page` that prints the page's `/pages/…` link: replace it in root and historian with a new
+  Library's, and add a new Library's `find where it really went wrong` and `say when there is nothing to show` to
+  both.
 - The agent can show you something on a page of its own, with the app's `page` tool: Markdown text, tables, and steps
   or sub-agents of the chat's earlier messages, copied from their record and drawn as the chat draws them. A line
   under the answer, and a step in its tree, open the page in a new tab; the answer itself says what was found, and
