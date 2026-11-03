@@ -235,15 +235,16 @@ before (None when added), after} or {kind: "page", page, title} (a page opened f
 user), each with its drive.
   history.errors(turn=None): what went wrong anywhere in message `turn`, or in every \
 earlier message: each failed cell of any agent, the top one included, as turn, node, \
-task, index (its place in history.steps(turn, node)), error (the output's last line) and \
-code; then each agent that ended failed, stopped or exhausted, with index None. Start \
-here for any question about an error.
+task, index (its place in history.steps(turn, node)), error (what it raised) and code; \
+then each agent that ended failed, stopped or exhausted, with index None. Start here for \
+any question about an error.
   history.find(text, turn=None): where `text` is, ignoring case, in any agent's task, \
 thoughts, code, outputs and result: turn, node, index (None for a task or result), kind \
 and a snippet. Use it to find anything the user names.
   history.full(turn, node, index): history.steps(turn, node)[index] whole.
 Each text these return is cut after 2,000 characters, ending "…(+N chars)" with how many \
-were cut; history.full gives a step uncut."""
+were cut; history.full gives a step uncut. errors and find list at most 50 rows, then \
+{more, note}: how many more, and to pass a turn to list fewer."""
 LIBRARY_DESCRIPTION = """\
 The `library` tool reads and writes the app's Library: its namespaces, each with its own \
 fields, the decompositions (worked examples) each one's agents are shown, and the custom \

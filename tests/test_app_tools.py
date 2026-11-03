@@ -11,8 +11,11 @@ from structlog.testing import capture_logs
 
 from deep_reasoning.app_tools import (
     EMPTY,
+    MAX_FOUND,
     MAX_VALUE_CHARS,
+    MAX_VALUE_DEPTH,
     MAX_YAML_CHARS,
+    NESTED_TOO_DEEP,
     NOT_A_REF,
     NOT_A_TOOL,
     NOT_AN_INDEX,
@@ -381,6 +384,128 @@ def test_errors_list_a_run_the_app_stopped_under_as_failed(library):
     plant(library, CHAT, recorded("killed")[:-1])
     top, _ = history_of(library).errors(1)
     assert (top["node"], top["error"]) == (None, f"It ended failed: {LOST}")
+
+
+def test_errors_give_what_a_sub_agents_cell_raised_and_its_index_in_its_steps(library):
+    plant(library, CHAT, recorded("raising"))
+    history = history_of(library)
+    found = history.errors(1)
+    assert [(each["node"], each["index"], each["error"]) for each in found] == [
+        (2, 1, "ValueError: 2 problems:\ntools: bad\nspawn: bad"),
+        (2, 2, "ExceptionGroup: x (2 sub-exceptions)\nValueError: 1\nKeyError: 2"),
+        (2, 3, "ValueError: after"),
+    ]
+    assert {each["task"] for each in found} == {"Raise them."}
+    for each in found:
+        assert history.steps(1, node=2)[each["index"]]["code"] == each["code"]
+
+
+@pytest.mark.parametrize("outcome", [["failed"], {"failed": True}])
+def test_a_crafted_outcome_that_is_no_text_leaves_errors_and_find_working(
+    library, outcome
+):
+    run = crafted(*ROOT_AND_CELL)
+    run[-1] |= {"outcome": outcome}
+    plant(library, CHAT, run)
+    history = history_of(library)
+    assert history.errors() == []
+    assert [each["kind"] for each in history.find("crafted")] == ["task", "result"]
+
+
+def test_errors_and_find_read_a_crafted_record_whose_fields_are_no_text(library):
+    run = crafted(
+        {"kind": "agent.start", "node": 1, "parent": None, "cell": None},
+        {"kind": "think", "node": 1, "text": ["odd"]},
+        {"kind": "cell.start", "node": 1, "cell": 1, "code": {"odd": "code"}},
+        {"kind": "cell.end", "node": 1, "cell": 1, "code": 7, "output": ["odd"]}
+        | {"status": "failed"},
+        {"kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": ["odd"]},
+        {"kind": "agent.end", "node": 2, "status": ["failed"], "result": {"odd": 1}},
+        {"kind": "agent.start", "node": 3, "parent": 1, "cell": 1, "task": None},
+        {"kind": "agent.end", "node": 3, "status": "failed", "result": 5},
+    )
+    plant(library, CHAT, run)
+    history = history_of(library)
+    assert history.errors(1) == [
+        {"turn": 1, "node": None, "task": "Crafted.", "index": 1, "error": None}
+        | {"code": 7},
+        {"turn": 1, "node": 3, "task": None, "index": None}
+        | {"error": "It ended failed: 5", "code": None},
+    ]
+    assert history.find("odd") == []
+    assert [each["kind"] for each in history.find("crafted")] == ["task", "result"]
+
+
+# Deeper than Python recurses by default, as a file from someone else may nest a value.
+DEEP = json.loads("[" * 1_200 + '"deep"' + "]" * 1_200)
+
+
+def test_a_value_nested_too_deep_is_marked_where_it_nests_too_deep_and_prints(library):
+    run = crafted(
+        *ROOT_CELL_AND_SUB_AGENT,
+        {"kind": "agent.end", "node": 2, "status": "failed", "result": DEEP},
+        {"kind": "cell.end", "node": 1, "cell": 1, "code": DEEP, "output": DEEP}
+        | {"status": "failed"},
+    )
+    run[-1] |= {"answer": DEEP}
+    plant(library, CHAT, run)
+    history = history_of(library)
+    for listed in (
+        history.turns(),
+        history.agents(1),
+        history.steps(1),
+        history.errors(1),
+    ):
+        assert NESTED_TOO_DEEP in str(listed)
+    code = history.steps(1)[0]["code"]
+    # Under the list of steps and the cell's dict.
+    for _ in range(MAX_VALUE_DEPTH - 2):
+        [code] = code
+    assert code == NESTED_TOO_DEEP
+
+
+@pytest.mark.parametrize("node", [None, 1])
+def test_a_crafted_sub_agent_named_as_the_top_agent_is_never_listed_as_it(
+    library, node
+):
+    run = crafted(
+        *ROOT_AND_CELL,
+        {"kind": "agent.start", "node": node, "parent": 1, "cell": 1, "task": "Odd."},
+        {"kind": "cell.start", "node": node, "cell": 2, "code": "odd()"},
+        {"kind": "cell.end", "node": node, "cell": 2, "code": "odd()"}
+        | {"output": "NameError: odd", "status": "failed"},
+    )
+    plant(library, CHAT, run)
+    history = history_of(library)
+    assert history.errors(1) == []
+    assert history.find("odd") == []
+    assert [step["code"] for step in history.steps(1)] == ["print('kept')"]
+
+
+def test_errors_and_find_list_at_most_50_rows_then_how_many_more(library):
+    cells = [
+        each
+        for cell in range(1, MAX_FOUND + 11)
+        for each in (
+            {"kind": "cell.start", "node": 1, "cell": cell, "code": "fail()"},
+            {"kind": "cell.end", "node": 1, "cell": cell, "code": "fail()"}
+            | {"output": "NameError: name 'f' is not defined", "status": "failed"},
+        )
+    ]
+    plant(library, CHAT, crafted(ROOT_AND_CELL[0], *cells))
+    history = history_of(library)
+    errors, found = history.errors(), history.find("fail")
+    assert [len(errors), len(found)] == [MAX_FOUND + 1, MAX_FOUND + 1]
+    assert errors[MAX_FOUND - 1]["index"] == found[MAX_FOUND - 1]["index"] == 49
+    assert errors[-1] == {
+        "more": 10,
+        "note": "10 more not listed: pass a turn to list only that message's.",
+    }
+    assert found[-1] == {
+        "more": 10,
+        "note": "10 more not listed: pass a turn, or longer text, to list fewer.",
+    }
+    assert f"at most {MAX_FOUND} rows" in HISTORY_DESCRIPTION
 
 
 def test_turns_and_agents_count_the_failed_cells_the_turns_its_sub_agents_too(library):
@@ -986,7 +1111,16 @@ def drives_in(rows):
 
 
 AGENT_FIELDS = ("node", "drive", "task", "namespace", "status", "result", "cost")
-RECORDED = ["fanout", "nested", "drives", "failing", "stopped", "librarian", "pages"]
+RECORDED = [
+    "fanout",
+    "nested",
+    "drives",
+    "failing",
+    "raising",
+    "stopped",
+    "librarian",
+    "pages",
+]
 
 
 def whole_steps(history, turn, node):

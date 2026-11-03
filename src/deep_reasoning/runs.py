@@ -25,6 +25,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
+from itertools import takewhile
 from pathlib import Path
 from typing import Any, Literal
 
@@ -79,6 +80,21 @@ LARGEST_NUMBER = 2**53
 # What an event row from a file someone else wrote may fail with.
 UNREADABLE = (TypeError, ValueError, RecursionError, OverflowError)
 NOT_ENDED = (*UNREADABLE, KeyError, IndexError, sqlite3.Error)
+FINAL_ANSWER = "FinalAnswer: "
+TRACEBACK_HEAD = re.compile(
+    r"^(?:Traceback|  \+ Exception Group Traceback) \(most recent call last\):$",
+    re.MULTILINE,
+)
+FRAME = "  "
+EXCEPTION_LINE = re.compile(r"[^\s:]+(?:: .*)?")
+# Each line of an exception group's traceback hangs off its frame: "  |", "  +-+", "    |".
+GROUP_LINE = re.compile(r" +[|+]")
+# A line of an exception group's own text, past its frame: "    | ValueError: 1".
+GROUP_TEXT = re.compile(r" +\| (\S.*)")
+# Where 0.3.0's REPL runs a cell: a traceback a cell raised starts here.
+REPL_EXEC = re.compile(
+    r'  File ".*[/\\]deep_reasoner[/\\].*", line \d+, in (?:run_code|_exec_and_capture)'
+)
 # What a follow-up's run is told ahead of the chat's earlier turns.
 EARLIER_TURNS_NOTE = """\
 This conversation began before this run: the user's earlier messages and your answers \
@@ -353,6 +369,40 @@ def ended_as_lost(connection: sqlite3.Connection, run: str) -> bool:
         log.warning("runs.not_ended", run=run, error=repr(error))
         return False
     return True
+
+
+def raised_error(output: str) -> str | None:
+    """What a cell raised, as its traceback's exception lines, or None when it raised
+    nothing. repl.execute logs no sign of it but the observation, which the engine ends
+    with the traceback, in format_exc's shape, then at most a FinalAnswer line. A raised
+    traceback starts at the REPL's exec, and its message may run on over lines; one the
+    cell printed starts in the cell, so it must end at its exception line. A printed repr,
+    such as a recorded step's, escapes its newlines."""
+    body, _, last = output.rpartition("\n")
+    if not last.startswith(FINAL_ANSWER):
+        body = output
+    heads = list(TRACEBACK_HEAD.finditer(body))
+    if not heads:
+        return None
+    head, *lines = body[heads[-1].start() :].rstrip("\n").split("\n")
+    if head.startswith(" "):
+        return group_error(lines)
+    frames = list(takewhile(lambda line: line.startswith(FRAME), lines))
+    rest = lines[len(frames) :]
+    if not frames or not rest or not EXCEPTION_LINE.fullmatch(rest[0]):
+        return None
+    if len(rest) > 1 and REPL_EXEC.fullmatch(frames[0]) is None:
+        return None
+    return "\n".join(rest)
+
+
+def group_error(lines: list[str]) -> str | None:
+    """An exception group's exception lines, its own then its sub-exceptions', from the
+    lines under its traceback's head; None unless each hangs off its frame."""
+    if not lines or not all(GROUP_LINE.match(line) for line in lines):
+        return None
+    texts = [match[1] for line in lines if (match := GROUP_TEXT.fullmatch(line))]
+    return "\n".join(text for text in texts if EXCEPTION_LINE.fullmatch(text))
 
 
 def secrets_of(env: dict[str, str], names: Sequence[str]) -> list[str]:

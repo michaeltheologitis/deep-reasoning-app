@@ -87,6 +87,7 @@ from deep_reasoning.runs import (
     CHANGE_FIELDS,
     PAGE_FIELDS,
     chat_turns,
+    raised_error,
     secrets_of,
     total_cost,
     withheld,
@@ -168,13 +169,17 @@ NO_EARLIER = "This chat has no earlier messages: this is its first."
 # history cuts each text it returns past this, so one huge output can't swamp the prompt;
 # history.full gives a step whole.
 MAX_VALUE_CHARS = 2_000
+# And each list or dict nested deeper than this: no run of the app's nests one past a
+# few levels, and a file from someone else may nest one thousands deep.
+MAX_VALUE_DEPTH = 20
+NESTED_TOO_DEEP = "…(nested too deep)"
+# errors and find list at most this many rows, then one saying how many more.
+MAX_FOUND = 50
 # What find shows on each side of a match.
 SNIPPET_CHARS = 60
 NOT_FINDABLE = (
     "find takes the text to look for, as text (a str) of one character or more."
 )
-# The top agent's end, worded as a sub-agent's status.
-TOP_STATUS = {"answered": "done"}
 ENDED_BADLY = ("failed", "stopped", "exhausted")
 # What find searches in each kind of step, as (kind, field).
 SEARCHED = {
@@ -318,11 +323,19 @@ def folded(events: list[Event]) -> Tree:
     return tree
 
 
+def failed(step: Event) -> bool:
+    return step["kind"] == "cell" and step["status"] == "failed"
+
+
 def failed_cells(holder: Holder) -> int:
-    return sum(
-        step["kind"] == "cell" and step["status"] == "failed"
-        for step in holder["steps"]
-    )
+    return sum(map(failed, holder["steps"]))
+
+
+def indexed(drives: list[Holder]) -> Iterator[tuple[int, Holder, Event]]:
+    """Each step of *drives* as steps() lists them: its place from 0, its drive, and the
+    step."""
+    steps = ((row, step) for row in drives for step in row["steps"])
+    return ((index, row, step) for index, (row, step) in enumerate(steps))
 
 
 def turn_row(number: int, events: list[Event], tree: Tree) -> dict[str, Any]:
@@ -347,21 +360,37 @@ def agent_row(row: Holder) -> dict[str, Any]:
     }
 
 
-def cut(value: Any) -> Any:
+def cut(value: Any, depth: int = 0) -> Any:
     """*value*, copied, with each text past MAX_VALUE_CHARS cut there, saying how much is
-    left out."""
+    left out, and each list or dict past MAX_VALUE_DEPTH levels marked in its place."""
     if isinstance(value, str) and len(value) > MAX_VALUE_CHARS:
         return f"{value[:MAX_VALUE_CHARS]}…(+{len(value) - MAX_VALUE_CHARS:,} chars)"
+    if not isinstance(value, dict | list):
+        return value
+    if depth == MAX_VALUE_DEPTH:
+        return NESTED_TOO_DEEP
     if isinstance(value, dict):
-        return {name: cut(each) for name, each in value.items()}
-    if isinstance(value, list):
-        return [cut(each) for each in value]
-    return value
+        return {name: cut(each, depth + 1) for name, each in value.items()}
+    return [cut(each, depth + 1) for each in value]
 
 
-def last_line(text: Any) -> str | None:
-    lines = text.strip().splitlines() if isinstance(text, str) else []
-    return lines[-1] if lines else None
+def error_of(output: Any) -> str | None:
+    """What a failed cell raised, as its traceback's exception lines; else, as in a record
+    from someone else, its output's last line."""
+    if not isinstance(output, str):
+        return None
+    lines = output.strip().splitlines()
+    return raised_error(output) or (lines[-1] if lines else None)
+
+
+def capped(found: list[dict[str, Any]], narrower: str) -> list[dict[str, Any]]:
+    """*found*, at most MAX_FOUND rows of it, then a row saying how many more were left
+    out and how to list them: *narrower*."""
+    more = len(found) - MAX_FOUND
+    if more <= 0:
+        return found
+    note = f"{more:,} more not listed: {narrower}"
+    return [*found[:MAX_FOUND], {"more": more, "note": note}]
 
 
 def ending(drive: Holder) -> str:
@@ -455,16 +484,14 @@ class History:
         lists them: its place from 0, the drive it is in, and the step."""
         if type(index) is not int:
             raise ValueError(NOT_AN_INDEX)
-        steps = [
-            (row, step) for row in self.drives(turn, node) for step in row["steps"]
-        ]
+        steps = list(indexed(self.drives(turn, node)))
         if not -len(steps) <= index < len(steps):
             who = "top agent" if node is None else f"agent {node!r}"
             raise ValueError(
                 f"Message {turn}'s {who} has {count(len(steps), 'step')}, numbered from"
                 f" 0: there is no step {index}."
             )
-        return index % len(steps), *steps[index]
+        return steps[index]
 
     def numbered(self, turn: int | None) -> list[int]:
         """Message *turn*, once it is checked, or every earlier one when None."""
@@ -476,19 +503,24 @@ class History:
         return list(range(1, len(self._runs) + 1))
 
     def agents_of(self, turn: int) -> Iterator[tuple[Any, list[Holder]]]:
-        """Message *turn*'s agents, each as its node and drives: the top agent first, as
-        node None, its drive with the task, status and result a sub-agent's has."""
+        """Message *turn*'s agents as drives() reaches them, each as its node and drives:
+        the top agent first, as node None, its drive with the task, status and result a
+        sub-agent's has. A sub-agent's row named None or the root's node, as a file from
+        someone else may hold, is the top agent's to drives(), so it is left out."""
         events, tree = self._runs[turn - 1]
         start, end = events[0], events[-1]
         outcome = end.get("outcome")
         top = tree.root | {
             "task": start["prompt"],
-            "status": TOP_STATUS.get(outcome, outcome),
+            "status": "done" if outcome == "answered" else outcome,
             "result": end.get("answer") or end.get("detail"),
         }
         yield None, [top]
-        for node in dict.fromkeys(row["node"] for row in tree.rows):
-            yield node, [row for row in tree.rows if row["node"] == node]
+        sub_agents: dict[Any, list[Holder]] = {}
+        for row in tree.rows:
+            if row["node"] is not None and row["node"] != tree.root["node"]:
+                sub_agents.setdefault(row["node"], []).append(row)
+        yield from sub_agents.items()
 
     def turns(self) -> list[dict[str, Any]]:
         """This chat's earlier messages, numbered from 1, with how each ended."""
@@ -504,7 +536,7 @@ class History:
         """The thoughts, cells, Library changes and pages of message *turn*'s top agent,
         or of sub-agent *node*."""
         # A copy: the folded runs are kept for the next call.
-        return cut([step for row in self.drives(turn, node) for step in row["steps"]])
+        return cut([step for _, _, step in indexed(self.drives(turn, node))])
 
     def full(self, turn: int, node: Any, index: int) -> dict[str, Any]:
         """steps(turn, node)[index], nothing cut."""
@@ -516,19 +548,18 @@ class History:
         found = [
             each for number in self.numbered(turn) for each in self.failures(number)
         ]
-        return cut(found)
+        return cut(capped(found, "pass a turn to list only that message's."))
 
     def failures(self, turn: int) -> Iterator[dict[str, Any]]:
         """Message *turn*'s failed cells and drives that didn't answer, agent by agent."""
         for node, drives in self.agents_of(turn):
             at = {"turn": turn, "node": node}
-            steps = [(row, step) for row in drives for step in row["steps"]]
             yield from (
                 at
                 | {"task": row["task"], "index": index}
-                | {"error": last_line(step["output"]), "code": step["code"]}
-                for index, (row, step) in enumerate(steps)
-                if step["kind"] == "cell" and step["status"] == "failed"
+                | {"error": error_of(step["output"]), "code": step["code"]}
+                for index, row, step in indexed(drives)
+                if failed(step)
             )
             yield from (
                 at
@@ -551,17 +582,16 @@ class History:
             for node, index, kind, value in self.texts(number)
             if isinstance(value, str) and (match := pattern.search(value))
         ]
-        return cut(found)
+        return cut(capped(found, "pass a turn, or longer text, to list fewer."))
 
     def texts(self, turn: int) -> Iterator[tuple[Any, int | None, str, Any]]:
         """Each text of message *turn* that find searches, as its agent's node, its step's
         index (None for a task or result), its kind and the text."""
         for node, drives in self.agents_of(turn):
-            steps = [step for row in drives for step in row["steps"]]
             yield from ((node, None, "task", row["task"]) for row in drives)
             yield from (
                 (node, index, kind, step[key])
-                for index, step in enumerate(steps)
+                for index, _, step in indexed(drives)
                 for kind, key in SEARCHED.get(step["kind"], [])
             )
             yield from ((node, None, "result", row["result"]) for row in drives)
