@@ -1,6 +1,6 @@
 // Draws a run's tree as the chat shows it: its steps, and its sub-agents as rows that click open and shut, each redrawn alone.
 // The chat (app.js) and a page's tab (page.js) both draw with it.
-import { asText, changeText, clip } from "./fold.js";
+import { CUT_OFF, asText, changeText, clip } from "./fold.js";
 
 const FIRST_ROWS = 20;
 const MORE_ROWS = 100;
@@ -66,7 +66,7 @@ const STATUS_WORDS = { 401: NO_KEY, 403: NO_ACCESS, 429: RATE_LIMITED };
 // ︎ keeps ✳ a text glyph where the system would draw it as an emoji
 const SPIN = ["·", "✢", "✳︎", "✶", "✻", "✽", "✻", "✶", "✳︎", "✢"];
 // a cell's status as words for a screen reader, beside its glyph's colour
-const SPOKEN_STATUS = new Set(["failed", "stopped", "running"]);
+const SPOKEN_STATUS = new Set(["failed", "stopped", CUT_OFF, "running"]);
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
 const STILL_FRAME = 2;
 const STATUS = {
@@ -75,6 +75,7 @@ const STATUS = {
   exhausted: ["out of turns", "warn"],
   failed: ["failed", "err"],
   stopped: ["stopped", ""],
+  [CUT_OFF]: [CUT_OFF, ""],
 };
 
 const opened = new WeakSet();
@@ -108,8 +109,8 @@ function element(tag, props = {}, ...kids) {
 const known = (table, key) => (Object.hasOwn(table, key) ? table[key] : []);
 const join = (items, separator) => items.flatMap((item, i) => (i ? [separator, item] : [item]));
 const since = (start) => Date.now() / MS_PER_SECOND - start;
-// a cell that raised or was stopped gave no answer, whatever its code starts with
-const NO_ANSWER = ["failed", "stopped"];
+// a cell that raised, or was stopped or cut off, gave no answer, whatever its code starts with
+const NO_ANSWER = ["failed", "stopped", CUT_OFF];
 const isFinal = (cell) => !NO_ANSWER.includes(cell.status) && cell.code.startsWith("FinalAnswer(");
 const formatCount = (count) => counter.format(count);
 const plural = (count, noun) => `${formatCount(count)} ${noun}${count === 1 ? "" : "s"}`;
@@ -118,20 +119,29 @@ const keyOf = (node) => {
   return keys.get(node);
 };
 
-// cents from a cent up, else to a hundredth of a cent
-const costDigits = (usd) => (usd >= 0.01 ? 2 : 4);
+// One rule for every cost: under a dollar to a hundredth of a cent, from a dollar to the cent, so a total is never finer than
+// the costs it adds up, which add up to it as near as rounding allows; one less than the least shown as "<$0.0001".
+const LEAST_COST = 0.0001;
+const SMALL_DIGITS = 4;
+const LARGE_DIGITS = 2;
+const money = (digits) => new Intl.NumberFormat("en", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const SMALL_COST = money(SMALL_DIGITS);
+const LARGE_COST = money(LARGE_DIGITS);
 
-function formatCost(usd, digits = costDigits(usd)) {
+function formatCost(usd) {
   if (usd == null) return null;
   if (usd === 0) return "$0";
-  return `$${usd.toFixed(digits)}`;
+  if (usd > 0 && usd < LEAST_COST) return `<$${SMALL_COST.format(LEAST_COST)}`;
+  // judged as rounded, so $0.99996 reads $1.00, and a cent always $0.0100
+  const small = Math.abs(Number(usd.toFixed(SMALL_DIGITS))) < 1;
+  return `$${(small ? SMALL_COST : LARGE_COST).format(usd)}`;
 }
 
-// What priced turns cost together, to the decimals of the finest one's figure, so it reads as their sum; null for none.
+// What priced turns cost together, by the same rule; null for none.
 function formatTotal(costs) {
   const priced = costs.filter((cost) => cost > 0);
   if (!priced.length) return null;
-  return formatCost(priced.reduce((sum, cost) => sum + cost, 0), Math.max(...priced.map(costDigits)));
+  return formatCost(priced.reduce((sum, cost) => sum + cost, 0));
 }
 
 // An unpriced call's cost is unknown, not free; a holder with no calls yet shows none.
@@ -152,6 +162,12 @@ const spinner = () => element("span", { class: "spin", "aria-hidden": "true" }, 
 const clock = (start) => element("span", { "data-since": start }, formatSeconds(since(start)));
 const caret = (open) => element("span", { class: "caret", "aria-hidden": "true" }, open ? "▾" : "▸");
 const decor = (text, props = {}) => element("span", { "aria-hidden": "true", ...props }, text);
+
+// A dotted namespace's name in two parts, for a line too narrow for it: its parents are cut first, so its own name shows.
+function nameParts(name) {
+  const own = name.lastIndexOf(".") + 1;
+  return [own > 0 && element("span", { class: "ns-parents" }, name.slice(0, own)), element("span", { class: "ns-own" }, name.slice(own))];
+}
 
 // A toggle redraws only its own node, so a click stays quick with thousands of rows shown.
 function remember(node, el, again) {
@@ -251,7 +267,7 @@ function errorLine(lines) {
 
 function renderOutput(cell, full, root) {
   const tone = cell.status === "failed" ? "err" : "";
-  if (cell.status === "stopped") return null;
+  if (cell.status === "stopped" || cell.status === CUT_OFF) return null;
   if (cell.output == null) return cell.agents.length ? null : out("Running…");
   // a cell closed as its agent ended has no output, and an empty red line would read as one
   if (cell.status === "failed" && !cell.output.trim()) return null;
@@ -265,7 +281,8 @@ function renderOutput(cell, full, root) {
   return out(lines[0] || "(no output)", { more });
 }
 
-const glyph = (cell) => element("span", { class: `glyph ${cell.status}` }, decor("●"), SPOKEN_STATUS.has(cell.status) && element("span", { class: "sr-only" }, ` ${cell.status}`));
+// "cut off" as one class, cut-off
+const glyph = (cell) => element("span", { class: `glyph ${asText(cell.status).replaceAll(" ", "-")}` }, decor("●"), SPOKEN_STATUS.has(cell.status) && element("span", { class: "sr-only" }, ` ${cell.status}`));
 
 function renderThink(step) {
   const open = opened.has(step);
@@ -580,11 +597,13 @@ export {
   decor,
   element,
   failureView,
+  formatCost,
   formatSeconds,
   formatTotal,
   join,
   known,
   markdownHtml,
+  nameParts,
   opened,
   out,
   pageLink,

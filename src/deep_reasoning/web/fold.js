@@ -3,6 +3,8 @@
 // and words a Library change.
 
 const FIELD_CHARS = 60;
+const STOPPED = "stopped";
+export const CUT_OFF = "cut off";
 
 // a cut never keeps half of an emoji, or of another character past U+FFFF: alone, it shows as �
 export const clip = (text, chars) => (text.length > chars ? `${text.slice(0, chars - 1).replace(/[\uD800-\uDBFF]$/, "")}…` : text);
@@ -134,7 +136,7 @@ function endTurn(fold, event) {
   const unfinished = cost === 0 && event.unfinished_calls > 0;
   const priced = typeof cost === "number" && !unfinished;
   Object.assign(fold.turn, { outcome, answer, detail, cost: priced ? cost : null, unpriced: !priced && !unfinished, unfinished, seconds });
-  markStopped(fold.turn, event.t);
+  markLeftGoing(fold.turn, event.t, outcome === STOPPED ? STOPPED : CUT_OFF);
 }
 
 // Each node of a turn's tree with where it is, "turn" or its steps' and sub-agents' places, the same each time its events are folded.
@@ -153,14 +155,14 @@ function* nodesBelow(holder, path) {
   }
 }
 
-// What the run left going when it ended was stopped with it.
-function markStopped(holder, t) {
+// What the run left going when it ended ends as status: stopped with a run that was stopped, else cut off, as when the app stopped under it.
+function markLeftGoing(holder, t, status) {
   for (const step of holder.steps) {
     if (step.kind !== "cell") continue;
-    if (step.status === "running") step.status = "stopped";
+    if (step.status === "running") step.status = status;
     for (const agent of step.agents) {
-      if (agent.status === "running") Object.assign(agent, { status: "stopped", seconds: t - agent.started });
-      markStopped(agent, t);
+      if (agent.status === "running") Object.assign(agent, { status, seconds: t - agent.started });
+      markLeftGoing(agent, t, status);
     }
   }
 }

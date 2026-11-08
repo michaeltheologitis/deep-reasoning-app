@@ -42,8 +42,10 @@ MAYBE_TEXT = (str, NONE)
 MAYBE_NUMBER = (int, float, NONE)
 NODE = (int, str, NONE)
 # What fold.js gives a sub-agent's drive and a cell, as the page draws them.
-DRIVE_STATUSES = frozenset({"running", "done", "exhausted", "failed", "stopped"})
-CELL_STATUSES = frozenset({"running", "done", "failed", "stopped"})
+DRIVE_STATUSES = frozenset(
+    {"running", "done", "exhausted", "failed", "stopped", "cut off"}
+)
+CELL_STATUSES = frozenset({"running", "done", "failed", "stopped", "cut off"})
 # The fields of each block, and of each step and sub-agent drive it copies, that the page
 # draws: each of one of its types, or one of its texts. A Library change's fields, and a
 # worked example's left out, show as text, whatever they hold.

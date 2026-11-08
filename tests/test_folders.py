@@ -37,6 +37,7 @@ def with_sentinel(folder):
 def test_a_listing_has_the_subfolders_hidden_last_and_no_files(code):
     listing = list_folders("~/code")
     assert listing["path"] == "~/code" and listing["parent"] == "~"
+    assert listing["problem"] is None
     assert listing["folders"] == [
         {"name": "Notes", "path": "~/code/Notes"},
         {"name": "thesis", "path": "~/code/thesis"},
@@ -68,11 +69,29 @@ def test_the_root_has_no_parent_and_outside_home_paths_stay_whole():
     ],
 )
 def test_a_path_that_is_not_a_folder_is_refused_in_plain_words(code, typed, problem):
-    with pytest.raises(FolderError) as listing:
-        list_folders(typed)
     with pytest.raises(FolderError) as choosing:
         chosen_folder(typed)
-    assert str(listing.value) == str(choosing.value) == problem
+    assert str(choosing.value) == problem
+
+
+@pytest.mark.parametrize(
+    "typed", ["/no/such/folder", "~/cod", "~/a\x00b", "~/" + "x" * 300]
+)
+def test_a_path_with_nothing_there_lists_nothing_and_says_so_without_a_refusal(
+    code, typed
+):
+    listing = list_folders(typed)
+    with pytest.raises(FolderError) as choosing:
+        chosen_folder(typed)
+    assert (listing["folders"], listing["parent"]) == ([], None)
+    assert listing["problem"] == str(choosing.value)
+
+
+def test_a_file_is_refused_by_the_listing_too(code):
+    with pytest.raises(
+        FolderError, match=r"^~/code/todo\.txt is a file, not a folder\.$"
+    ):
+        list_folders("~/code/todo.txt")
 
 
 def test_a_listing_leaves_out_what_the_page_could_not_show_or_open(code):

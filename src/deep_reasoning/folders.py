@@ -46,15 +46,23 @@ def typed_path(typed: str) -> Path:
     return Path(os.path.normpath(Path.home() / os.path.expanduser(typed.strip())))
 
 
+def no_folder(folder: Path) -> str:
+    return f"There is no folder {short_path(folder)}."
+
+
 def existing_folder(typed: str) -> Path:
-    """The folder at *typed*, or why there is none. os.path's checks answer False for any
-    path the system can't take (too long, a NUL in it) instead of raising."""
-    folder = typed_path(typed)
+    """The folder at *typed*, or why there is none."""
+    return checked_folder(typed_path(typed))
+
+
+def checked_folder(folder: Path) -> Path:
+    """*folder*, made absolute, if it is a folder, or why not. os.path's checks answer
+    False for any path the system can't take (too long, a NUL in it) instead of raising."""
     if os.path.isdir(folder):
         return folder
     if os.path.exists(folder):
         raise FolderError(f"{short_path(folder)} is a file, not a folder.")
-    raise FolderError(f"There is no folder {short_path(folder)}.")
+    raise FolderError(no_folder(folder))
 
 
 def chosen_folder(typed: str | None) -> str | None:
@@ -77,8 +85,17 @@ def listable(entry: os.DirEntry) -> bool:
 
 def list_folders(typed: str) -> dict[str, Any]:
     """The folder at *typed* and its subfolders, hidden ones last; its parent for "..",
-    None at the root."""
-    folder = existing_folder(typed)
+    None at the root. Nothing at *typed*, as with a path half typed, lists nothing and
+    says so (problem), as the picker asks at each pause in typing: no refusal."""
+    folder = typed_path(typed)
+    if not os.path.exists(folder):
+        return {
+            "path": short_path(folder),
+            "parent": None,
+            "folders": [],
+            "problem": no_folder(folder),
+        }
+    checked_folder(folder)
     try:
         with os.scandir(folder) as entries:
             names = [entry.name for entry in entries if listable(entry)]
@@ -94,6 +111,7 @@ def list_folders(typed: str) -> dict[str, Any]:
         "folders": [
             {"name": name, "path": short_path(folder / name)} for name in names
         ],
+        "problem": None,
     }
 
 
