@@ -1177,7 +1177,8 @@ def field_changes(before: str, after: str) -> tuple[dict[str, Any], list[str]]:
 
 def in_brief(row: dict[str, Any], registry: NamespaceRegistry) -> dict[str, Any]:
     """A namespace as show() lists it: what it sets itself and the tools its agents get,
-    and each of its decompositions with how many problems it has, each text cut short."""
+    and each of its own decompositions with how many problems it has, each text cut
+    short."""
     brief = {
         "name": row["name"],
         "depth": row["depth"],
@@ -1189,6 +1190,29 @@ def in_brief(row: dict[str, Any], registry: NamespaceRegistry) -> dict[str, Any]
         ],
     }
     return cut(brief, limit=BRIEF_CHARS)
+
+
+def whole(
+    row: dict[str, Any], rows: list[dict[str, Any]], registry: NamespaceRegistry
+) -> dict[str, Any]:
+    """Namespace *row* as show(name) gives it, of *rows* as the panel shows them: every
+    decomposition its agents are shown, as the engine resolves them along its chain, from
+    the namespace holding it, its own with their YAML and problems; but not what only the
+    panel's Delete needs, which an agent that can't delete took for a reason not to edit."""
+    by_name = {each["name"]: each for each in rows}
+    seen = {}
+    for level in registry.chain(row["name"]):
+        for each in by_name[level]["decompositions"]:
+            seen[each["name"]] = {"name": each["name"], "from": level}
+    for each in row["decompositions"]:
+        seen[each["name"]] |= {"yaml": each["yaml"], "problems": each["problems"]}
+    return {
+        "name": row["name"],
+        "depth": row["depth"],
+        "yaml": row["yaml"],
+        "fields": row["fields"],
+        "decompositions": list(seen.values()),
+    }
 
 
 def tool_entries(connection: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -1317,7 +1341,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             ]
         if name is None:
             return [in_brief(row, registry) for row in rows]
-        return named(rows, name, "namespace", "show()")
+        return whole(named(rows, name, "namespace", "show()"), rows, registry)
 
     def tools(name: str | None = None) -> Any:
         """Every tool in brief, or tool *name* whole, with its source."""
