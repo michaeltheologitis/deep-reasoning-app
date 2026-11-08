@@ -64,6 +64,8 @@ FAN_OUT = {
 }
 FAN_OUT_ANSWER = "{'C1': 'C1: 3', 'C2': 'C2: 4'}"
 PRINT_GROUP = repl("import os", "print(os.getpgrp())")
+# More namespaces than a cell adds before a Stop at the first one's change ends it.
+ADDS = 12
 SAVE_S = 1.0
 LEDGER = """\
 import time
@@ -328,6 +330,51 @@ async def test_stop_before_the_root_starts_calls_no_model(home, library, fake_co
     assert [event["status"] for event in of_kind(events, "agent.end")] == ["stopped"]
     assert events[-1]["outcome"] == "stopped" and events[-1]["cost"] == 0
     assert events[-1]["unfinished_calls"] == 0
+
+
+def in_the_librarian(library, chat_config):
+    """The config of a run of a chat in the librarian namespace, on *chat_config*'s model."""
+
+    def config_for(folder):
+        config = engine_config(
+            library, "librarian", folder / "tools", CHAT, folder.name
+        )
+        chats = chat_config(folder)
+        return config | {"model": chats["model"], "client": chats["client"]}
+
+    return config_for
+
+
+def namespaces_in(library):
+    with closing(open_library(library)) as connection:
+        return {name for (name,) in connection.execute("SELECT name FROM namespaces")}
+
+
+async def test_a_stop_amid_library_writes_ends_the_run_with_each_written_change_recorded(
+    home, library, fake_config
+):
+    names = [f"added{number}" for number in range(ADDS)]
+    adds = repl(
+        f"for name in {names!r}:",
+        "    library.add_namespace(name, {'system_suffix': 'Be brief.'})",
+    )
+    before = namespaces_in(library)
+    with FakeOpenAI(scripted({"Add them.": [adds]})) as fake:
+        runs = Runs(library, home)
+        config = in_the_librarian(library, fake_config(fake))
+        run = runs.start(CHAT, "Add them.", config, [])
+        events, stopped_at = [], None
+        async for event in runs.events(run):
+            events.append(event)
+            if event["kind"] == "library.change" and stopped_at is None:
+                stopped_at = time.monotonic()
+                assert runs.stop(run)
+    assert time.monotonic() - stopped_at < runs_module.STOP_GRACE_S
+    assert [event["status"] for event in of_kind(events, "agent.end")] == ["stopped"]
+    assert events[-1]["outcome"] == "stopped" and saved(library, run) == events
+    assert events[-1]["unfinished_calls"] == 0
+    logged = {event["name"] for event in of_kind(events, "library.change")}
+    assert namespaces_in(library) - before == logged
 
 
 async def test_a_run_whose_first_call_fails_ends_with_that_call_unfinished(
