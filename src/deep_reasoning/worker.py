@@ -36,6 +36,7 @@ from deep_reasoner.v2.cli import (
 from deep_reasoner.v2.decompositions import as_cli_act
 from deep_reasoner.v2.messages import NoCodeBlock, code
 from genai_prices import Usage, calc_price
+from openai.resources.chat.completions import AsyncCompletions
 
 from deep_reasoning.app_tools import CLAUDE_CODE
 from deep_reasoning.library import granted_in, in_chain_order
@@ -92,15 +93,13 @@ def unquote(answer_repr: str) -> str:
     return value if isinstance(value, str) else answer_repr
 
 
-def cost_of(model: str, usage: dict[str, Any], base_url: str | None) -> float | None:
+def cost_of(model: str, usage: dict[str, Any], base_url: str) -> float | None:
     """One model call's cost in USD: the provider's own figure when it sends one, else
-    genai-prices' price of the model at the vendor *base_url* is the address of, with cached
-    input at its rate; None when the address is no vendor's it knows, or the vendor has no
-    such model: a server of your own may serve a model under a vendor's name."""
+    genai-prices' price of the model at the vendor whose address *base_url* is, with cached
+    input at its rate; None for any other address, as a server of your own may serve a
+    model under a vendor's name, or a model the vendor doesn't price."""
     if usage.get("cost") is not None:
         return float(usage["cost"])
-    if base_url is None:
-        return None
     cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
     tokens = Usage(
         input_tokens=usage.get("prompt_tokens") or 0,
@@ -188,14 +187,13 @@ class Recorder:
     """
 
     def __init__(
-        self,
-        out: TextIO,
-        on_root_start: Callable[[], None],
-        base_url: str | None = None,
+        self, out: TextIO, on_root_start: Callable[[], None], base_url: str
     ) -> None:
         self._out = out
         self._on_root_start = on_root_start
-        self._base_url = base_url  # where the run's model calls go, which prices them
+        self._base_url = base_url
+        # chat calls started that logged no llm.call: cut off by a stop, or failed
+        self._calls_going = 0
         self._lock = threading.RLock()
         self._agents: dict[int, _Agent] = {}
         self._cells = 0
@@ -226,6 +224,23 @@ class Recorder:
         except Exception:
             log.exception("worker.event_not_recorded", name=name)
         return event_dict
+
+    def call_started(self) -> None:
+        with self._lock:
+            self._calls_going += 1
+
+    def end_turn(self, outcome: str, answer: str | None, detail: str | None) -> None:
+        """The turn.end, with how many chat calls never finished, whose cost no one
+        knows."""
+        with self._lock:
+            unfinished = self._calls_going
+        self.emit(
+            "turn.end",
+            outcome=outcome,
+            answer=answer,
+            detail=detail,
+            unfinished_calls=unfinished,
+        )
 
     def emit(self, kind: str, **fields: Any) -> None:
         """Write one event; under the lock, so lines from different threads never mix."""
@@ -278,6 +293,7 @@ class Recorder:
         )
 
     def _llm_call(self, event: dict[str, Any]) -> None:
+        self._calls_going -= 1
         node = event.get("agent_id") or self._root
         usage = event.get("usage") or {}
         own = self._own(event)
@@ -399,6 +415,18 @@ def finish(reasoner: Any) -> NoReturn:
     end_group()
 
 
+def counting_calls(recorder: Recorder) -> None:
+    """Tell *recorder* of each chat call the run starts: the engine logs only those that
+    finish."""
+    create = AsyncCompletions.create
+
+    async def counted(self: AsyncCompletions, *args: Any, **kwargs: Any) -> Any:
+        recorder.call_started()
+        return await create(self, *args, **kwargs)
+
+    AsyncCompletions.create = counted
+
+
 async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     stop_asked = threading.Event()
     reasoner = None
@@ -414,9 +442,10 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
         if stop_asked.is_set():
             reasoner.stop()
 
-    base_url = (spec["config"].get("client") or {}).get("base_url")
+    base_url = spec["config"]["client"]["base_url"]
     recorder = Recorder(out, on_root_start=stop_if_asked, base_url=base_url)
     configure_structlog_fixture(console=False, extra_processors=[recorder])
+    counting_calls(recorder)
     threading.Thread(target=read_commands, args=(stop,), daemon=True).start()
     # A tool that doesn't build while the run builds the config's tools, at its start,
     # stops every run; one that doesn't later is that run's own failure.
@@ -438,14 +467,14 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
         outcome = "stopped" if stop_asked.is_set() else "failed"
         tools_failed = starting and isinstance(error, ToolBuildError)
         detail = build_failure(error, config) if tools_failed else detail_of(error)
-        recorder.emit("turn.end", outcome=outcome, answer=None, detail=detail)
+        recorder.end_turn(outcome, None, detail)
         finish(reasoner)
     if reasoner.stopped:
-        recorder.emit("turn.end", outcome="stopped", answer=None, detail=None)
+        recorder.end_turn("stopped", None, None)
         finish(reasoner)
     outcome = "exhausted" if reasoner.exhausted else "answered"
     text = answer if isinstance(answer, str) else repr(answer)
-    recorder.emit("turn.end", outcome=outcome, answer=text, detail=None)
+    recorder.end_turn(outcome, text, None)
     finish(reasoner)
 
 

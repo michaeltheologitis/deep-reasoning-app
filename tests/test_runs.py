@@ -326,6 +326,22 @@ async def test_stop_before_the_root_starts_calls_no_model(home, library, fake_co
     assert fake.calls == []
     assert [event["status"] for event in of_kind(events, "agent.end")] == ["stopped"]
     assert events[-1]["outcome"] == "stopped" and events[-1]["cost"] == 0
+    assert events[-1]["unfinished_calls"] == 0
+
+
+async def test_a_run_whose_first_call_fails_ends_with_that_call_unfinished(
+    home, library, fake_config
+):
+    def failing(messages):
+        raise RuntimeError("the fake model is down")
+
+    with FakeOpenAI(failing) as fake:
+        _, events = await run_to_the_end(
+            Runs(library, home), "Summarize two courses.", fake_config(fake)
+        )
+    assert of_kind(events, "usage") == []
+    end = events[-1]
+    assert (end["outcome"], end["cost"], end["unfinished_calls"]) == ("failed", 0, 1)
 
 
 async def test_each_call_costs_what_its_server_says_it_cost(home, library, fake_config):

@@ -41,11 +41,15 @@ RAISING = {
 }
 
 
-def recorded(*engine_events, base_url=OPENAI_URL):
-    """The app's events a Recorder writes for deep_reasoner's *engine_events*, of a run
-    whose model calls go to *base_url*."""
+def new_recorder(out, on_root_start=lambda: None):
+    """A Recorder writing to *out*, of a run whose model calls go to OpenAI."""
+    return Recorder(out, on_root_start=on_root_start, base_url=OPENAI_URL)
+
+
+def recorded(*engine_events):
+    """The app's events a Recorder writes for deep_reasoner's *engine_events*."""
     out = io.StringIO()
-    recorder = Recorder(out, on_root_start=lambda: None, base_url=base_url)
+    recorder = new_recorder(out)
     for event in engine_events:
         recorder(None, "debug", dict(event))
     return [json.loads(line) for line in out.getvalue().splitlines()]
@@ -258,11 +262,24 @@ def test_a_page_opened_is_recorded_for_the_agent_whose_cell_opened_it():
     }
 
 
-def test_nothing_is_written_after_the_turn_ends():
+def test_the_turns_end_counts_the_chat_calls_started_that_never_finished():
     out = io.StringIO()
-    recorder = Recorder(out, on_root_start=lambda: None)
+    recorder = new_recorder(out)
     recorder(None, "debug", agent_start(ROOT, None))
-    recorder.emit("turn.end", outcome="answered", answer="done", detail=None)
+    for _ in range(3):
+        recorder.call_started()
+    recorder(None, "debug", model_reply(ROOT, "Thinking."))
+    recorder(None, "debug", model_reply(ROOT, "Still thinking."))
+    recorder.end_turn("stopped", None, None)
+    end = json.loads(out.getvalue().splitlines()[-1])
+    assert (end["kind"], end["unfinished_calls"]) == ("turn.end", 1)
+
+
+def test_nothing_is_written_after_the_turns_end():
+    out = io.StringIO()
+    recorder = new_recorder(out)
+    recorder(None, "debug", agent_start(ROOT, None))
+    recorder.end_turn("answered", "done", None)
     recorder(None, "debug", agent_start(CHILD, ROOT))
     lines = [json.loads(line) for line in out.getvalue().splitlines()]
     assert [line["kind"] for line in lines] == ["agent.start", "turn.end"]
@@ -270,7 +287,7 @@ def test_nothing_is_written_after_the_turn_ends():
 
 def test_the_roots_start_is_reported():
     started = []
-    recorder = Recorder(io.StringIO(), on_root_start=lambda: started.append(True))
+    recorder = new_recorder(io.StringIO(), on_root_start=lambda: started.append(True))
     recorder(None, "debug", agent_start(ROOT, None))
     recorder(None, "debug", agent_start(CHILD, ROOT))
     assert started == [True]
@@ -319,10 +336,9 @@ def test_a_call_to_a_vendor_is_priced_from_that_vendors_prices(model, base_url):
     assert cost_of(model, {"prompt_tokens": 10, "completion_tokens": 2}, base_url) > 0
 
 
-@pytest.mark.parametrize("base_url", [OWN_SERVER_URL, None])
-def test_a_vendors_model_name_on_a_server_of_your_own_is_unpriced(base_url):
+def test_a_vendors_model_on_a_server_of_your_own_is_unpriced():
     usage = {"prompt_tokens": 10, "completion_tokens": 2}
-    assert cost_of("gpt-6-luna", usage, base_url) is None
+    assert cost_of("gpt-6-luna", usage, OWN_SERVER_URL) is None
 
 
 def test_the_providers_own_cost_wins():

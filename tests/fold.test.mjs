@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
-import { changeText, foldEvent, foldEvents } from "../src/deep_reasoning/web/fold.js";
+import { changeText, foldEvent, foldEvents, nodesOf } from "../src/deep_reasoning/web/fold.js";
 
 const FOLD_URL = new URL("../src/deep_reasoning/web/fold.js", import.meta.url).href;
 const FOLD_TIMEOUT_MS = 5000;
@@ -198,27 +198,49 @@ test("one unpriced call makes every total above it unknown, not zero", () => {
   assert.equal(foldEvents(events.slice(0, -1)).turn.unpriced, true);
 });
 
-test("a run no call finished, as one whose server failed it, costs what no one knows, not the 0 it totals", () => {
+test("a run whose only call never finished, as its server failed it, costs what no one knows, not the 0 it totals", () => {
   const events = recorded("unanswered");
-  assert.deepEqual([ofKind(events, "usage"), last(events).cost], [[], 0]);
+  assert.deepEqual([ofKind(events, "usage"), last(events).cost, last(events).unfinished_calls], [[], 0, 1]);
   const { turn } = foldEvents(events);
-  assert.deepEqual([turn.cost, turn.unpriced, turn.noCalls], [null, false, true]);
+  assert.deepEqual([turn.cost, turn.unpriced, turn.unfinished], [null, false, true]);
 });
 
-test("a run whose calls cost 0, as its server said, costs $0", () => {
-  const events = [
-    ...parentCycle.slice(0, 2),
-    { seq: 3, t: 1, kind: "usage", node: 1, model: "free", own: true, cost: 0 },
-    { seq: 4, t: 2, kind: "turn.end", outcome: "answered", answer: "done", detail: null, cost: 0, seconds: 2 },
-  ];
-  const { turn } = foldEvents(events);
-  assert.deepEqual([turn.cost, turn.unpriced, turn.noCalls], [0, false, false]);
+// A run's end with what it cost and how many of its calls never finished, if it says.
+const endedWith = (fields) => [
+  ...parentCycle.slice(0, 2),
+  { seq: 3, t: 2, kind: "turn.end", outcome: "failed", answer: null, detail: "ToolBuildError: x", seconds: 2, ...fields },
+];
+
+for (const [name, fields] of [
+  ["that called no model, as one whose tools didn't build", { cost: 0, unfinished_calls: 0 }],
+  ["recorded before its end said how many calls never finished", { cost: 0 }],
+]) {
+  test(`a run ${name} costs $0`, () => {
+    const { turn } = foldEvents(endedWith(fields));
+    assert.deepEqual([turn.cost, turn.unpriced, turn.unfinished], [0, false, false]);
+  });
+}
+
+test("a run whose calls finished costs what they did, though a later one never finished", () => {
+  const { turn } = foldEvents(endedWith({ cost: 0.25, unfinished_calls: 1 }));
+  assert.deepEqual([turn.cost, turn.unfinished], [0.25, false]);
+});
+
+test("each node of a turn has the same path each time the run's events are folded, so a reload reopens what was open", () => {
+  const events = recorded("nested");
+  const paths = (turn) => [...nodesOf(turn)].map(([path, node]) => `${path} ${node.kind ?? node.task ?? "turn"}`);
+  const whole = paths(foldEvents(events).turn);
+  assert.deepEqual(whole.slice(0, 5), ["turn turn", "0 cell", "0.0 Survey CS.", "0.0.0 cell", "0.0.0.0 Read CS101."]);
+  assert.deepEqual(paths(foldEvents(events).turn), whole);
+  // a reload mid-run folds fewer events: each node it has keeps its path
+  const sofar = paths(foldEvents(events.slice(0, Math.floor(events.length / 2))).turn);
+  assert.ok(sofar.length > 3 && sofar.every((path) => whole.includes(path)));
 });
 
 test("a priced run's totals are known", () => {
   const { turn } = foldEvents(recorded("fanout"));
   assert.ok(turn.cost > 0);
-  assert.deepEqual([turn.unpriced, turn.noCalls], [false, false]);
+  assert.deepEqual([turn.unpriced, turn.unfinished], [false, false]);
   assert.ok(allRows(turn).every((row) => row.cost > 0 && !row.unpriced));
 });
 

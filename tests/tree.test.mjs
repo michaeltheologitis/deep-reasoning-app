@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { CLAMPS, COST_NA, NO_CALLS, SANITIZE, WAITING, clamped, costView, element, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
+import { CLAMPS, COST_NA, SANITIZE, UNFINISHED, WAITING, clamped, costView, element, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
 
 globalThis.marked = createRequire(import.meta.url)("../src/deep_reasoning/web/vendor/marked.min.js");
 
@@ -54,7 +54,7 @@ const ERRORS = [
   [
     "a provider's error",
     "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nopenai.NotFoundError: Error code: 404 - {'error': {'message': 'The model `fake-l` does not exist'}}",
-    "The provider has no model by that name (404)",
+    "The provider has no model fake-l (404) · NotFoundError: Error code: 404 - {'error': {'message': 'The model `fake-l` does not exist'}}",
   ],
 ];
 // A delegating cell, opened onto its sub-agents' rows; and its parts, by class, in the order drawn.
@@ -64,9 +64,9 @@ const openDrawn = (cell) => {
   return renderStep(cell, false);
 };
 const parts = (el) => el.children.map((kid) => kid.className.trim().split(" ")[0]);
-// The meta's words after the code toggle that leads it, which CSS sets off with a separator.
 // Every text in an element, a screen reader's included.
 const textOf = (el) => (typeof el === "object" ? el.children.map(textOf).join("") : String(el));
+// The meta's words after the code toggle that leads it, which CSS sets off with a separator.
 const metaOf = (el) => {
   const [toggle, ...rest] = el.children[0].children.find((kid) => kid.className === "meta").children;
   assert.equal(toggle.className, "show-code");
@@ -161,31 +161,52 @@ test("an open sub-agent waiting on its first call says so, and one that has step
   assert.doesNotMatch(renderAgent(busy).textContent, new RegExp(WAITING));
 });
 
-test("a run no call finished costs N/A, saying why, not $0", () => {
-  const shown = costView({ cost: null, unpriced: false, noCalls: true });
-  assert.deepEqual([shown.textContent, shown.attributes.title], [COST_NA, NO_CALLS]);
-  assert.equal(costView({ cost: 0, unpriced: false, noCalls: false }), "$0");
+test("a run whose only calls never finished costs N/A, saying why, not $0", () => {
+  const shown = costView({ cost: null, unpriced: false, unfinished: true });
+  assert.deepEqual([shown.textContent, shown.attributes.title], [COST_NA, UNFINISHED]);
+  assert.equal(costView({ cost: 0, unpriced: false, unfinished: false }), "$0");
 });
 
 // A provider's errors as the OpenAI client words them, and what each shows first.
 const PROVIDER_ERRORS = [
-  ["NotFoundError: Error code: 404 - {'error': {'message': 'The model `fake-l` does not exist or you do not have access to it.'}}", "The provider has no model fake-l (404)"],
+  ["NotFoundError: Error code: 404 - {'error': {'message': 'The model `gpt-6-lun` does not exist or you do not have access to it.'}}", "The provider has no model gpt-6-lun (404)"],
+  ["NotFoundError: Error code: 404 - {'error': 'model \"llama9\" not found'}", "The provider has no model llama9 (404)"],
+  ["NotFoundError: Error code: 404 - {'error': 'no such model'}", "The provider has no model by that name (404)"],
   ["NotFoundError: Error code: 404 - Not Found", "Nothing answers at the provider's address; is its URL right? (404)"],
   ["APIConnectionError: Connection error.", "Couldn't reach the provider"],
   ["APITimeoutError: Request timed out.", "The provider didn't answer in time"],
   ["AuthenticationError: Error code: 401 - {'error': 'bad key'}", "The provider refused the key; check it in settings (401)"],
+  ["PermissionDeniedError: Error code: 403 - {}", "The provider denied this key access (403)"],
   ["RateLimitError: Error code: 429 - {}", "The provider's rate limit or quota ran out (429)"],
   ["InternalServerError: Error code: 503 - {}", "The provider failed (503)"],
 ];
 
 for (const [raw, plain] of PROVIDER_ERRORS) {
-  test(`a provider's error leads with plain words: ${raw.split(" -")[0]}`, () => {
-    assert.equal(plainFailure(raw, "fake-l"), plain);
+  test(`a provider's error leads with plain words: ${raw.split(" -")[0]}, ${plain}`, () => {
+    assert.equal(plainFailure(raw), plain);
   });
 }
 
-test("any other failure has no plain words of its own", () => {
-  for (const raw of ["ValueError: Error code: 404", "RecursionBudgetExceeded: depth 7", "worker gone"]) assert.equal(plainFailure(raw), null);
+test("a 404 names the model asked for, when the caller knows it", () => {
+  assert.equal(plainFailure("NotFoundError: Error code: 404 - {'error': 'no such model'}", "fake-l"), "The provider has no model fake-l (404)");
+});
+
+test("any other failure, a provider's own reason included, has no plain words of its own", () => {
+  const reasons = [
+    "BadRequestError: Error code: 400 - {'error': {'message': \"This model's maximum context length is 128000 tokens\"}}",
+    "APIStatusError: Error code: 413 - {}",
+    "UnprocessableEntityError: Error code: 422 - {}",
+    "ValueError: Error code: 404",
+    "RecursionBudgetExceeded: depth 7",
+    "worker gone",
+  ];
+  for (const raw of reasons) assert.equal(plainFailure(raw), null);
+});
+
+test("a sub-agent that failed on a provider's error leads with plain words, a short reason after", () => {
+  const raw = "NotFoundError: Error code: 404 - {'error': {'message': 'The model `fake-small` does not exist'}}";
+  const [, under] = renderAgent(drive({ status: "failed", result: raw })).children;
+  assert.equal(under.textContent, `⎿The provider has no model fake-small (404) · ${raw}`);
 });
 
 // Answers seen mangled when every answer went through Markdown, and others that hold no Markdown.

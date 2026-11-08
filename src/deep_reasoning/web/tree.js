@@ -11,12 +11,12 @@ const UNKNOWN_COST = "N/A";
 // no-break spaces keep a cost whole where its line wraps
 const COST_NA = `cost\u00a0${UNKNOWN_COST}`;
 const PRICE_UNKNOWN = "this model's price isn't known";
-const NO_CALLS = "no model call finished, so what it cost isn't known";
+const UNFINISHED = "a model call never finished, so what it cost isn't known";
 const WAITING = "waiting for the model…";
 const FINAL_ANSWER = "FinalAnswer: ";
 // marked's tokens that leave an answer plain: shown as written, raw HTML included
 const PLAIN_TOKENS = new Set(["paragraph", "space", "text", "escape", "br", "html"]);
-// a letter or digit, but of the scripts written without spaces between words, where ** sits right against them; and their full-width forms
+// not the scripts written without spaces, where ** sits against letters
 const WORD_CHAR = /(?![\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}\p{scx=Thai}\p{scx=Lao}\p{scx=Khmer}\p{scx=Myanmar}\uFF00-\uFFEF])[\p{L}\p{N}_]/u;
 const NEW_TAB_LINK = '<a target="_blank" rel="noopener noreferrer" ';
 const ANCHOR_TAG = /<\/?a\b[^>]*>/g;
@@ -33,30 +33,33 @@ const TRACEBACK = /^(?:Traceback| {2}\+ Exception Group Traceback) \(most recent
 // an exception group's lines hang off its frame, "  | "; the exception's own line is the first after the head not indented within it
 const GROUP_FRAME = /^ {2}\| /;
 const EXCEPTION = /^(?: {2}\| )?[^\s|+]/;
-// the engine's own frame atop a cell's traceback, plain or an exception group's: the line of its REPL that ran the cell, and its carets
-const EXEC_FRAME = /^((?: {2}\| )?) {2}File "[^"\n]*deep_reasoner[/\\][^"\n]*\.py", line \d+, in \w+\n\1 {4}exec\(code, [\w.]+\) {2}# noqa: S102\n(?:\1 {4}[ ~^]*\^[ ~^]*\n)?/gm;
-// an exception's module, as Python names one from outside builtins, before its name: deep_reasoner.v2.namespaces.
+// the frame of the engine's REPL atop a cell's traceback, plain or an exception group's, with its source and carets
+const EXEC_FRAME =
+  /^((?:Traceback| {2}\+ Exception Group Traceback) \(most recent call last\):\n)((?: {2}\| )?) {2}File "[^"\n]*deep_reasoner[/\\][^"\n]*", line \d+, in \S+\n\2 {4}\S.*\n(?:\2 {4}[ ~^]*\^[ ~^]*\n)?/gm;
+// Python names an exception from outside builtins with its module, deep_reasoner.v2.namespaces.X, which a cut line would show alone
 const EXCEPTION_MODULE = /^(?:[A-Za-z_]\w*\.)+(?=[A-Za-z_]\w*(?::|$))/;
-// a provider's error as the OpenAI client words it: "NotFoundError: Error code: 404 - {...}", "APIConnectionError: Connection error."
-const PROVIDER_STATUS =
-  /^(?:openai\.)?(?:APIStatus|BadRequest|Authentication|PermissionDenied|NotFound|Conflict|UnprocessableEntity|RateLimit|InternalServer)Error: Error code: (\d{3})\b/;
+// as the OpenAI client words a provider's errors: "NotFoundError: Error code: 404 - {...}"
+const PROVIDER_STATUS = /^(?:openai\.)?(?:APIStatus|Authentication|PermissionDenied|NotFound|RateLimit|InternalServer)Error: Error code: (\d{3})\b/;
 const UNREACHABLE = /^(?:openai\.)?APIConnectionError: /;
 const TIMED_OUT = /^(?:openai\.)?APITimeoutError: /;
+// the model a provider's 404 names: "The model `x` does not exist", 'model "x" not found'
+const NAMED_MODEL = /\bmodel\s*[`'"]([^`'"\n]+)[`'"]/i;
 const NOT_FOUND = 404;
 const SERVER_ERROR = 500;
-const STATUS_WORDS = {
-  400: "The provider refused the request",
-  401: "The provider refused the key; check it in settings",
-  403: "The provider denied this key access",
-  408: "The provider didn't answer in time",
-  413: "The request was too large for the provider",
-  422: "The provider refused the request",
-  429: "The provider's rate limit or quota ran out",
-};
+const CUT_SEPARATOR = " · ";
+const NO_KEY = "The provider refused the key; check it in settings";
+const NO_ACCESS = "The provider denied this key access";
+const RATE_LIMITED = "The provider's rate limit or quota ran out";
+const PROVIDER_FAILED = "The provider failed";
+const NO_ADDRESS = "Nothing answers at the provider's address; is its URL right?";
+const UNREACHED = "Couldn't reach the provider";
+const TOO_SLOW = "The provider didn't answer in time";
+// others, such as 400 for a context too long, are best said in the provider's own words
+const STATUS_WORDS = { 401: NO_KEY, 403: NO_ACCESS, 429: RATE_LIMITED };
 // ︎ keeps ✳ a text glyph where the system would draw it as an emoji
 const SPIN = ["·", "✢", "✳︎", "✶", "✻", "✽", "✻", "✶", "✳︎", "✢"];
-// what a cell's coloured glyph says, in words for a screen reader
-const CELL_STATUS = { failed: "failed", stopped: "stopped", running: "running" };
+// a cell's status as words for a screen reader, beside its glyph's colour
+const SPOKEN_STATUS = new Set(["failed", "stopped", "running"]);
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
 const STILL_FRAME = 2;
 const STATUS = {
@@ -79,8 +82,8 @@ let frame = 0;
 let markdown = null;
 // Whether a Library change shows that it applies from the next message: the chat says, for its newest turn's; a page's never do.
 let appliesNext = () => false;
-// Told of each node opened or shut, so the chat keeps them across a reload; a page's tab keeps none.
-let toggled = () => {};
+// made on the first tick
+let reducedMotion = null;
 
 function element(tag, props = {}, ...kids) {
   const el = document.createElement(tag);
@@ -114,9 +117,9 @@ function formatCost(usd) {
   return `$${usd.toFixed(usd >= 0.01 ? 2 : 4)}`;
 }
 
-// An unpriced call's cost is unknown, not free, as is a run's that no call finished; a holder with no calls yet shows none.
-function costView({ cost, unpriced, noCalls }) {
-  if (unpriced || noCalls) return element("span", { title: noCalls ? NO_CALLS : PRICE_UNKNOWN }, COST_NA);
+// An unpriced call's cost is unknown, not free; a holder with no calls yet shows none.
+function costView({ cost, unpriced, unfinished }) {
+  if (unpriced || unfinished) return element("span", { title: unfinished ? UNFINISHED : PRICE_UNKNOWN }, COST_NA);
   return formatCost(cost);
 }
 
@@ -155,7 +158,6 @@ function toggle(set, node) {
   if (set.has(node)) set.delete(node);
   else set.add(node);
   redraw(node);
-  if (set === opened) toggled(node);
 }
 
 function toggler(node, props, kids, set = opened, key = keyOf(node)) {
@@ -198,24 +200,26 @@ function out(text, { tone = "", full = false, more = null } = {}) {
   );
 }
 
-// What a provider's error means, in plain words, or null for any other failure; model is the one asked for, if known.
+// What a provider's error means, or null for any other failure. model is the one asked for, when known.
 function plainFailure(text, model = null) {
-  if (TIMED_OUT.test(text)) return "The provider didn't answer in time";
-  if (UNREACHABLE.test(text)) return "Couldn't reach the provider";
+  if (TIMED_OUT.test(text)) return TOO_SLOW;
+  if (UNREACHABLE.test(text)) return UNREACHED;
   const status = Number(text.match(PROVIDER_STATUS)?.[1]);
-  if (!status) return null;
-  if (status === NOT_FOUND) {
-    const missing = /\bmodel\b/i.test(text) ? `The provider has no model ${model ?? "by that name"}` : "Nothing answers at the provider's address; is its URL right?";
-    return `${missing} (${status})`;
-  }
-  const words = STATUS_WORDS[status] ?? (status >= SERVER_ERROR ? "The provider failed" : "The provider refused the request");
-  return `${words} (${status})`;
+  if (status === NOT_FOUND) return `${missing(text, model)} (${status})`;
+  const words = STATUS_WORDS[status] ?? (status >= SERVER_ERROR ? PROVIDER_FAILED : null);
+  return words && `${words} (${status})`;
 }
 
-// A failure's words, led by what a provider's error means, its own words after.
-function failureView(text, model = null) {
+// A 404 that speaks of a model is the model's; any other, the address's.
+function missing(text, model) {
+  if (!/\bmodel\b/i.test(text)) return NO_ADDRESS;
+  return `The provider has no model ${model ?? text.match(NAMED_MODEL)?.[1] ?? "by that name"}`;
+}
+
+// A failure led by what a provider's error means, then its own words: on a line of their own, or after on one cut short.
+function failureView(text, { model = null, after = "\n" } = {}) {
   const plain = plainFailure(text, model);
-  return plain ? [plain, "\n", element("span", { class: "raw" }, text)] : text;
+  return plain ? [plain, after, element("span", { class: "raw" }, text)] : text;
 }
 
 // A failed cell's error: its last traceback's exception line, plain or an exception group's, its name first; else its last
@@ -223,10 +227,7 @@ function failureView(text, model = null) {
 function errorLine(lines) {
   const head = lines.findLastIndex((line) => TRACEBACK.test(line));
   const exception = head < 0 ? null : lines.slice(head + 1).find((line) => EXCEPTION.test(line));
-  if (exception) {
-    const line = exception.replace(GROUP_FRAME, "").replace(EXCEPTION_MODULE, "");
-    return plainFailure(line) ?? line;
-  }
+  if (exception) return failureView(exception.replace(GROUP_FRAME, "").replace(EXCEPTION_MODULE, ""), { after: CUT_SEPARATOR });
   return lines.length > 1 && lines.at(-1).startsWith(FINAL_ANSWER) ? lines.at(-2) : lines.at(-1);
 }
 
@@ -236,7 +237,7 @@ function renderOutput(cell, full, root) {
   if (cell.output == null) return cell.agents.length ? null : out("Running…");
   // a cell closed as its agent ended has no output, and an empty red line would read as one
   if (cell.status === "failed" && !cell.output.trim()) return null;
-  if (full) return out(cell.output.replace(EXEC_FRAME, ""), { tone, full: true });
+  if (full) return out(cell.output.replace(EXEC_FRAME, "$1"), { tone, full: true });
   const lines = cell.output.trimEnd().split("\n");
   if (cell.status === "failed") return out(errorLine(lines), { tone });
   // each sub-agent's row opens onto its answer, and the answer below shows the root's
@@ -246,8 +247,7 @@ function renderOutput(cell, full, root) {
   return out(lines[0] || "(no output)", { more });
 }
 
-// colour says how a cell ended, and words say it to a screen reader
-const glyph = (cell) => element("span", { class: `glyph ${cell.status}` }, decor("●"), Object.hasOwn(CELL_STATUS, cell.status) && element("span", { class: "sr-only" }, ` ${CELL_STATUS[cell.status]}`));
+const glyph = (cell) => element("span", { class: `glyph ${cell.status}` }, decor("●"), SPOKEN_STATUS.has(cell.status) && element("span", { class: "sr-only" }, ` ${cell.status}`));
 
 function renderThink(step) {
   const open = opened.has(step);
@@ -309,7 +309,7 @@ function delegationMeta(cell) {
   const costs = agents.map((agent) => agent.cost).filter((cost) => cost != null);
   const unpriced = agents.some((agent) => agent.unpriced);
   const total = costView({ cost: costs.length > 0 ? costs.reduce((sum, cost) => sum + cost, 0) : null, unpriced });
-  // its sub-agents' ends, then its own, so a failure after they finished doesn't read as theirs
+  // the cell's own failure after its sub-agents', so it doesn't read as theirs
   const ends = join(counts, " · ");
   if (cell.status === "failed") ends.push(element("span", { class: "word err" }, counts.length ? ", then the cell failed" : "cell failed"));
   return join([ends.length > 0 && ends, longest, total].filter(Boolean), " · ");
@@ -384,11 +384,9 @@ function renderUnder(agent) {
     return last ? out(stepLabel(last)) : null;
   }
   if (!tone || !agent.result) return null;
-  const line = agent.result.split("\n")[0];
-  return out(plainFailure(line, agent.model) ?? line, { tone });
+  return out(failureView(agent.result.split("\n")[0], { model: agent.model, after: CUT_SEPARATOR }), { tone });
 }
 
-// An open running agent with no step yet is waiting on its first call, which with a slow model takes a while.
 const waiting = () => element("div", { class: "waiting" }, WAITING);
 
 function renderAgent(agent) {
@@ -467,7 +465,7 @@ function markdownHtml(text) {
 }
 
 // Answers and a page's text are model output: shown as Markdown when they hold some, else as plain text.
-// A list's numbers get the room they need; a block that scrolls takes focus, so a keyboard scrolls it too.
+// A block that scrolls takes focus, so a keyboard scrolls it too.
 function renderAnswer(text) {
   const html = markdownHtml(text);
   if (html == null) return element("div", { class: "answer plain" }, text);
@@ -500,13 +498,10 @@ const whenChangesApply = (test) => {
   appliesNext = test;
 };
 
-const whenToggled = (tell) => {
-  toggled = tell;
-};
-
 // Moves each spinner on a frame, unless motion is reduced, and each running clock to now.
 function tick() {
-  frame = matchMedia(REDUCED_MOTION).matches ? STILL_FRAME : (frame + 1) % SPIN.length;
+  reducedMotion ??= matchMedia(REDUCED_MOTION);
+  frame = reducedMotion.matches ? STILL_FRAME : (frame + 1) % SPIN.length;
   for (const el of document.querySelectorAll(".spin")) el.textContent = SPIN[frame];
   for (const el of document.querySelectorAll("[data-since]")) el.textContent = formatSeconds(since(Number(el.dataset.since)));
 }
@@ -525,9 +520,9 @@ export {
   CLAMPS,
   COST_NA,
   MS_PER_SECOND,
-  NO_CALLS,
   PRICE_UNKNOWN,
   SANITIZE,
+  UNFINISHED,
   UNKNOWN_COST,
   WAITING,
   caret,
@@ -562,5 +557,4 @@ export {
   views,
   waiting,
   whenChangesApply,
-  whenToggled,
 };

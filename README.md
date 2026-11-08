@@ -27,13 +27,13 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   its row. Esc stops a run, saying so at once, though a cell busy in C (a long `time.sleep`) holds it up a few seconds.
 - Each run shows its time, sub-agent count, cost and model. A call is priced from the price list of the vendor whose
   address it went to (OpenAI, OpenRouter, Anthropic, Google), or by the server's own figure where it sends one, as
-  OpenRouter does; so a vendor's model name on a server of your own costs N/A, as does a run no call finished (its
-  server failed, or you stopped it during its first call), never $0.
+  OpenRouter does; so a vendor's model name on a server of your own costs N/A, as does a run whose only calls never
+  finished (its server failed them, or you stopped it during its first), never $0.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
   its own words after.
 - An answer that holds Markdown (headings, lists, tables, code, links, bold) shows as Markdown; any other shows
-  exactly as written, so `List<String>`, `__init__` or `2*3*4` stay as they are; bold sits against the letters of
-  Chinese, Japanese, Korean or Thai text, written without spaces. Raw HTML always shows as text, an
+  exactly as written, so `List<String>`, `__init__` or `2*3*4` stay as they are; bold works where it sits against
+  the letters, as Chinese, Japanese, Korean or Thai often do. Raw HTML always shows as text, an
   image as a link to it (never loaded), and every link opens in a new tab. A run that ran out of turns says so in
   place of an answer, and a long prompt or answer shows its first lines with a **show all** toggle.
 - Follow-ups see the chat's earlier messages and answers as the conversation's own turns, and can ask how one was

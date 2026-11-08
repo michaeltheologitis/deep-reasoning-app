@@ -1,10 +1,11 @@
 // The Deep Reasoning chat: chats and their runs from the app's API, each run's events folded into its tree, live as they stream.
-import { asText, clip, field, foldEvent, foldEvents, newFold } from "./fold.js";
+import { asText, clip, field, foldEvent, foldEvents, newFold, nodesOf } from "./fold.js";
+import { modelGroups } from "./models.js";
 import {
   COST_NA,
   MS_PER_SECOND,
-  NO_CALLS,
   PRICE_UNKNOWN,
+  UNFINISHED,
   UNKNOWN_COST,
   WAITING,
   caret,
@@ -36,12 +37,11 @@ import {
   views,
   waiting,
   whenChangesApply,
-  whenToggled,
 } from "./tree.js";
 
 const SPIN_MS = 120;
 const STICK_PX = 80;
-// past the widest the log is: CSS cuts each part to the room there is
+// past the widest the log is: CSS cuts each part to fit
 const TRAIL_CHARS = 120;
 const TRAIL_PARTS = 3;
 const CONFLICT = 409;
@@ -61,16 +61,11 @@ const OUTCOME = {
   failed: ["failed", "err"],
   stopped: ["stopped by you", ""],
 };
-const ENDED = { answered: "answered", exhausted: "ran out of turns", failed: "failed", stopped: "stopped" };
 const STOP_LABEL = "esc to interrupt";
 const STOPPING = "stopping…";
 const OPEN_PREFIX = "open:";
-// a touch screen's keyboard has no shift+enter to speak of
+// a touch keyboard has no shift+enter to speak of
 const NEW_LINE_HINT = matchMedia("(pointer: coarse)").matches ? "" : " · shift+enter for a new line";
-// Models a chat can't run on, which a provider's full list holds beside its chat models: speech, images, video, embeddings,
-// moderation, realtime and live audio, and completions-only models.
-const NOT_CHAT =
-  /(?:^|[-_./:])(?:tts|transcribe|realtime|audio|speech|whisper|image|imagen|dall-e|embed|embedding|embeddings|moderation|veo|sora|live|babbage|davinci|aqa|computer-use)(?=$|[-_./:\d])/i;
 
 const byId = (id) => document.getElementById(id);
 const state = { chats: [], current: null, live: null, sending: false, problem: null };
@@ -99,8 +94,9 @@ function renderListedChange(entry) {
   return remember(entry, renderChange(entry.step, entry, by), () => renderListedChange(entry));
 }
 
-// The model a turn ran on, and who served it, as a server of your own may serve a model under a vendor's name.
-const modelView = (turn) => turn.model && element("span", { title: turn.provider ? `${turn.model} on ${turn.provider}` : null }, turn.model);
+// a server of your own may serve a model under a vendor's name
+const servedBy = (model, provider) => (provider ? `${model} on ${provider}` : model);
+const modelView = (turn) => turn.model && element("span", { title: servedBy(turn.model, turn.provider) }, turn.model);
 
 function summary(turn, switched) {
   const [word, tone] = known(OUTCOME, turn.outcome);
@@ -117,7 +113,7 @@ function liveSummary(turn, live, switched) {
   return [element("span", { class: "working" }, "Reasoning… "), "(", join(facts.filter(Boolean), " · "), ")"];
 }
 
-// Where the run is now: the tasks of the sub-agents above its newest step, then the step, each cut to the room there is.
+// The tasks of the sub-agents above the run's newest step, then the step.
 function renderTrail({ tasks, step }) {
   const trail = [...tasks.map((task) => clip(task, TRAIL_CHARS)), stepLabel(step, TRAIL_CHARS)];
   const parts = trail.length > TRAIL_PARTS ? [trail[0], "…", ...trail.slice(1 - TRAIL_PARTS)] : trail;
@@ -140,8 +136,7 @@ function renderTurnAnswer(turn) {
   return clamped(turn, "answer", turn.answer, () => renderAnswer(turn.answer));
 }
 
-// A turn names its namespace when it differs from the turn before's, so a chat that switched reads clearly. Until the
-// model first answers, a run going has no step: it says it is waiting, as a slow model can take a while.
+// A turn names its namespace when it differs from the turn before's, so a chat that switched reads clearly.
 function renderTurn(turn, previous) {
   const live = state.live?.turn === turn ? state.live : null;
   // no turn.end yet: still going, though this page may not follow it (a run started in another tab)
@@ -149,7 +144,8 @@ function renderTurn(turn, previous) {
   const open = opened.has(turn);
   const latest = live?.fold.latest;
   const switched = previous && turn.namespace !== previous.namespace && turn.namespace;
-  const steps = turn.steps.length ? turn.steps.map((step) => renderStep(step, true)) : going && waiting();
+  // a slow model's first answer takes a while; another tab's run may have steps this one hasn't seen
+  const steps = turn.steps.length ? turn.steps.map((step) => renderStep(step, true)) : live && waiting();
   const el = element(
     "section",
     { class: "turn" },
@@ -162,7 +158,7 @@ function renderTurn(turn, previous) {
     live && !open && (latest ? out(renderTrail(latest)) : out(WAITING)),
     open && element("div", { class: "steps" }, steps),
     renderTurnAnswer(turn),
-    turn.outcome === "failed" && turn.detail && out(failureView(turn.detail, turn.model), { tone: "err", full: true }),
+    turn.outcome === "failed" && turn.detail && out(failureView(turn.detail, { model: turn.model }), { tone: "err", full: true }),
     turn.changes.length > 0 && element("div", { class: "changes" }, turn.changes.map(renderListedChange)),
     turn.pages.length > 0 && element("div", { class: "pages" }, turn.pages.map((step) => pageLink(step, { class: "page-line" }, decor("↗ "), `page: ${asText(step.title)}`))),
   );
@@ -252,7 +248,7 @@ function renderLog(scroll) {
 }
 
 function usualHint(live, here) {
-  if (here) return live.stopping ? STOPPING : "";
+  if (here) return "";
   if (live) return `a run is going in “${live.chat.title}”`;
   return `enter to send${NEW_LINE_HINT}`;
 }
@@ -276,9 +272,9 @@ function renderTotal(turns) {
   const sum = turns.reduce((total, turn) => total + (turn.cost ?? 0), 0);
   const known = sum > 0 && formatCost(sum);
   const unpriced = turns.some((turn) => turn.unpriced);
-  const unknown = unpriced || turns.some((turn) => turn.noCalls);
+  const unknown = unpriced || turns.some((turn) => turn.unfinished);
   const total = byId("total");
-  total.title = unknown ? (unpriced ? PRICE_UNKNOWN : NO_CALLS) : "";
+  total.title = unknown ? (unpriced ? PRICE_UNKNOWN : UNFINISHED) : "";
   if (unknown) total.textContent = known ? `${known}${PLUS_NA} this chat` : `${COST_NA} this chat`;
   else total.textContent = known ? `${known} this chat` : "";
 }
@@ -290,10 +286,9 @@ function renderChoices(chat) {
   if (!ready) return;
   byId("namespace-name").textContent = chat.namespace;
   byId("namespace").title = `${chat.namespace}: this chat's namespace, from its next message`;
-  // who serves it, as a server of your own may serve a model under a vendor's name
   byId("model-name").textContent = chat.model?.name ?? "pick a model";
   byId("model-provider").textContent = chat.model ? ` · ${chat.model.provider}` : "";
-  byId("model").title = `${chat.model ? `${chat.model.name} on ${chat.model.provider}` : "No model"}: this chat's model, from its next message`;
+  byId("model").title = `${chat.model ? servedBy(chat.model.name, chat.model.provider) : "No model"}: this chat's model, from its next message`;
   renderFolder(chat);
 }
 
@@ -400,27 +395,6 @@ function noProviderMenu(button, host) {
 function openSettings() {
   closePopover(false);
   byId("settings").dispatchEvent(new Event(PANEL_OPEN));
-}
-
-const chatModels = (names) => names.filter((name) => !NOT_CHAT.test(name));
-
-// Each provider that can answer, with why its list is missing if it is: its featured models and the chat's own if it isn't one,
-// or, once something is typed, every chat model it knows that matches and the typed name. A provider that knows the typed name
-// exactly comes first, with it first, so Enter picks it over another's "use".
-function modelGroups(lists, query, current) {
-  const typed = query.trim();
-  const groups = lists.map(({ provider, featured, models, problem }) => {
-    const own = current?.provider === provider ? [current.name] : [];
-    const known = [...new Set([...chatModels(featured), ...own, ...(typed ? chatModels(models) : [])])];
-    const exact = typed !== "" && known.includes(typed);
-    const matches = known.filter((name) => name.toLowerCase().includes(typed.toLowerCase()));
-    if (exact) matches.sort((a, b) => Number(b === typed) - Number(a === typed));
-    const options = matches.map((name) => ({ value: { provider, name }, label: name }));
-    if (typed && !exact) options.push({ value: { provider, name: typed }, label: `use “${typed}”` });
-    if (!options.length) options.push({ value: null, label: "use model name…", hint: `type a model name for ${provider}` });
-    return { name: provider, note: problem, options, exact };
-  });
-  return [...groups.filter((group) => group.exact), ...groups.filter((group) => !group.exact)];
 }
 
 // After a change in settings the lists are read again, and each chat's model too: one that never picked follows what new chats start on.
@@ -789,13 +763,13 @@ function drawLive(live) {
   });
 }
 
-// The stream closes after turn.end; left open, EventSource would reconnect to it. A screen reader hears how the run ended.
+// The stream closes after turn.end; left open, EventSource would reconnect to it.
 function finish(live) {
   live.source.close();
   live.chat.live = null;
   if (state.live === live) state.live = null;
-  const { outcome, seconds } = live.turn;
-  byId("announce").textContent = `Run ${ENDED[outcome] ?? "ended"} after ${formatSeconds(seconds) ?? "a while"} in “${live.chat.title}”.`;
+  const [ended = "answered"] = known(OUTCOME, live.turn.outcome);
+  byId("announce").textContent = `Run ${ended} after ${formatSeconds(live.turn.seconds)} in “${live.chat.title}”.`;
   render("follow");
 }
 
@@ -836,7 +810,7 @@ async function send() {
   render("bottom");
 }
 
-// Says it is stopping at once: a cell blocked in C holds the stop up until the app ends its worker.
+// Says so at once: a cell blocked in C holds the stop up until the app ends its worker.
 async function stop() {
   const live = state.live;
   if (!live || live.stopping) return;
@@ -883,7 +857,6 @@ function toggleTheme() {
 }
 
 function wire() {
-  whenToggled(keepOpen);
   useStoredTheme();
   labelTheme();
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", labelTheme);
@@ -921,46 +894,30 @@ function wire() {
   setInterval(() => {
     if (state.live) tick();
   }, SPIN_MS);
+  addEventListener("pagehide", keepOpen);
 }
 
-// Each node of a turn's tree, with a path saying where it is, the same each time the run's events are folded.
-function* nodesOf(holder, path = "") {
-  for (const [i, step] of holder.steps.entries()) {
-    yield [`${path}${i}`, step];
-    for (const [j, agent] of (step.agents ?? []).entries()) {
-      yield [`${path}${i}.${j}`, agent];
-      yield* nodesOf(agent, `${path}${i}.${j}.`);
-    }
-  }
-}
-
-function openPaths(turn) {
-  return [["turn", turn], ...nodesOf(turn)].filter(([, node]) => opened.has(node)).map(([path]) => path);
-}
-
-// The nodes open in each turn of the chat on screen are kept for this tab, by run, so a reload opens them again.
+// The nodes open in each chat's turns, kept for this tab as it unloads, so a reload opens them again.
 function keepOpen() {
-  for (const turn of state.current?.turns ?? []) {
-    if (!turn.run) continue;
-    const paths = openPaths(turn);
-    try {
+  const turns = state.chats.flatMap((chat) => chat.turns ?? []).filter((turn) => turn.run);
+  try {
+    for (const turn of turns) {
+      const paths = [...nodesOf(turn)].filter(([, node]) => opened.has(node)).map(([path]) => path);
       if (paths.length) sessionStorage.setItem(OPEN_PREFIX + turn.run, JSON.stringify(paths));
       else sessionStorage.removeItem(OPEN_PREFIX + turn.run);
-    } catch {
-      // storage can be blocked; the tree then opens shut after a reload
     }
+  } catch {
+    // storage can be blocked; the tree then opens shut after a reload
   }
 }
 
 function reopen(turn) {
-  if (!turn.run) return;
   let paths;
   try {
     paths = new Set(JSON.parse(sessionStorage.getItem(OPEN_PREFIX + turn.run) ?? "[]"));
   } catch {
     return;
   }
-  if (paths.has("turn")) opened.add(turn);
   for (const [path, node] of nodesOf(turn)) if (paths.has(path)) opened.add(node);
 }
 
