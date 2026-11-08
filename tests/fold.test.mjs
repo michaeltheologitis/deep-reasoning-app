@@ -66,11 +66,23 @@ test("a saved turn has the prompt, the answer and the run's own totals", () => {
   assert.equal(turn.started, events[0].t);
 });
 
-test("a turn keeps the model and namespace its run started on", () => {
+test("a turn keeps the model, provider and namespace its run started on, and the run's id", () => {
   const [start] = recorded("fanout");
   const { turn } = foldEvents([start]);
-  assert.deepEqual([turn.model, turn.namespace], [start.model, start.namespace]);
+  assert.deepEqual([turn.model, turn.provider, turn.namespace, turn.run], [start.model, start.provider, start.namespace, start.run]);
   assert.deepEqual([turn.model, turn.namespace], ["gpt-6-luna", "root"]);
+  assert.match(turn.run, /^\d{8}-\d{6}-\d+$/);
+});
+
+test("a sub-agent whose own calls are on another model than the run's names it on its row", () => {
+  const events = recorded("models");
+  const [row] = rowsOf(foldEvents(events).turn);
+  assert.equal(row.model, "fake-small");
+  assert.equal(foldEvents(events).turn.model, "gpt-6-luna");
+  // a tool's call inside the agent's cell, on its own model, isn't the agent's
+  const toolCalls = events.map((event) => (event.kind === "usage" && event.node !== 1 ? { ...event, own: false } : event));
+  assert.equal(rowsOf(foldEvents(toolCalls).turn)[0].model, undefined);
+  assert.ok(rowsOf(foldEvents(recorded("fanout")).turn).every((each) => each.model === undefined));
 });
 
 test("a fan-out puts every sub-agent as a row under the cell that started it", () => {
@@ -186,10 +198,27 @@ test("one unpriced call makes every total above it unknown, not zero", () => {
   assert.equal(foldEvents(events.slice(0, -1)).turn.unpriced, true);
 });
 
+test("a run no call finished, as one whose server failed it, costs what no one knows, not the 0 it totals", () => {
+  const events = recorded("unanswered");
+  assert.deepEqual([ofKind(events, "usage"), last(events).cost], [[], 0]);
+  const { turn } = foldEvents(events);
+  assert.deepEqual([turn.cost, turn.unpriced, turn.noCalls], [null, false, true]);
+});
+
+test("a run whose calls cost 0, as its server said, costs $0", () => {
+  const events = [
+    ...parentCycle.slice(0, 2),
+    { seq: 3, t: 1, kind: "usage", node: 1, model: "free", own: true, cost: 0 },
+    { seq: 4, t: 2, kind: "turn.end", outcome: "answered", answer: "done", detail: null, cost: 0, seconds: 2 },
+  ];
+  const { turn } = foldEvents(events);
+  assert.deepEqual([turn.cost, turn.unpriced, turn.noCalls], [0, false, false]);
+});
+
 test("a priced run's totals are known", () => {
   const { turn } = foldEvents(recorded("fanout"));
   assert.ok(turn.cost > 0);
-  assert.equal(turn.unpriced, false);
+  assert.deepEqual([turn.unpriced, turn.noCalls], [false, false]);
   assert.ok(allRows(turn).every((row) => row.cost > 0 && !row.unpriced));
 });
 

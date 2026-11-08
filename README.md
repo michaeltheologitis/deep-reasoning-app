@@ -22,10 +22,18 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 **Chats**
 - Chats on the left: new, rename, delete. Saved in the Library file (below) with every message's run, they come back
   after a restart. Deleting a chat wipes its messages from the file.
-- Each message is a run, shown live as a tree of sub-agents you open level by level. Esc stops it.
-- Each run shows its time, sub-agent count, cost (N/A when the model's price isn't known) and model.
+- Each message is a run, shown live as a tree of sub-agents you open level by level, waiting for the model until its
+  first answer; the nodes you open stay open after a reload. A sub-agent on another model than the chat's shows it on
+  its row. Esc stops a run, saying so at once, though a cell busy in C (a long `time.sleep`) holds it up a few seconds.
+- Each run shows its time, sub-agent count, cost and model. A call is priced from the price list of the vendor whose
+  address it went to (OpenAI, OpenRouter, Anthropic, Google), or by the server's own figure where it sends one, as
+  OpenRouter does; so a vendor's model name on a server of your own costs N/A, as does a run no call finished (its
+  server failed, or you stopped it during its first call), never $0.
+- A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
+  its own words after.
 - An answer that holds Markdown (headings, lists, tables, code, links, bold) shows as Markdown; any other shows
-  exactly as written, so `List<String>`, `__init__` or `2*3*4` stay as they are. Raw HTML always shows as text, an
+  exactly as written, so `List<String>`, `__init__` or `2*3*4` stay as they are; bold sits against the letters of
+  Chinese, Japanese, Korean or Thai text, written without spaces. Raw HTML always shows as text, an
   image as a link to it (never loaded), and every link opens in a new tab. A run that ran out of turns says so in
   place of an answer, and a long prompt or answer shows its first lines with a **show all** toggle.
 - Follow-ups see the chat's earlier messages and answers as the conversation's own turns, and can ask how one was
@@ -69,7 +77,9 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   `DEEP_REASONING_ANTHROPIC_KEY`, Google Gemini `GEMINI_API_KEY`.
 - Custom servers: any OpenAI-compatible URL (vLLM, Ollama, …), with an optional key.
 - The model menu shows the current models of each vendor you have a key for, and all of a custom server's; typing
-  searches the vendor's full list, and any model name is accepted.
+  searches the vendor's full list, but for its speech, image, embedding and other models no chat runs on, and any
+  model name is accepted. A name a provider lists exactly comes first, so Enter picks it. Under the message box the
+  model shows with the provider that serves it.
 - Keys come from settings or your shell. Settings keeps them in `~/.deep-reasoning/.env`, readable only by you, and
   never shows them again. A saved key wins over the shell's.
 - A custom server's key goes only to the address you saved the server with; a server of the same name at another
@@ -92,7 +102,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   `library.sqlite-wal` beside it. The file stays in SQLite's WAL mode, so open a copy from a folder you can write to.
 - What a run prints travels with the file. The app withholds any provider's key from it, but can't know other
   secrets a cell reads from your shell.
-- The **decompositions** panel (top right) adds, edits (renaming too) and deletes decompositions, root's included,
+- The **library** panel (top right) adds, edits (renaming too) and deletes decompositions, root's included,
   as YAML, and adds, edits and deletes namespaces. It marks each decomposition ✓ or ✗ by whether its turns make a
   worked example like `deep_reasoner`'s own (the task; each assistant turn's `<think>` and one `<repl>`, then the
   `<observation>` it printed; `FinalAnswer` last), and opening a ✗ says why. The form warns as you type but still
@@ -132,7 +142,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   itself. A new Library has `librarian`; in an older one, add a namespace with `tools: [library]`.
 - Each Library change the agent makes shows in the chat, under its answer and where it was made in the tree, and opens
   onto its YAML (or a tool's block and Python) before and after; ask the librarian to undo it, and it writes the
-  before back from the record. The decompositions panel and the
+  before back from the record. The library panel and the
   namespace menu under the message box show the change at once.
 - `uv run deep-reasoning import CONFIG.yaml` brings in a `deep_reasoner` config, replacing items with the same name.
 - `uv run deep-reasoning reset` starts afresh: it deletes the Library file (`--library PATH` for another), with its

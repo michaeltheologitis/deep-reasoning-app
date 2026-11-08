@@ -18,6 +18,7 @@ log = structlog.get_logger()
 Messages = list[dict[str, Any]]
 Plan = Mapping[str, list[str]]
 MODELS = ("fake-large", "fake-small")
+PRICE_PER_TOKEN = 1e-6
 BEARER = "Bearer "
 # What the tests call the fake, and the key they give it, as a custom server in settings.
 SERVER_NAME = "fake"
@@ -81,6 +82,13 @@ def word_count_usage(messages: Messages, reply: str) -> dict[str, Any]:
         "completion_tokens": completion,
         "total_tokens": prompt + completion,
     }
+
+
+def own_cost_usage(messages: Messages, reply: str) -> dict[str, Any]:
+    """word_count_usage with the server's own figure for what the call cost, as OpenRouter
+    sends one: a server that is no vendor's prices its calls no other way."""
+    usage = word_count_usage(messages, reply)
+    return usage | {"cost": usage["total_tokens"] * PRICE_PER_TOKEN}
 
 
 def repl(*lines: str, think: str = "") -> str:

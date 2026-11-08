@@ -19,6 +19,8 @@ from deep_reasoning.worker import (
 )
 
 ROOT, CHILD = 1, 2
+OPENAI_URL = "https://api.openai.com/v1"
+OWN_SERVER_URL = "http://127.0.0.1:8000/v1"
 TASK_GROUP = """\
 import asyncio, concurrent.futures
 async def boom():
@@ -39,10 +41,11 @@ RAISING = {
 }
 
 
-def recorded(*engine_events):
-    """The app's events a Recorder writes for deep_reasoner's *engine_events*."""
+def recorded(*engine_events, base_url=OPENAI_URL):
+    """The app's events a Recorder writes for deep_reasoner's *engine_events*, of a run
+    whose model calls go to *base_url*."""
     out = io.StringIO()
-    recorder = Recorder(out, on_root_start=lambda: None)
+    recorder = Recorder(out, on_root_start=lambda: None, base_url=base_url)
     for event in engine_events:
         recorder(None, "debug", dict(event))
     return [json.loads(line) for line in out.getvalue().splitlines()]
@@ -189,7 +192,14 @@ def test_a_tools_model_call_is_priced_for_its_agent_but_is_not_a_thought():
     call = model_reply(3, "a summary") | {"agent_id": ROOT}
     events = recorded(agent_start(ROOT, None), call)
     assert [event["kind"] for event in events] == ["agent.start", "usage"]
-    assert events[-1]["node"] == ROOT
+    assert (events[-1]["node"], events[-1]["own"]) == (ROOT, False)
+    assert events[-1]["cost"] > 0
+
+
+def test_an_agents_own_call_says_so_with_its_model():
+    events = recorded(agent_start(ROOT, None), model_reply(ROOT, "Thinking."))
+    usage = next(event for event in events if event["kind"] == "usage")
+    assert (usage["own"], usage["model"]) == (True, "gpt-6-luna")
 
 
 def test_a_library_change_is_recorded_for_the_agent_whose_cell_made_it():
@@ -286,22 +296,44 @@ def test_cached_input_is_billed_at_its_own_rate():
         "prompt_tokens_details": {"cached_tokens": 8_000},
     }
     tokens = Usage(input_tokens=10_000, cache_read_tokens=8_000, output_tokens=2_000)
-    expected = float(calc_price(tokens, "gpt-6-luna").total_price)
-    assert cost_of("gpt-6-luna", usage) == pytest.approx(expected)
-    assert cost_of("gpt-6-luna", usage) < cost_of(
-        "gpt-6-luna", usage | {"prompt_tokens_details": {}}
+    expected = float(calc_price(tokens, "gpt-6-luna", provider_id="openai").total_price)
+    assert cost_of("gpt-6-luna", usage, OPENAI_URL) == pytest.approx(expected)
+    assert cost_of("gpt-6-luna", usage, OPENAI_URL) < cost_of(
+        "gpt-6-luna", usage | {"prompt_tokens_details": {}}, OPENAI_URL
     )
+
+
+@pytest.mark.parametrize(
+    ("model", "base_url"),
+    [
+        ("gpt-6-luna", "https://api.openai.com/v1"),
+        ("openai/gpt-6-luna", "https://openrouter.ai/api/v1"),
+        ("claude-sonnet-5-5", "https://api.anthropic.com/v1/"),
+        (
+            "gemini-3.8-flash",
+            "https://generativelanguage.googleapis.com/v1beta/openai/",
+        ),
+    ],
+)
+def test_a_call_to_a_vendor_is_priced_from_that_vendors_prices(model, base_url):
+    assert cost_of(model, {"prompt_tokens": 10, "completion_tokens": 2}, base_url) > 0
+
+
+@pytest.mark.parametrize("base_url", [OWN_SERVER_URL, None])
+def test_a_vendors_model_name_on_a_server_of_your_own_is_unpriced(base_url):
+    usage = {"prompt_tokens": 10, "completion_tokens": 2}
+    assert cost_of("gpt-6-luna", usage, base_url) is None
 
 
 def test_the_providers_own_cost_wins():
     usage = {"prompt_tokens": 10, "completion_tokens": 2, "cost": 0.5}
-    assert cost_of("gpt-6-luna", usage) == 0.5
+    assert cost_of("gpt-6-luna", usage, OWN_SERVER_URL) == 0.5
+    assert cost_of("gpt-6-luna", usage, OPENAI_URL) == 0.5
 
 
 def test_an_unknown_models_cost_is_none_not_zero():
-    assert (
-        cost_of("no-such-model", {"prompt_tokens": 10, "completion_tokens": 2}) is None
-    )
+    usage = {"prompt_tokens": 10, "completion_tokens": 2}
+    assert cost_of("no-such-model", usage, OPENAI_URL) is None
 
 
 TOOLS = "/data/runs/20261108-000000-000000/tools"

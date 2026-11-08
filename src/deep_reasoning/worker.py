@@ -92,11 +92,15 @@ def unquote(answer_repr: str) -> str:
     return value if isinstance(value, str) else answer_repr
 
 
-def cost_of(model: str, usage: dict[str, Any]) -> float | None:
+def cost_of(model: str, usage: dict[str, Any], base_url: str | None) -> float | None:
     """One model call's cost in USD: the provider's own figure when it sends one, else
-    genai-prices' bundled price, with cached input at its rate; None for an unknown model."""
+    genai-prices' price of the model at the vendor *base_url* is the address of, with cached
+    input at its rate; None when the address is no vendor's it knows, or the vendor has no
+    such model: a server of your own may serve a model under a vendor's name."""
     if usage.get("cost") is not None:
         return float(usage["cost"])
+    if base_url is None:
+        return None
     cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
     tokens = Usage(
         input_tokens=usage.get("prompt_tokens") or 0,
@@ -104,7 +108,7 @@ def cost_of(model: str, usage: dict[str, Any]) -> float | None:
         output_tokens=usage.get("completion_tokens") or 0,
     )
     try:
-        return float(calc_price(tokens, model).total_price)
+        return float(calc_price(tokens, model, provider_api_url=base_url).total_price)
     except LookupError:
         return None
 
@@ -183,9 +187,15 @@ class Recorder:
     closes, and the turn.end is the run's last event.
     """
 
-    def __init__(self, out: TextIO, on_root_start: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        out: TextIO,
+        on_root_start: Callable[[], None],
+        base_url: str | None = None,
+    ) -> None:
         self._out = out
         self._on_root_start = on_root_start
+        self._base_url = base_url  # where the run's model calls go, which prices them
         self._lock = threading.RLock()
         self._agents: dict[int, _Agent] = {}
         self._cells = 0
@@ -270,15 +280,17 @@ class Recorder:
     def _llm_call(self, event: dict[str, Any]) -> None:
         node = event.get("agent_id") or self._root
         usage = event.get("usage") or {}
+        own = self._own(event)
         self.emit(
             "usage",
             node=node,
             model=event["model"],
+            own=own,
             tokens_in=usage.get("prompt_tokens") or 0,
             tokens_out=usage.get("completion_tokens") or 0,
-            cost=cost_of(event["model"], usage),
+            cost=cost_of(event["model"], usage, self._base_url),
         )
-        if not self._own(event):
+        if not own:
             return
         reply = event.get("response") or ""
         if thought := thought_of(reply):
@@ -290,15 +302,17 @@ class Recorder:
         node = event.get("agent_id") or self._root
         usage = event.get("usage") or {}
         cached = ("cache_read_input_tokens", "cache_creation_input_tokens")
+        own = self._own(event)
         self.emit(
             "usage",
             node=node,
             model=event.get("model"),
+            own=own,
             tokens_in=sum(usage.get(key) or 0 for key in ("input_tokens", *cached)),
             tokens_out=usage.get("output_tokens") or 0,
             cost=event.get("cost_usd"),
         )
-        if self._own(event) and (response := (event.get("response") or "").strip()):
+        if own and (response := (event.get("response") or "").strip()):
             self.emit("think", node=node, text=response)
 
     def _repl_execute(self, event: dict[str, Any]) -> None:
@@ -400,7 +414,8 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
         if stop_asked.is_set():
             reasoner.stop()
 
-    recorder = Recorder(out, on_root_start=stop_if_asked)
+    base_url = (spec["config"].get("client") or {}).get("base_url")
+    recorder = Recorder(out, on_root_start=stop_if_asked, base_url=base_url)
     configure_structlog_fixture(console=False, extra_processors=[recorder])
     threading.Thread(target=read_commands, args=(stop,), daemon=True).start()
     # A tool that doesn't build while the run builds the config's tools, at its start,

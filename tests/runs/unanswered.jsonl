@@ -1,0 +1,4 @@
+{"seq": 1, "t": 1794135029.078679, "kind": "turn.start", "run": "20261108-105029-043768", "chat": "recorded", "prompt": "Ask a broken server.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261108-105029-043768"}
+{"seq": 2, "t": 1794135030.3661823, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Ask a broken server.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794135030.6298025, "kind": "agent.end", "node": 1, "status": "failed", "result": null, "detail": "InternalServerError: Error code: 500 - {'error': {'message': 'the fake model is down'}}"}
+{"seq": 4, "t": 1794135030.6332388, "kind": "turn.end", "outcome": "failed", "answer": null, "detail": "InternalServerError: Error code: 500 - {'error': {'message': 'the fake model is down'}}", "cost": 0.0, "seconds": 1.5545597076416016}

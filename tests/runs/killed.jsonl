@@ -1,8 +1,8 @@
-{"seq": 1, "t": 1793166979.7075214, "kind": "turn.start", "run": "20261028-055619-702613", "chat": "recorded", "prompt": "Wait a minute.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261028-055619-702613"}
-{"seq": 2, "t": 1793166981.039124, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Wait a minute.", "namespace": "root", "drive": 1}
-{"seq": 3, "t": 1793166981.1866043, "kind": "usage", "node": 1, "model": "gpt-6-luna", "tokens_in": 1086, "tokens_out": 4, "cost": 0.0001106}
-{"seq": 4, "t": 1793166981.1868184, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Sleep.'))"}
-{"seq": 5, "t": 1793166981.1904595, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Sleep.", "namespace": "root", "drive": 1}
-{"seq": 6, "t": 1793166981.2439184, "kind": "usage", "node": 2, "model": "gpt-6-luna", "tokens_in": 1084, "tokens_out": 6, "cost": 0.0001114}
-{"seq": 7, "t": 1793166981.2441428, "kind": "cell.start", "node": 2, "cell": 2, "code": "import time\ntime.sleep(60)"}
-{"seq": 8, "t": 1793166981.754819, "kind": "turn.end", "answer": null, "outcome": "stopped", "detail": null, "cost": 0.000222, "seconds": 2.047297477722168}
+{"seq": 1, "t": 1794135044.6244845, "kind": "turn.start", "run": "20261108-105044-604715", "chat": "recorded", "prompt": "Wait a minute.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261108-105044-604715"}
+{"seq": 2, "t": 1794135045.7483697, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Wait a minute.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794135045.854575, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1339, "tokens_out": 4, "cost": 0.001343}
+{"seq": 4, "t": 1794135045.8548605, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Sleep.'))"}
+{"seq": 5, "t": 1794135045.8594832, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Sleep.", "namespace": "root", "drive": 1}
+{"seq": 6, "t": 1794135045.9340925, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1337, "tokens_out": 6, "cost": 0.001343}
+{"seq": 7, "t": 1794135045.934261, "kind": "cell.start", "node": 2, "cell": 2, "code": "import time\ntime.sleep(60)"}
+{"seq": 8, "t": 1794135046.4477167, "kind": "turn.end", "answer": null, "outcome": "stopped", "detail": null, "cost": 0.002686, "seconds": 1.8232321739196777}

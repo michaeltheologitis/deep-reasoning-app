@@ -1,23 +1,23 @@
-{"seq": 1, "t": 1793166968.459623, "kind": "turn.start", "run": "20261028-055608-453696", "chat": "recorded", "prompt": "Plan the term.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261028-055608-453696"}
-{"seq": 2, "t": 1793166969.8507667, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Plan the term.", "namespace": "root", "drive": 1}
-{"seq": 3, "t": 1793166970.0034702, "kind": "usage", "node": 1, "model": "gpt-6-luna", "tokens_in": 1086, "tokens_out": 8, "cost": 0.0001126}
-{"seq": 4, "t": 1793166970.0036826, "kind": "cell.start", "node": 1, "cell": 1, "code": "plan = subagent('Survey CS.')\nprint(plan)"}
-{"seq": 5, "t": 1793166970.0084956, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Survey CS.", "namespace": "root", "drive": 1}
-{"seq": 6, "t": 1793166970.0752964, "kind": "usage", "node": 2, "model": "gpt-6-luna", "tokens_in": 1085, "tokens_out": 8, "cost": 0.0001125}
-{"seq": 7, "t": 1793166970.075486, "kind": "cell.start", "node": 2, "cell": 2, "code": "course = subagent('Read CS101.')\nprint(course)"}
-{"seq": 8, "t": 1793166970.0799668, "kind": "agent.start", "node": 3, "parent": 2, "cell": 2, "task": "Read CS101.", "namespace": "root", "drive": 1}
-{"seq": 9, "t": 1793166970.143516, "kind": "usage", "node": 3, "model": "gpt-6-luna", "tokens_in": 1085, "tokens_out": 6, "cost": 0.0001115}
-{"seq": 10, "t": 1793166970.143885, "kind": "cell.start", "node": 3, "cell": 3, "code": "FinalAnswer('CS101 is light')"}
-{"seq": 11, "t": 1793166970.145507, "kind": "cell.end", "node": 3, "cell": 3, "code": "FinalAnswer('CS101 is light')", "output": "FinalAnswer: 'CS101 is light'", "status": "done"}
-{"seq": 12, "t": 1793166970.1457329, "kind": "agent.end", "node": 3, "status": "done", "result": "CS101 is light", "detail": null}
-{"seq": 13, "t": 1793166970.1475828, "kind": "cell.end", "node": 2, "cell": 2, "code": "course = subagent('Read CS101.')\nprint(course)", "output": "CS101 is light", "status": "done"}
-{"seq": 14, "t": 1793166970.1539073, "kind": "usage", "node": 2, "model": "gpt-6-luna", "tokens_in": 1097, "tokens_out": 7, "cost": 0.0001132}
-{"seq": 15, "t": 1793166970.154222, "kind": "cell.start", "node": 2, "cell": 4, "code": "FinalAnswer('CS: ' + course)"}
-{"seq": 16, "t": 1793166970.1544688, "kind": "cell.end", "node": 2, "cell": 4, "code": "FinalAnswer('CS: ' + course)", "output": "FinalAnswer: 'CS: CS101 is light'", "status": "done"}
-{"seq": 17, "t": 1793166970.1547618, "kind": "agent.end", "node": 2, "status": "done", "result": "CS: CS101 is light", "detail": null}
-{"seq": 18, "t": 1793166970.1561637, "kind": "cell.end", "node": 1, "cell": 1, "code": "plan = subagent('Survey CS.')\nprint(plan)", "output": "CS: CS101 is light", "status": "done"}
-{"seq": 19, "t": 1793166970.162378, "kind": "usage", "node": 1, "model": "gpt-6-luna", "tokens_in": 1099, "tokens_out": 4, "cost": 0.0001119}
-{"seq": 20, "t": 1793166970.16264, "kind": "cell.start", "node": 1, "cell": 5, "code": "FinalAnswer(plan)"}
-{"seq": 21, "t": 1793166970.1629791, "kind": "cell.end", "node": 1, "cell": 5, "code": "FinalAnswer(plan)", "output": "FinalAnswer: 'CS: CS101 is light'", "status": "done"}
-{"seq": 22, "t": 1793166970.1632373, "kind": "agent.end", "node": 1, "status": "done", "result": "CS: CS101 is light", "detail": null}
-{"seq": 23, "t": 1793166970.163393, "kind": "turn.end", "outcome": "answered", "answer": "CS: CS101 is light", "detail": null, "cost": 0.0005617, "seconds": 1.7037699222564697}
+{"seq": 1, "t": 1794135032.91159, "kind": "turn.start", "run": "20261108-105032-876825", "chat": "recorded", "prompt": "Plan the term.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261108-105032-876825"}
+{"seq": 2, "t": 1794135034.0346508, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Plan the term.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794135034.1519532, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1339, "tokens_out": 8, "cost": 0.0013469999999999999}
+{"seq": 4, "t": 1794135034.1523347, "kind": "cell.start", "node": 1, "cell": 1, "code": "plan = subagent('Survey CS.')\nprint(plan)"}
+{"seq": 5, "t": 1794135034.1606858, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Survey CS.", "namespace": "root", "drive": 1}
+{"seq": 6, "t": 1794135034.2063918, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1338, "tokens_out": 8, "cost": 0.001346}
+{"seq": 7, "t": 1794135034.206624, "kind": "cell.start", "node": 2, "cell": 2, "code": "course = subagent('Read CS101.')\nprint(course)"}
+{"seq": 8, "t": 1794135034.210147, "kind": "agent.start", "node": 3, "parent": 2, "cell": 2, "task": "Read CS101.", "namespace": "root", "drive": 1}
+{"seq": 9, "t": 1794135034.2662423, "kind": "usage", "node": 3, "model": "gpt-6-luna", "own": true, "tokens_in": 1338, "tokens_out": 6, "cost": 0.001344}
+{"seq": 10, "t": 1794135034.2664597, "kind": "cell.start", "node": 3, "cell": 3, "code": "FinalAnswer('CS101 is light')"}
+{"seq": 11, "t": 1794135034.2675426, "kind": "cell.end", "node": 3, "cell": 3, "code": "FinalAnswer('CS101 is light')", "output": "FinalAnswer: 'CS101 is light'", "status": "done"}
+{"seq": 12, "t": 1794135034.2687163, "kind": "agent.end", "node": 3, "status": "done", "result": "CS101 is light", "detail": null}
+{"seq": 13, "t": 1794135034.2811804, "kind": "cell.end", "node": 2, "cell": 2, "code": "course = subagent('Read CS101.')\nprint(course)", "output": "CS101 is light", "status": "done"}
+{"seq": 14, "t": 1794135034.2874727, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1350, "tokens_out": 7, "cost": 0.001357}
+{"seq": 15, "t": 1794135034.2875807, "kind": "cell.start", "node": 2, "cell": 4, "code": "FinalAnswer('CS: ' + course)"}
+{"seq": 16, "t": 1794135034.2876177, "kind": "cell.end", "node": 2, "cell": 4, "code": "FinalAnswer('CS: ' + course)", "output": "FinalAnswer: 'CS: CS101 is light'", "status": "done"}
+{"seq": 17, "t": 1794135034.2876587, "kind": "agent.end", "node": 2, "status": "done", "result": "CS: CS101 is light", "detail": null}
+{"seq": 18, "t": 1794135034.2966447, "kind": "cell.end", "node": 1, "cell": 1, "code": "plan = subagent('Survey CS.')\nprint(plan)", "output": "CS: CS101 is light", "status": "done"}
+{"seq": 19, "t": 1794135034.3032496, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1352, "tokens_out": 4, "cost": 0.001356}
+{"seq": 20, "t": 1794135034.3033712, "kind": "cell.start", "node": 1, "cell": 5, "code": "FinalAnswer(plan)"}
+{"seq": 21, "t": 1794135034.3034098, "kind": "cell.end", "node": 1, "cell": 5, "code": "FinalAnswer(plan)", "output": "FinalAnswer: 'CS: CS101 is light'", "status": "done"}
+{"seq": 22, "t": 1794135034.3034394, "kind": "agent.end", "node": 1, "status": "done", "result": "CS: CS101 is light", "detail": null}
+{"seq": 23, "t": 1794135034.3034658, "kind": "turn.end", "outcome": "answered", "answer": "CS: CS101 is light", "detail": null, "cost": 0.00675, "seconds": 1.3918757438659668}
