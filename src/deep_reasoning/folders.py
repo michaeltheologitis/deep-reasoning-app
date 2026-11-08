@@ -51,9 +51,13 @@ def no_folder(folder: Path) -> str:
 
 
 def existing_folder(typed: str) -> Path:
-    """The folder at *typed*, or why there is none. os.path's checks answer False for any
-    path the system can't take (too long, a NUL in it) instead of raising."""
-    folder = typed_path(typed)
+    """The folder at *typed*, or why there is none."""
+    return checked_folder(typed_path(typed))
+
+
+def checked_folder(folder: Path) -> Path:
+    """*folder*, made absolute, if it is a folder, or why not. os.path's checks answer
+    False for any path the system can't take (too long, a NUL in it) instead of raising."""
     if os.path.isdir(folder):
         return folder
     if os.path.exists(folder):
@@ -91,7 +95,7 @@ def list_folders(typed: str) -> dict[str, Any]:
             "folders": [],
             "problem": no_folder(folder),
         }
-    folder = existing_folder(typed)
+    checked_folder(folder)
     try:
         with os.scandir(folder) as entries:
             names = [entry.name for entry in entries if listable(entry)]

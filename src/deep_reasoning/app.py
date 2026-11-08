@@ -338,10 +338,12 @@ def create_app(library, home):
         return found
 
     def known_server(name: str):
-        found = known_provider(name)
+        return custom_server(known_provider(name))
+
+    def custom_server(found):
         if not found.custom:
             raise HTTPException(
-                HTTPStatus.NOT_FOUND, f"There is no custom server {name}."
+                HTTPStatus.NOT_FOUND, f"There is no custom server {found.name}."
             )
         return found
 
@@ -388,7 +390,7 @@ def create_app(library, home):
     async def delete_server(name: str):
         found = find_provider(library, name)
         if found is not None:
-            remove_server(home, library, known_server(name))
+            remove_server(home, library, custom_server(found))
         return provider_list(home, library)
 
     @app.get("/api/models")
@@ -414,8 +416,9 @@ def create_app(library, home):
     def starting_points():
         """Where a chat that hasn't picked starts: the Library's default namespace, and the
         model new chats start on; and the names of the providers there are."""
-        names = {each.name for each in providers(library)}
-        return default_namespace(library), starting_model(home, library), names
+        every = providers(library)
+        names = {each.name for each in every}
+        return default_namespace(library), starting_model(home, library, every), names
 
     def shown(chat, starts):
         """A chat as the API gives it: with the id of its run that is going, if one is, its

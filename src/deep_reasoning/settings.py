@@ -402,13 +402,9 @@ def find_provider(library: Path, name: str) -> Provider | None:
     return next((each for each in providers(library) if each.name == name), None)
 
 
-def usable(library: Path, saved: dict[str, str]) -> list[Provider]:
-    """The providers a chat can run on: vendors with a key, and custom servers, which may need none."""
-    return [
-        each
-        for each in providers(library)
-        if each.custom or key_status(each, saved) != NONE
-    ]
+def usable(every: list[Provider], saved: dict[str, str]) -> list[Provider]:
+    """The providers of *every* a chat can run on: vendors with a key, and custom servers, which may need none."""
+    return [each for each in every if each.custom or key_status(each, saved) != NONE]
 
 
 def provider_list(home: Path, library: Path) -> list[dict[str, Any]]:
@@ -513,10 +509,13 @@ def remember_pick(library: Path, provider: str, model: str) -> None:
     write_setting(library, LAST_MODEL, {"provider": provider, "name": model})
 
 
-def starting_model(home: Path, library: Path) -> dict[str, str] | None:
-    """What a new chat runs on: the model picked last, while its provider can still answer;
-    else the first model of the first vendor with a key that the app knows one for."""
-    can_answer = usable(library, saved_keys(home))
+def starting_model(
+    home: Path, library: Path, every: list[Provider]
+) -> dict[str, str] | None:
+    """What a new chat runs on: the model picked last, while its provider, of *every*
+    there is, can still answer; else the first model of the first vendor with a key that
+    the app knows one for."""
+    can_answer = usable(every, saved_keys(home))
     last = read_settings(library).get(LAST_MODEL)
     if last and any(each.name == last["provider"] for each in can_answer):
         return last
@@ -585,5 +584,6 @@ async def model_lists(home: Path, library: Path) -> list[dict[str, Any]]:
     """Each provider a chat can run on, with its models, fetched with its key here, so no
     key reaches the page."""
     saved = saved_keys(home)
-    lists = [list_models(each, key_of(each, saved)) for each in usable(library, saved)]
+    every = usable(providers(library), saved)
+    lists = [list_models(each, key_of(each, saved)) for each in every]
     return list(await asyncio.gather(*lists))

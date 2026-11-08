@@ -31,6 +31,7 @@ from deep_reasoning.settings import (
     key_status,
     list_models,
     provider_list,
+    providers,
     read_settings,
     remember_pick,
     remove_server,
@@ -327,10 +328,10 @@ def test_a_server_entry_add_server_could_not_have_written_is_left_out(library, p
 def test_new_chats_start_on_gpt_6_luna_when_openai_has_a_key_and_nothing_was_picked(
     app_home, library, monkeypatch
 ):
-    assert starting_model(app_home, library) is None
+    assert starting_model(app_home, library, providers(library)) is None
     monkeypatch.setenv(OPENAI.key_env, SHELL_KEY)
     luna = {"provider": "OpenAI", "name": "gpt-6-luna"}
-    assert starting_model(app_home, library) == luna
+    assert starting_model(app_home, library, providers(library)) == luna
 
 
 def test_new_chats_start_on_the_model_picked_last_while_its_provider_can_answer(
@@ -339,10 +340,13 @@ def test_new_chats_start_on_the_model_picked_last_while_its_provider_can_answer(
     monkeypatch.setenv(OPENAI.key_env, SHELL_KEY)
     add_server(app_home, library, "vllm", LOCAL_URL, None)
     remember_pick(library, "vllm", "qwen3")
-    assert starting_model(app_home, library) == {"provider": "vllm", "name": "qwen3"}
+    assert starting_model(app_home, library, providers(library)) == {
+        "provider": "vllm",
+        "name": "qwen3",
+    }
     remove_server(app_home, library, find_provider(library, "vllm"))
     luna = {"provider": "OpenAI", "name": "gpt-6-luna"}
-    assert starting_model(app_home, library) == luna
+    assert starting_model(app_home, library, providers(library)) == luna
 
 
 def test_the_default_folder_is_kept_beside_the_other_settings(
