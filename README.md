@@ -116,7 +116,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   a namespace you name, add a namespace or change one's own fields (its system suffix, vars, tools and spawn), and
   write a new tool of its own in Python (or replace one) that it then grants to a namespace, with the app's own
   `library` tool; a chat in a namespace without it can't, even through a sub-agent. A tool it writes, or a tool of
-  yours it grants, is built first to check it, as another chat would build it (in a process of its own, from an empty
+  yours it grants that no namespace granted yet, is built first to check it, as another chat would build it (in a
+  process of its own, from an empty
   folder), and one that doesn't build there is refused: granted, it would stop every chat. That works only in a chat
   whose namespace runs the local REPL. A tool it writes can't take a built-in's or the app's name or replace a tool
   root grants or one built into the engine. The tool never

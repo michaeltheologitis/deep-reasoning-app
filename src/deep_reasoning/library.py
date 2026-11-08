@@ -364,7 +364,7 @@ build. Building it doesn't call it: say it was built, not tried. Agents see it o
 namespace that grants it (add its name to a namespace's tools with change_namespace, \
 from the next message), but once any namespace grants it, its module and factory run at \
 the start of every run of every chat, so add_namespace and change_namespace first build \
-each custom tool they grant that the namespace didn't, and refuse one that doesn't \
+each custom tool they grant that no namespace granted yet, and refuse one that doesn't \
 build, as it would stop every chat. Writing or granting a custom tool works only in a \
 chat whose namespace runs the local REPL.
 Each write returns what it did, as {done, what, name} (and namespace, but for a \

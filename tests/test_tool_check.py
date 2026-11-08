@@ -1,18 +1,22 @@
-"""The build check's own process: what it says of a tool that doesn't build, and that
-nothing a tool leaves running holds it up or outlives it."""
+"""The build check, as the library tool and an import call it: a verdict per tool, built
+as a run of the config given builds it, in the environment given; and nothing a tool does
+(raising, exiting, hanging, leaving a thread or child) holds it up, outlives it, or gets
+another tool blamed."""
 
-import re
+import os
 import time
 from pathlib import Path
 
 import pytest
-import yaml
 
-from deep_reasoning import app_tools
-from deep_reasoning.app_tools import WRITTEN, check_builds
-from deep_reasoning.library import LibraryError
+from deep_reasoning import tool_check
+from deep_reasoning.tool_check import check_tools
 
 BLOCK = {"factory": "build"}
+CONFIG = {
+    "model": "gpt-6-luna",
+    "client": {"base_url": "http://127.0.0.1:9/v1", "api_key_env": "A_TEST_MODEL_KEY"},
+}
 BUILDS = """from deep_reasoner.primitives import Func
 
 
@@ -20,6 +24,22 @@ def build(client, params):
     return Func(len)
 """
 RAISES = "def build(client, params):\n    raise RuntimeError('no index')\n"
+# As a tool reaching the run's model through a models preset does.
+USES_A_PRESET = """from deep_reasoner.primitives import Func
+from deep_reasoner.v2 import LLM
+
+
+def build(client, params):
+    llm = LLM("fast")
+    if (llm.model, llm.client) != ("m-fast", client):
+        raise RuntimeError(f"not as the run builds it: {llm.model}")
+    if not str(client.base_url).startswith("http://127.0.0.1:9"):
+        raise RuntimeError(f"not the run's client: {client.base_url}")
+    return Func(llm)
+"""
+EXITS = "import sys\n\n\ndef build(client, params):\n    sys.exit(3)\n"
+ENDS_THE_CHECK = "import os\nimport sys\n\nsys.stderr.write('bye\\n')\nos._exit(3)\n"
+SLOW = "import time\n\n\ndef build(client, params):\n    time.sleep(60)\n"
 LEAVES_A_CHILD = """import subprocess
 from pathlib import Path
 
@@ -41,29 +61,21 @@ def build(client, params):
     threading.Thread(target=time.sleep, args=(60,)).start()
     return Func(len)
 """
-SLOW = """import time
+READS_THE_ENVIRONMENT = """import os
+
+from deep_reasoner.primitives import Func
 
 
 def build(client, params):
-    time.sleep(60)
+    setting = os.environ["A_SETTING"]
+    return Func(lambda: setting)
 """
-ENDS_THE_CHECK = "import os\nimport sys\n\nsys.stderr.write('bye\\n')\nos._exit(3)\n"
-ASKS_THE_CLIENT = """from deep_reasoner.primitives import Func
 
 
-def build(client, params):
-    return Func(lambda: str(client.base_url))
-"""
-WRONG_CLIENT = ASKS_THE_CLIENT.replace(
-    "return Func", "assert 'not-the-runs' in str(client.base_url)\n    return Func"
-)
-
-
-def checked(tools, tools_dir):
-    """Check *tools*, each its source by name, built by their build functions."""
-    check_builds(
-        {name: (BLOCK, source) for name, source in tools.items()}, tools_dir, WRITTEN
-    )
+def verdicts(tools, work, config=CONFIG, env=None):
+    """The check's verdict on *tools*, each its source by name, built by their build."""
+    tools = {name: (BLOCK, source) for name, source in tools.items()}
+    return check_tools(tools, config, os.environ if env is None else env, work)
 
 
 def running(pid):
@@ -81,23 +93,59 @@ def running(pid):
     return True
 
 
-def test_a_tool_that_builds_passes_and_leaves_no_files(tmp_path):
-    checked({"counter": BUILDS}, tmp_path / "tools")
-    assert list((tmp_path / "tools" / "checks").iterdir()) == []
+def test_each_tool_gets_a_verdict_naming_its_file_not_where_it_was_built(tmp_path):
+    tools = {"counter": BUILDS, "broken": RAISES, "missing": "import nowhere_at_all\n"}
+    work = tmp_path / "work"
+    assert verdicts(tools, work) == {
+        "counter": None,
+        "broken": "build in broken.py raised RuntimeError: no index",
+        "missing": "importing 'missing.py' raised ModuleNotFoundError: No module named"
+        " 'nowhere_at_all'",
+    }
+    assert list(work.iterdir()) == []
 
 
-def test_each_tool_that_doesnt_build_is_named_with_its_file_not_where_it_was_built(
+def test_a_tool_is_built_as_the_run_builds_it_with_its_client_and_presets(tmp_path):
+    with_presets = CONFIG | {"models": {"fast": {"model": "m-fast"}}}
+    assert verdicts({"fast": USES_A_PRESET}, tmp_path, with_presets) == {"fast": None}
+    [why] = verdicts({"fast": USES_A_PRESET}, tmp_path).values()
+    assert "not as the run builds it: fast" in why
+
+
+def test_a_tool_that_exits_is_refused_and_the_rest_still_checked(tmp_path):
+    assert verdicts({"exits": EXITS, "counter": BUILDS}, tmp_path) == {
+        "exits": "it called sys.exit(3)",
+        "counter": None,
+    }
+
+
+def test_a_check_that_cant_start_says_why_for_every_tool(tmp_path):
+    broken_config = CONFIG | {"max_iter": "many"}
+    found = verdicts({"counter": BUILDS, "other": BUILDS}, tmp_path, broken_config)
+    assert set(found) == {"counter", "other"}
+    assert all(
+        why.startswith("the check couldn't start: ValidationError")
+        for why in found.values()
+    )
+
+
+def test_a_tool_that_ends_the_check_is_blamed_alone_and_the_rest_checked_again(
     tmp_path,
 ):
-    tools = {"counter": BUILDS, "broken": RAISES, "missing": "import nowhere_at_all\n"}
-    with pytest.raises(LibraryError) as refused:
-        checked(tools, tmp_path / "tools")
-    assert str(refused.value) == (
-        "Tool broken doesn't build, so it wasn't written: build in broken.py raised"
-        " RuntimeError: no index\n"
-        "Tool missing doesn't build, so it wasn't written: importing 'missing.py' raised"
-        " ModuleNotFoundError: No module named 'nowhere_at_all'"
-    )
+    tools = {"counter": BUILDS, "ends": ENDS_THE_CHECK, "broken": RAISES}
+    assert verdicts(tools, tmp_path) == {
+        "counter": None,
+        "ends": "building it ended the check, printing: bye",
+        "broken": "build in broken.py raised RuntimeError: no index",
+    }
+
+
+def test_a_tool_slower_than_the_limit_is_blamed_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(tool_check, "BUILD_TIMEOUT_S", 8)
+    assert verdicts({"slow": SLOW, "counter": BUILDS}, tmp_path) == {
+        "slow": "it didn't build within 8 seconds",
+        "counter": None,
+    }
 
 
 @pytest.mark.parametrize(
@@ -106,32 +154,22 @@ def test_each_tool_that_doesnt_build_is_named_with_its_file_not_where_it_was_bui
 def test_what_a_tool_leaves_running_neither_holds_the_check_up_nor_outlives_it(
     tmp_path, monkeypatch, source
 ):
-    monkeypatch.setattr(app_tools, "BUILD_TIMEOUT_S", 30)
+    monkeypatch.setattr(tool_check, "BUILD_TIMEOUT_S", 30)
     pid_file = tmp_path / "pid.txt"
     started = time.monotonic()
-    checked({"lingers": source.format(pid_file=str(pid_file))}, tmp_path / "tools")
-    assert time.monotonic() - started < 30
+    found = verdicts(
+        {"lingers": source.format(pid_file=str(pid_file))}, tmp_path / "work"
+    )
+    assert (found, time.monotonic() - started < 30) == ({"lingers": None}, True)
     if pid_file.exists():
         assert not running(int(pid_file.read_text()))
 
 
-def test_a_tool_slower_than_the_limit_is_refused_in_words(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_tools, "BUILD_TIMEOUT_S", 8)
-    refusal = "Tool slow didn't build within 8 seconds, so it wasn't written."
-    with pytest.raises(LibraryError, match=re.escape(refusal)):
-        checked({"slow": SLOW}, tmp_path / "tools")
-
-
-def test_a_tool_that_ends_the_check_is_refused_with_what_it_printed(tmp_path):
-    refusal = "Tool ends doesn't build, so it wasn't written: bye"
-    with pytest.raises(LibraryError, match=re.escape(refusal)):
-        checked({"ends": ENDS_THE_CHECK}, tmp_path / "tools")
-
-
-def test_a_tool_is_built_with_the_runs_client_from_its_spec(tmp_path, monkeypatch):
-    monkeypatch.setenv("A_KEY_VARIABLE", "sk-not-used")
-    client = {"base_url": "http://127.0.0.1:9/v1", "api_key_env": "A_KEY_VARIABLE"}
-    (tmp_path / "spec.yaml").write_text(yaml.safe_dump({"config": {"client": client}}))
-    checked({"asks": ASKS_THE_CLIENT}, tmp_path / "tools")
-    with pytest.raises(LibraryError, match="raised AssertionError"):
-        checked({"asks": WRONG_CLIENT}, tmp_path / "tools")
+def test_the_tools_are_built_in_the_environment_given(tmp_path):
+    given = dict(os.environ) | {"A_SETTING": "given"}
+    assert verdicts({"env": READS_THE_ENVIRONMENT}, tmp_path, env=given) == {
+        "env": None
+    }
+    without = {key: value for key, value in given.items() if key != "A_SETTING"}
+    [why] = verdicts({"env": READS_THE_ENVIRONMENT}, tmp_path, env=without).values()
+    assert why == "build in env.py raised KeyError: 'A_SETTING'"

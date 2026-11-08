@@ -6,6 +6,7 @@ from itertools import count
 from pathlib import Path
 
 import pytest
+import yaml
 from fake_model import WORD_COUNT
 from structlog.testing import capture_logs
 
@@ -56,6 +57,7 @@ from deep_reasoning.runs import (
     KEY_WITHHELD,
     LOST,
     PAGE_FIELDS,
+    SPEC,
     chat_runs,
     read_turn,
     save_event,
@@ -668,13 +670,25 @@ SHELL_KEY = "sk-a-key-from-the-shell"
 ESCAPED_KEY = '"\\x73' + SHELL_KEY[1:] + '"'
 
 
+# The engine config of the run the library tool is in, as its spec.yaml holds it: a
+# model on a server nothing calls, as no check calls one.
+RUN_CONFIG = {
+    "model": "gpt-6-luna",
+    "client": {"base_url": "http://127.0.0.1:9/v1", "api_key_env": "A_TEST_MODEL_KEY"},
+}
+
+
 def library_tool(library, namespace="librarian"):
-    """The library tool, as a run of a chat in *namespace* gets it."""
+    """The library tool, as a run of a chat in *namespace* gets it, in a run folder with
+    its spec."""
+    run = library.parent / "run"
+    run.mkdir(exist_ok=True)
+    (run / SPEC).write_text(yaml.safe_dump({"config": RUN_CONFIG}))
     told = {
         "library": str(library),
         "chat": CHAT,
         "run": CURRENT,
-        "tools_dir": str(library.parent / "run-tools"),
+        "tools_dir": str(run / "tools"),
         "namespace": namespace,
         "key_names": [SHELL_KEY_ENV],
     }
@@ -1108,7 +1122,7 @@ def test_a_tool_is_built_from_a_file_deleted_after_the_build(fresh):
     tool.write_tool("counter", WORD_COUNT, "build")
     with pytest.raises(LibraryError, match="raised RuntimeError: built"):
         tool.write_tool("other", RAISING, "build")
-    assert list((fresh.parent / "run-tools" / "checks").iterdir()) == []
+    assert list((fresh.parent / "run" / "tools" / "checks").iterdir()) == []
 
 
 HELPED = """from deep_reasoner.primitives import Func
@@ -1258,6 +1272,41 @@ def test_a_grant_refused_for_what_is_cheap_to_check_never_builds_the_tool(
     with pytest.raises(LibraryError, match=re.escape(refusal)):
         getattr(library_tool(fresh), method)(name, text)
     assert not marker.exists()
+
+
+def test_a_tool_another_namespace_grants_is_granted_without_building_it_again(
+    fresh, tmp_path
+):
+    marker = tmp_path / "ran.txt"
+    stored_as(fresh, "marks", MARKS.format(marker=str(marker)))
+    with closing(open_library(fresh)) as connection:
+        add_namespace(connection, "marking", "tools: [marks]\n")
+    library_tool(fresh).change_namespace("drafts", "tools: [marks]\n")
+    assert not marker.exists()
+    assert ("drafts", "tools: [marks]\n") in stored_namespaces(fresh)
+
+
+def test_a_chat_whose_repl_became_a_sandbox_while_a_tool_was_built_may_not_grant_it(
+    fresh,
+):
+    # Its build sandboxes the librarian, as the user might in the panel meanwhile.
+    sandboxes = f"""import sqlite3
+
+from deep_reasoner.primitives import Func
+
+
+def build(client, params):
+    with sqlite3.connect({str(fresh)!r}) as connection:
+        connection.execute(
+            "UPDATE namespaces SET yaml = 'tools: [library]\\nrepl: {{type: restricted}}\\n'"
+            " WHERE name = 'librarian'"
+        )
+    return Func(len)
+"""
+    stored_as(fresh, "sandboxes", sandboxes)
+    with pytest.raises(LibraryError, match=re.escape(NOT_LOCAL)):
+        library_tool(fresh).change_namespace("drafts", "tools: [sandboxes]\n")
+    assert ("drafts", "") in stored_namespaces(fresh)
 
 
 def test_a_chat_whose_namespace_runs_a_sandboxed_repl_may_not_grant_a_tool_nor_build_it(

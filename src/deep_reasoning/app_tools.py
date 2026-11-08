@@ -31,14 +31,9 @@ import json
 import keyword
 import os
 import re
-import shutil
-import signal
 import sqlite3
-import subprocess
-import sys
-import tempfile
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import closing, contextmanager, suppress
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from functools import cached_property, partial
 from pathlib import Path
@@ -104,6 +99,7 @@ from deep_reasoning.runs import (
     total_cost,
     withheld,
 )
+from deep_reasoning.tool_check import check_tools
 
 log = structlog.get_logger()
 
@@ -150,12 +146,6 @@ TOOL_TOO_LONG = (
     " characters."
 )
 CHECKS = "checks"
-# Named whole: the engine loads this file under a module name of its own.
-CHECK_MODULE = tool_check.__name__
-# A factory that takes longer is refused: every run would wait on it.
-BUILD_TIMEOUT_S = 60
-# What a check that ended without saying why shows of what it printed.
-SHOWN_OUTPUT_CHARS = 2_000
 CHANGED_MEANWHILE = (
     "The tools this grants changed while they were being built; try again."
 )
@@ -1044,11 +1034,10 @@ def granted_afresh(
     registry: NamespaceRegistry,
     namespace: NamespaceConfig,
 ) -> dict[str, tuple[str, str]]:
-    """The custom tools *namespace* grants that the Library's namespace of its name, in
-    *registry*, doesn't, each as its stored YAML and source."""
-    held = namespace.name in registry.names
-    stored = registry.config(namespace.name).tools if held else []
-    afresh = set(namespace.tools) - set(stored)
+    """The custom tools *namespace* grants that no namespace of the Library, *registry*,
+    grants yet, so no run builds yet, each as its stored YAML and source."""
+    granted = {tool for each in registry.names for tool in registry.config(each).tools}
+    afresh = set(namespace.tools) - granted
     return {
         name: (text, source)
         for name, text, source in library_tools(connection)
@@ -1056,74 +1045,23 @@ def granted_afresh(
     }
 
 
-def run_check(asked: dict[str, Any], folder: Path) -> tuple[dict[str, str] | None, str]:
-    """tool_check run on *asked*, from an empty folder in *folder*, in a process group of
-    its own that is ended after, so nothing a tool started outlives the check: why each
-    tool doesn't build (None when the check didn't say), and what it printed."""
-    empty, printed = folder / "cwd", folder / "printed.txt"
-    empty.mkdir()
-    result = folder / "result.json"
-    with printed.open("w") as output:
-        check = subprocess.Popen(
-            [sys.executable, "-P", "-m", CHECK_MODULE],
-            stdin=subprocess.PIPE,
-            stdout=output,
-            stderr=output,
-            cwd=empty,
-            start_new_session=True,
-            text=True,
-        )
-        try:
-            check.communicate(dump(asked | {"result": str(result)}), BUILD_TIMEOUT_S)
-        finally:
-            with suppress(ProcessLookupError):
-                os.killpg(check.pid, signal.SIGKILL)
-            check.wait()
-    try:
-        failures = json.loads(result.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
-        failures = None
-    return failures, printed.read_text(errors="replace")
-
-
 def check_builds(
     tools: dict[str, tuple[dict[str, Any], str]], tools_dir: Path, done: str
 ) -> None:
-    """Raise unless each of *tools*, by name its block and Python source, builds as
-    another chat's run would build it: in one process of its own, from an empty folder,
-    with the run's client (none outside a run). *done* says what wasn't done when one
-    doesn't."""
+    """Raise unless each of *tools*, by name its block and Python source, builds as a run
+    of this run's config, in its folder beside *tools_dir*, would build it, in this
+    worker's environment. *done* says what wasn't done when one doesn't."""
     if not tools:
         return
-    checks = tools_dir / CHECKS
-    checks.mkdir(parents=True, exist_ok=True)
-    folder = Path(tempfile.mkdtemp(dir=checks))
-    spec = tools_dir.parent / SPEC
-    blocks = {}
-    for name, (block, source) in tools.items():
-        file = folder / tool_file(name)
-        file.write_text(source, encoding="utf-8")
-        blocks[name] = block | {"factory_from": str(file)}
-    asked = {"tools": blocks, "spec": str(spec) if spec.is_file() else None}
-    named = " and ".join(tools)
-    try:
-        failures, printed = run_check(asked, folder)
-    except subprocess.TimeoutExpired as error:
-        raise LibraryError(
-            f"Tool {named} didn't build within {BUILD_TIMEOUT_S} seconds, so it {done}."
-        ) from error
-    finally:
-        shutil.rmtree(folder, ignore_errors=True)
-    if failures is None:
-        failures = {named: printed[-SHOWN_OUTPUT_CHARS:].strip() or "it said nothing."}
-    if failures:
-        raise LibraryError(
-            "\n".join(
-                f"Tool {name} doesn't build, so it {done}: "
-                + detail.replace(f"{folder}{os.sep}", "")
-                for name, detail in failures.items()
-            )
-        )
+    config = tool_check.config_of(tools_dir.parent / SPEC)
+    verdicts = check_tools(tools, config, os.environ, tools_dir / CHECKS)
+    failed = [
+        f"Tool {name} doesn't build, so it {done}: {why}"
+        for name, why in verdicts.items()
+        if why is not None
+    ]
+    if failed:
+        raise LibraryError("\n".join(failed))
 
 
 def build_library(client: Any, params: dict[str, Any]) -> Func:
@@ -1166,6 +1104,8 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         config, registry = config_and_registry(connection)
         check_grant(registry)
         check_locks(config, registry, namespace)
+        if built:
+            check_local(registry)
         if granted_afresh(connection, registry, namespace) != built:
             raise LibraryError(CHANGED_MEANWHILE)
 
@@ -1176,25 +1116,26 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         check_tool_locks(config, registry, name)
 
     def built_grants(name: str, text: str, adding: bool) -> dict[str, tuple[str, str]]:
-        """Check namespace *name*, as the YAML *text* would make it, before anything
-        runs: what write would refuse cheaply, then each custom tool it grants afresh,
-        built. Those tools, as stored; the build holds no write lock, so the write checks
-        them again under it."""
+        """The custom tools namespace *name*, as the YAML *text* would make it, grants
+        afresh, as stored, each built, after what the write would refuse cheaply, so a
+        write refused for that runs no tool. With none, the write makes every check, under
+        its lock; the build holds no lock, so the write checks the tools again under it."""
         if adding:
             check_name(name)
         namespace, _ = authored(name, text)
         with app_file(library, "ro") as connection, reading(connection):
             config, registry = config_and_registry(connection)
+            afresh = granted_afresh(connection, registry, namespace)
+            if not afresh:
+                return afresh
             check_grant(registry)
             check_locks(config, registry, namespace)
+            check_local(registry)
             if adding:
                 check_place(connection, name)
             else:
                 check_namespace(connection, name)
             check_fields(connection, namespace)
-            afresh = granted_afresh(connection, registry, namespace)
-            if afresh:
-                check_local(registry)
         built = {
             tool: (loaded(text), source) for tool, (text, source) in afresh.items()
         }
