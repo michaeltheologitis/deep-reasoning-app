@@ -3680,7 +3680,6 @@ def answering_with(text):
 
 
 NOT_AN_INTEGER = "max_iter: Input should be a valid integer"
-HIDDEN = "holds a character you can't see ({})"
 # Rows a shared file may hold that no version of the app writes, as (table, row, why the
 # panel says it is left out).
 UNREADABLE_ROWS = {
@@ -3731,11 +3730,20 @@ UNREADABLE_ROWS = {
             f"Its name, {json.dumps(ascii(name))[1:-1]}, {why}, so it could pass for",
         )
         for like, name, why in [
-            ("with-a-cyrillic-o", "r\u043eot", "reads as root"),
             ("root-capitalised", "Root", "reads as root"),
-            ("root-in-full-width", "\uff52\uff4f\uff4f\uff54", "reads as root"),
-            ("with-an-rtl-override", "\u202etoor", HIDDEN.format("U+202E")),
-            ("with-a-zero-width-space", "ro\u200bot", HIDDEN.format("U+200B")),
+            *(
+                (like, name, f"holds characters a saved name can't (U+{ord(odd):04X})")
+                for like, name, odd in [
+                    ("with-a-cyrillic-o", "r\u043eot", "\u043e"),
+                    ("with-an-armenian-o", "r\u0585ot", "\u0585"),
+                    ("with-a-small-capital-r", "\u0280oot", "\u0280"),
+                    ("with-a-small-capital-o", "ro\u1d0ft", "\u1d0f"),
+                    ("in-full-width", "\uff52\uff4f\uff4f\uff54", "\uff52"),
+                    ("with-a-math-r", "\U0001d5cbesearch", "\U0001d5cb"),
+                    ("with-an-rtl-override", "\u202etoor", "\u202e"),
+                    ("with-a-zero-width-space", "ro\u200bot", "\u200b"),
+                ]
+            ),
         ]
     },
     "a-namespace-too-long": (
