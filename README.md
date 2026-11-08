@@ -152,8 +152,9 @@ imports too.
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never
   runs, but to check it builds.
-- A new Library's root has a `system_suffix`, which every namespace inherits, telling agents what app they are in,
-  that a namespace's suffix is your own text and no secret, to answer each number from what Python computed and
+- A new Library's root has a `system_suffix`, which every namespace inherits, telling agents what app they are in
+  (on your computer, unsandboxed, writing files in the chat's folder, the ✻ line opening an answer's tree, chats
+  saved in the Library file), that a namespace's suffix is your own text and no secret, to answer each number from what Python computed and
   printed, to combine sub-agents' results in words with formulas as plain text, and to put their results in their
   answer, leaving their own failed cells out; edit or delete it in the panel.
 
@@ -162,8 +163,9 @@ imports too.
   `system_suffix`, `vars`, `tools` and `spawn`, and writes Python tools of its own and grants them, with the app's
   `library` tool. A chat in another namespace can't, even through a sub-agent.
 - It changes only what you name, keeps every line of a text you didn't ask to remove (saying what it removed),
-  leaves `spawn` unset unless you ask, and makes team members siblings rather than children of the planner, unless
-  they should inherit its suffix and worked examples.
+  leaves `spawn` unset unless you ask, makes team members siblings rather than children of the planner, unless
+  they should inherit its suffix and worked examples, and says when a worked example disagrees with its namespace's
+  suffix.
 - Each change shows under its answer and in the tree, opens onto its YAML (or a tool's Python) before and after, and
   applies from your next message; the panel and namespace menu show it at once. Ask it to undo one and it writes the
   before back from the record.
