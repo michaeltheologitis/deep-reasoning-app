@@ -161,6 +161,18 @@ imports too.
   assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last), and a ✗
   says why; it still saves, as a draft agents are shown from the next message. A new one starts in the namespace of
   the chat on screen. Its code isn't run.
+- What worked examples teach (measured on gpt-6-luna): who to hand work to and the steps to take, which agents
+  copy closely; the answer's format sticks only when the namespace's `system_suffix` says it, so put it there too.
+  As the example isn't run, give each cell the imports it uses: a cell using `re` imported in an earlier one made
+  agents fail 6 times in 10. A namespace with a `spawn` list should keep `historian` in it for "how did you get
+  that?" to work there.
+- A worked example whose code hands work to a namespace its own can't reach (left out of its `spawn`, or deleted),
+  or calls a tool of yours its namespace isn't granted, keeps its ✓ but carries a note saying so: agents copying it
+  fail at that call. Where it hands the whole question on (a last cell ending `FinalAnswer(subagent(...,
+  namespace=…))`), agents are shown it answering themselves if they can instead (for `historian`, saying they
+  can't); one handing on a step whose answer it works on isn't changed, so edit it. A namespace's Hand-offs field
+  lists both, saving a namespace names the examples it gave a note, and a namespace's Delete says how many worked
+  examples hand work to it and how many chats are on it, which are refused until they pick another.
 - Saving refuses what would fail every run there: a template (`{{` or `{%`) the engine can't render, that names
   anything but what it fills in (`task`, `vars`, `funcs`, `coroutines`, the run settings'
   `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`, or put a cell's code, an f-string's braces and
@@ -238,8 +250,10 @@ imports too.
   Python isn't sandboxed, and could open the file itself.
 - Any chat can ask about the Library ("what namespaces do I have?", "add a namespace for legal questions"): root hands
   it to a librarian sub-agent, which there only reads, and asked for a change says to pick `librarian` and ask there,
-  or how to do it in the panel. A namespace that can't reach `historian` or `librarian` (left out of its `spawn`, or
-  deleted) answers such questions itself as best it can, or says it can't; the panel says so under its Hand-offs.
+  or how to do it in the panel. A namespace that can't reach `librarian` (left out of its `spawn`, or deleted) answers
+  such questions itself if it can, and says so if it can't; one that can't reach `historian` says it can't answer
+  questions about earlier messages, and, when its spawn list is why, that adding `historian` there would let it. The
+  panel says so under its Hand-offs.
 
 **Commands**
 - `uv run deep-reasoning import CONFIG.yaml` brings a `deep_reasoner` config's namespaces, worked examples, tools and

@@ -375,6 +375,7 @@ def test_a_valid_decomposition_is_stored_and_listed_under_its_namespace(client):
         "name": "next course",
         "yaml": VALID,
         "problems": ["Turn 2 (assistant) has no <think>…</think>."],
+        "notes": [],
         "read": True,
     }
 
@@ -453,6 +454,29 @@ def test_a_namespace_is_added_edited_and_deleted_through_the_api(client):
         HISTORIAN,
         "librarian",
     }
+
+
+def test_deleting_a_namespace_says_how_many_chats_are_on_it(client):
+    client.post("/api/namespaces", json={"name": "trips", "yaml": ""})
+    client.post("/api/namespaces", json={"name": "solo", "yaml": ""})
+    on = {"trips": 2, "solo": 1}
+    for name, chats in on.items():
+        for _ in range(chats):
+            chat = client.post("/api/chats").json()["id"]
+            client.patch(f"/api/chats/{chat}", json={"namespace": name})
+    # One that hasn't picked follows where new chats start.
+    client.post("/api/chats")
+    rows = by_name(client.get("/api/library").json()["namespaces"])
+    assert rows["trips"]["deleting"] == [
+        (
+            "2 chats are on it: their next message is refused until they pick another"
+            " namespace."
+        )
+    ]
+    assert rows["solo"]["deleting"] == [
+        "1 chat is on it: its next message is refused until it picks another namespace."
+    ]
+    assert rows["router"]["deleting"] == []
 
 
 @pytest.mark.parametrize(
@@ -1237,7 +1261,8 @@ async def test_a_namespace_that_may_not_hand_off_to_the_historian_says_it_cant(
     assert cell["status"] == "done"
     assert events[-1]["answer"] == (
         "I can't answer that here: questions like it go to the historian namespace,"
-        " and this namespace's spawn list leaves it out."
+        " and trips's spawn list leaves it out. Adding historian to that spawn list"
+        " would let me."
     )
 
 
@@ -1594,7 +1619,7 @@ async def test_the_library_tool_adds_a_decomposition_then_replaces_it_each_chang
     assert librarian["decompositions"] == [
         *LIBRARIANS_SEEDED,
         {"name": "count the tickets", "yaml": REWORDED, "problems": EXAMPLE_PROBLEMS}
-        | {"read": True},
+        | {"notes": [], "read": True},
     ]
     assert [events[-1]["outcome"] for events in (added, replaced)] == ["answered"] * 2
     assert any("The `library` tool" in each for each in system_prompts(fake.calls[-1:]))
@@ -1632,7 +1657,8 @@ async def test_a_change_to_the_library_applies_from_the_next_message(
 # librarian, then to the historian), the historian's examples, and the librarian's.
 FRESH_DECOMPOSITIONS = [
     [
-        {"name": parsed(text).name, "yaml": text, "problems": [], "read": True}
+        {"name": parsed(text).name, "yaml": text, "problems": [], "notes": []}
+        | {"read": True}
         for text in texts
     ]
     for texts in (
@@ -1857,8 +1883,9 @@ async def test_a_refused_namespace_write_fails_its_cell_in_plain_words_and_chang
             drafts = {"name": "drafts", "yaml": DRAFTS}
             response = await api.post("/api/namespaces", json=drafts)
             assert response.status_code == 201, response.text
-            before = (await api.get("/api/library")).json()
+            # Once the chat is on librarian, as the confirm of its Delete counts.
             chat = await librarian_chat(api)
+            before = (await api.get("/api/library")).json()
             events = await run_events(api, await send(api, chat, "Try these."))
             after = (await api.get("/api/library")).json()
     ended = kinds(events, "cell.end")[: len(NAMESPACE_REFUSALS)]
@@ -2102,8 +2129,9 @@ async def test_a_refused_tool_fails_its_cell_in_plain_words_and_stores_nothing(
     plan = {"Try these.": [*cells, repl("FinalAnswer('refused')")]}
     with FakeOpenAI(scripted(plan)) as fake:
         async with connect(library_on(fake)) as api:
-            before = (await api.get("/api/library")).json()
+            # Once the chat is on librarian, as the confirm of its Delete counts.
             chat = await librarian_chat(api)
+            before = (await api.get("/api/library")).json()
             events = await run_events(api, await send(api, chat, "Try these."))
             after = (await api.get("/api/library")).json()
     ended = kinds(events, "cell.end")[: len(TOOL_REFUSALS)]
@@ -2418,7 +2446,7 @@ async def test_in_a_librarian_chat_a_sub_agent_handed_the_tool_elsewhere_writes(
     assert librarian["decompositions"] == [
         *LIBRARIANS_SEEDED,
         {"name": "count the tickets", "yaml": EXAMPLE, "problems": EXAMPLE_PROBLEMS}
-        | {"read": True},
+        | {"notes": [], "read": True},
     ]
 
 
@@ -4573,6 +4601,7 @@ def test_a_decomposition_the_engine_cant_read_shows_its_yaml_and_why_agents_dont
                 " template."
             ),
         ],
+        "notes": [],
         "read": False,
     }
 

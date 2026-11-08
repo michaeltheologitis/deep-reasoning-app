@@ -424,9 +424,11 @@ async function addNamespace(text) {
   return { said: `Added namespace "${name}"`, row: namespaceKey(name) };
 }
 
+// a spawn list or grant it narrows may leave a worked example calling what its agents no longer reach
 const saveNamespace = (name) => async (text, form) => {
+  const before = library;
   await changeLibrary("PUT", namespaceUrl(name), { yaml: text, was: form.was });
-  return { said: `Saved namespace "${name}"` };
+  return { said: `Saved namespace "${name}"${newlyNoted(before)}` };
 };
 
 // A row's edit form, built once; a closed one holds no draft, so it follows what is stored, and an open one keeps what it was opened on.
@@ -560,22 +562,32 @@ function deletable(key, actions, { question, refusal = () => null, remove, said,
   return [element("div", { class: "lib-actions" }, actions, ask), deleting?.key === key && element("div", { class: "lib-problems", role: "alert" }, deleting.refusal)];
 }
 
+// what else it changes, as the server words it: the worked examples handing it work, and the chats on it
 function deleteQuestion(namespace) {
   const count = namespace.decompositions.length;
   const what = count ? ` and its ${count} decomposition${count === 1 ? "" : "s"}` : "";
   const fallback = namespace.name === library.default_namespace ? ` New chats will start in ${ROOT} instead.` : "";
-  const handed = namespace.handed_to;
-  const handing = handed ? ` ${handed} worked example${handed === 1 ? " hands" : "s hand"} questions to it, and without it agents say they can't answer those.` : "";
-  return `Delete namespace ${namespace.name}${what}?${fallback}${handing}`;
+  return [`Delete namespace ${namespace.name}${what}?${fallback}`, ...namespace.deleting].join(" ");
 }
 
 // It sends the count the confirm said, so the server deletes no more than that.
 async function deleteNamespace(name) {
   const said = namespaceNamed(name).decompositions.length;
+  const before = library;
   await changeLibrary("DELETE", `${namespaceUrl(name)}?decompositions=${said}`);
   opened.delete(namespaceKey(name));
   editForms.delete(namespaceKey(name));
-  return { text: `Deleted namespace "${name}"`, row: namespaceKey(parentOf(name)) };
+  return { text: `Deleted namespace "${name}"${newlyNoted(before)}`, row: namespaceKey(parentOf(name)) };
+}
+
+// how many notes each worked example has, so a change that gives one more can say so, not one whose note only changed its reason
+const noted = (found) => found.namespaces.flatMap((namespace) => namespace.decompositions.map((each) => [`"${each.name}" in ${namespace.name}`, each.notes.length]));
+
+function newlyNoted(before) {
+  const had = new Map(noted(before));
+  const fresh = noted(library).filter(([said, notes]) => notes > (had.get(said) ?? 0)).map(([said]) => said);
+  if (!fresh.length) return "";
+  return `. ${fresh.length === 1 ? "1 worked example has a new note" : `${fresh.length} worked examples have new notes`}: ${fresh.join(", ")}`;
 }
 
 // The server's refusal for the row, as one with namespaces under it or that another's spawn names, is said at once; anything else it may refuse is said after the confirm.
@@ -747,6 +759,14 @@ function checkMark(problems) {
   return element("span", { class: `lib-check ${count ? "failed" : "passed"}`, role: "img", "aria-label": label, title: label }, count ? "✗" : "✓");
 }
 
+// a call in its code its agents can't make, as the server found it: not a problem, so no ✗, but agents copying it fail there
+function noteMark(notes) {
+  const label = `${notes.length} note${notes.length === 1 ? "" : "s"}`;
+  return notes.length > 0 && element("span", { class: "lib-check lib-detail" }, label);
+}
+
+const noteList = (notes) => notes.length > 0 && element("div", { class: "lib-call-notes" }, notes.map((text) => element("p", {}, text)));
+
 // what a namespace agents still run in may need looking at, as a shared file's false run line: ◆ in the warn colour, as a run's Left out line, not a ✗
 function warningMark(warnings) {
   const count = warnings.length;
@@ -757,9 +777,9 @@ function warningMark(warnings) {
 const warningList = (warnings) => warnings.length > 0 && element("div", { class: "lib-notes" }, warnings.map((text) => element("p", {}, text)));
 
 function decompositionRow(namespace, decomposition) {
-  const { name, yaml, problems } = decomposition;
+  const { name, yaml, problems, notes } = decomposition;
   const key = decompositionKey(namespace, name);
-  const head = [element("span", { class: "lib-name" }, name), checkMark(problems)];
+  const head = [element("span", { class: "lib-name" }, name), checkMark(problems), noteMark(notes)];
   // one too long to show is shown no YAML, and deleted as that (null)
   const remove = async () => {
     await changeLibrary("DELETE", ADD_URL, { namespace, name, was: yaml });
@@ -772,6 +792,7 @@ function decompositionRow(namespace, decomposition) {
     const question = `Delete "${name}" from ${namespace}? Agents in ${reach(namespace)} stop seeing it from the next message.`;
     return [
       problemList(problems),
+      noteList(notes),
       yaml != null && sideways(`${name}'s YAML`, yaml),
       deletable(key, yaml == null ? [] : form.toggle, { question, remove, said: decompositionForm.confirmation, stored: () => storedDecomposition(namespace, name) != null }),
       form.el,
