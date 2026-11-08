@@ -22,6 +22,7 @@ from deep_reasoning.library import (
     HISTORIAN,
     HISTORIANS_EXAMPLES,
     LIBRARIAN,
+    LIBRARIAN_HAND_OFFS,
     UPSERT_NAMESPACE,
     LibraryError,
     add_namespace,
@@ -83,7 +84,11 @@ RAISES_ON_BUILD = "def build(client, params):\n    raise RuntimeError('offline')
 CONFIGS = Path(__file__).parent / "configs"
 
 
-HAND_OFFS = [parsed(hand_off(text)) for text in HISTORIANS_EXAMPLES]
+# A fresh root's worked examples: its hand-offs to the librarian, then to the historian.
+ROOTS = [
+    *(parsed(text) for text in LIBRARIAN_HAND_OFFS),
+    *(parsed(hand_off(text)) for text in HISTORIANS_EXAMPLES),
+]
 
 
 # What the app puts in for a chat on OpenAI's gpt-6-luna.
@@ -96,7 +101,7 @@ CHATS_MODEL = {
 }
 
 
-ROUTER_SHOWN = ROUTER_DECOMPOSITIONS + [each.name for each in HAND_OFFS]
+ROUTER_SHOWN = ROUTER_DECOMPOSITIONS + [each.name for each in ROOTS]
 
 
 def config_file(tmp_path, text):
@@ -221,7 +226,7 @@ def test_an_import_reads_back_as_the_engine_loads_the_config(library, tmp_path):
     assert config.namespaces[ROOT].vars["due"] == date(2026, 10, 25)
     assert config.namespaces[ROOT].vars["cap"] == math.inf
     assert config.namespaces[ROOT].decompositions == [
-        *HAND_OFFS,
+        *ROOTS,
         *expected.namespaces[ROOT].decompositions,
     ]
 
@@ -250,7 +255,7 @@ def test_a_configs_run_level_openings_are_left_out(library, tmp_path):
             )
         ],
     }
-    assert run_config(library, tmp_path).namespaces[ROOT].decompositions == HAND_OFFS
+    assert run_config(library, tmp_path).namespaces[ROOT].decompositions == ROOTS
 
 
 def test_import_replaces_same_named_items_and_keeps_the_rest(imported, tmp_path):
@@ -699,8 +704,8 @@ def test_an_import_of_what_the_library_holds_changes_nothing_and_keeps_its_text(
             "{system_suffix: Be brief., spawn: [helper]}",
             [
                 (
-                    "Every namespace that sets none of its own gets root's spawn and"
-                    " system_suffix, historian and librarian too."
+                    "Every namespace that sets none of its own gets root's system_suffix"
+                    " and spawn, historian and librarian too."
                 )
             ],
         ),
