@@ -1,5 +1,5 @@
 // The Library panel: the decompositions, namespaces, tools and data every run draws on, read from the server's Library file; adding, editing and deleting save there.
-import { LIBRARY_CHANGED, PANEL_CLOSE, TOUCH, caret, chatNamespace, closeOtherPanels, element, libraryChanged, request, showPanel } from "./app.js";
+import { LIBRARY_CHANGED, PANEL_CLOSE, TOUCH, caret, chatNamespace, closeOtherPanels, element, libraryChanged, nameParts, request, showPanel } from "./app.js";
 import { turnProblems } from "./turns.js";
 
 const LIBRARY_URL = "api/library";
@@ -9,6 +9,8 @@ const TOOLS_URL = "api/tools";
 const RUN_SETTINGS_URL = "api/run-settings";
 // the server's answer to a save or delete opened on what has changed since
 const CONFLICT = 409;
+// the server's refusal of what was sent, as against a failure the same text may pass when sent again
+const REFUSED = 400;
 const TABS = ["Decompositions", "Namespaces", "Tools", "Data"];
 const ROOT = "root";
 const ROLES = ["user", "assistant", "system"];
@@ -132,8 +134,9 @@ panel.append(
 
 // A YAML editor its toggle opens, checked as you type; an edit's form keeps what it opened on (was), and stored() reads what is there now.
 // A quiet form says its problems only once something is typed in it or it is sent, as a blank one's would only nag; they still stop it saving.
+// refusal: the server's refusal of what it sent last, its problems and whether it stops Save (check()).
 function yamlForm({ id, label, action, text, example = null, quiet = false, problems, warnings = () => [], save, stored = null, gone = null, opening = null, before = [], beside = null, after = [], first = null, pending = null }) {
-  const form = { problems, warnings, save, stored, gone, opening, first, pending, quiet, typed: false, was: text, saving: false, timer: null };
+  const form = { problems, warnings, save, stored, gone, opening, first, pending, quiet, typed: false, was: text, saving: false, timer: null, refusal: null };
   form.toggle = element("button", { type: "button", class: "lib-action", "aria-expanded": "false", "aria-controls": id, "data-key": id, onclick: () => (form.el.hidden ? openForm(form) : closeForm(form)) }, label);
   form.editor = element(
     "textarea",
@@ -188,6 +191,7 @@ function openForm(form) {
 // Cancel puts back what the form opened on.
 function closeForm(form) {
   clearTimeout(form.timer);
+  form.refusal = null;
   form.el.hidden = true;
   form.toggle.setAttribute("aria-expanded", "false");
   form.el.reset();
@@ -196,8 +200,14 @@ function closeForm(form) {
   form.toggle.focus();
 }
 
-function edited(form) {
+// What the form would send changed, so the server's refusal of what it sent before no longer holds.
+function changed(form) {
   form.typed = true;
+  form.refusal = null;
+}
+
+function edited(form) {
+  changed(form);
   fitEditor(form.editor);
   clearTimeout(form.timer);
   form.timer = setTimeout(() => check(form), CHECK_DELAY_MS);
@@ -232,14 +242,15 @@ function editorKey(form, e) {
   }
 }
 
-// Problems stop the form; warnings, read only once there are none, don't.
+// Problems stop the form; warnings, read only once there are none, don't. The server's refusal shows until what the form would
+// send changes, and, when it refused the draft itself, stops it too (refusal.stops).
 function check(form) {
   clearTimeout(form.timer);
   const found = form.problems(form.editor.value);
-  if (form.quiet && !form.typed) showProblems(form, []);
+  if (form.refusal) showProblems(form, form.refusal.problems);
+  else if (form.quiet && !form.typed) showProblems(form, []);
   else showProblems(form, found, found.length ? [] : form.warnings(form.editor.value));
-  form.submit.disabled = form.saving || found.length > 0;
-  return found;
+  form.submit.disabled = form.saving || found.length > 0 || Boolean(form.refusal?.stops);
 }
 
 // unchanged problems are left alone, so the live region doesn't repeat them at every pause in typing
@@ -252,7 +263,9 @@ function showProblems(form, found, warned = []) {
 async function submit(form, e) {
   e.preventDefault();
   form.typed = true;
-  if (form.saving || check(form).length) return;
+  // as Ctrl+Enter submits while Save is disabled
+  check(form);
+  if (form.submit.disabled) return;
   clearSaid();
   form.saving = form.submit.disabled = true;
   form.status.textContent = form.pending?.(form.editor.value) ?? "";
@@ -260,12 +273,15 @@ async function submit(form, e) {
   try {
     saved = await form.save(form.editor.value, form);
   } catch (error) {
+    // only a refusal of the draft itself keeps Save off: not a 409, the app not answering, nor a file busy or read only
+    form.refusal = { problems: error.message.split("\n"), stops: error.status === REFUSED && !error.retry };
     // cleared first, so a refusal in the words already shown is said again
     showProblems(form, []);
-    showProblems(form, error.message.split("\n"));
+    showProblems(form, form.refusal.problems);
     if (error.status === CONFLICT) await showNewer(form);
   } finally {
-    form.saving = form.submit.disabled = false;
+    form.saving = false;
+    form.submit.disabled = Boolean(form.refusal?.stops);
     form.status.textContent = "";
   }
   if (!saved) return giveFocusBack(form);
@@ -275,9 +291,9 @@ async function submit(form, e) {
   say(saved.where?.() ?? form.confirmation, saved.said);
 }
 
-// Disabled while it saved, Save let focus fall to the page; a refusal gives it back.
+// Disabled while it saved, Save let focus fall to the page; a refusal gives it back, or to the toggle while Save stays disabled, as Esc does.
 function giveFocusBack(form) {
-  if (document.activeElement === document.body && !form.el.hidden && form.el.isConnected) form.submit.focus();
+  if (document.activeElement === document.body && !form.el.hidden && form.el.isConnected) (form.submit.disabled ? form.toggle : form.submit).focus();
 }
 
 // Changed meanwhile: the Library is read again, the draft kept, and what is stored now shown, which saving again replaces.
@@ -313,7 +329,13 @@ function reveal(key) {
 }
 
 const fileInput = element("input", { type: "file", accept: ".yaml,.yml", onchange: readFile });
-const picker = element("select", { id: "lib-namespace", onchange: () => check(decompositionForm) });
+const picker = element("select", {
+  id: "lib-namespace",
+  onchange: () => {
+    changed(decompositionForm);
+    check(decompositionForm);
+  },
+});
 // only once the shape is right, so the YAML reads and its turns are as turnProblems takes them
 const turnWarnings = (action, namespace) => (text) => headed(action, namespace(), turnProblems(readYaml(text).value.messages));
 const decompositionForm = yamlForm({
@@ -340,7 +362,7 @@ const nameInput = element("input", {
   placeholder: "research",
   "aria-describedby": "lib-ns-form-problems",
   oninput: () => {
-    namespaceForm.typed = true;
+    changed(namespaceForm);
     check(namespaceForm);
   },
 });
@@ -367,28 +389,30 @@ async function readFile() {
     return;
   }
   decompositionForm.editor.value = await file.text();
+  changed(decompositionForm);
   fitEditor(decompositionForm.editor);
   check(decompositionForm);
 }
 
+// Saved under the name its YAML gives, as the server reads it; the server answers with the whole Library, which shows it as
+// every read does.
 async function addDecomposition(text) {
   const namespace = picker.value;
-  const { name, yaml, problems } = await request("POST", ADD_URL, { namespace, yaml: text });
-  applied = ++sent;
-  // looked up again: a read answered meanwhile may have replaced the Library, and may hold the new one already
-  const { decompositions } = namespaceNamed(namespace);
-  if (!decompositions.some((each) => each.name === name)) decompositions.push({ name, yaml, problems });
+  const name = await changeLibrary("POST", ADD_URL, { namespace, yaml: text });
   const row = decompositionKey(namespace, name);
   opened.add(row);
-  return { said: `Added "${name}" to ${namespace}${problems.length ? ", marked ✗" : ""}`, row };
+  const marked = storedDecomposition(namespace, name)?.problems.length ? ", marked ✗" : "";
+  return { said: `Added "${name}" to ${namespace}${marked}`, row };
 }
 
-// A namespace's change reaches every namespace under it, so the server answers with the whole Library.
+// A namespace's change reaches every namespace under it, so the server answers with the whole Library; and, for a
+// decomposition added or edited, the name it saved it under, which this returns.
 async function changeLibrary(method, url, body) {
-  const found = await request(method, url, body);
+  const { saved, ...found } = await request(method, url, body);
   applied = ++sent;
   useLibrary(found);
   libraryChanged(library);
+  return saved;
 }
 
 const namespaceUrl = (name) => `${NAMESPACES_URL}/${encodeURIComponent(name)}`;
@@ -431,8 +455,7 @@ const storedDecomposition = (namespace, name) => namespaceNamed(namespace)?.deco
 
 // Saved under the name its YAML gives, which may be a new one.
 const saveDecomposition = (namespace, name) => async (text, form) => {
-  await changeLibrary("PUT", ADD_URL, { namespace, name, was: form.was, yaml: text });
-  const now = readYaml(text).value.name;
+  const now = await changeLibrary("PUT", ADD_URL, { namespace, name, was: form.was, yaml: text });
   const row = decompositionKey(namespace, now);
   if (now !== name) {
     editForms.delete(decompositionKey(namespace, name));
@@ -460,6 +483,7 @@ function moveToAdd(draft, namespace, name) {
   if (decompositionForm.el.hidden) openForm(decompositionForm);
   if (namespaceNamed(namespace)) picker.value = namespace;
   decompositionForm.editor.value = draft;
+  changed(decompositionForm);
   check(decompositionForm);
   const note = `"${name}" was deleted or renamed in ${namespace} meanwhile, so your draft is here: Add saves it as a new one.`;
   decompositionForm.newer.replaceChildren(element("p", { class: "lib-note" }, note));
@@ -780,7 +804,8 @@ function decompositionsField(name) {
 function renderNamespaces() {
   const tree = library.namespaces.map((namespace) => {
     const star = namespace.name === library.default_namespace && element("span", { class: "lib-star" }, "★ new chats start here");
-    const head = [element("span", { class: "lib-name" }, namespace.name), star, namespace.problems.length > 0 && checkMark(namespace.problems)];
+    const name = element("span", { class: "lib-name ns-name", title: namespace.name }, nameParts(namespace.name));
+    const head = [name, star, namespace.problems.length > 0 && checkMark(namespace.problems)];
     const content = () => [problemList(namespace.problems), namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
     return element("div", { style: `--depth: ${namespace.depth}` }, disclosure(namespaceKey(namespace.name), head, content));
   });

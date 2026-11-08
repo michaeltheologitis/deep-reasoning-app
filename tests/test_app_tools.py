@@ -274,12 +274,17 @@ def test_what_a_stopped_run_left_going_reads_as_stopped(library, name):
     assert [cell["status"] for cell in going] == ["stopped", "stopped"]
 
 
-def test_a_run_the_app_stopped_under_reads_as_failed(library):
+def test_a_run_the_app_stopped_under_reads_as_failed_and_what_it_left_going_cut_off(
+    library,
+):
     plant(library, CHAT, recorded("killed")[:-1])
     history = history_of(library)
     [turn] = history.turns()
+    [agent] = history.agents(1)
+    going = [history.steps(1)[-1], history.steps(1, node=agent["node"])[-1]]
     assert (turn["outcome"], turn["detail"]) == ("failed", LOST)
-    assert history.agents(1)[0]["status"] == "stopped"
+    assert agent["status"] == "cut off"
+    assert [cell["status"] for cell in going] == ["cut off", "cut off"]
 
 
 def test_an_exhausted_run_and_its_exhausted_sub_agent_read_as_such(library):
@@ -328,7 +333,7 @@ def test_a_sub_agent_started_again_as_the_root_leaves_history_answering(library)
         "Crafted.",
     ]
     assert [(agent["node"], agent["status"]) for agent in history.agents(2)] == [
-        (2, "stopped")
+        (2, "cut off")
     ]
     assert history.agents(1)[0]["task"] == "Survey CS."
 
@@ -442,8 +447,9 @@ def test_errors_list_each_agent_that_stopped_or_ran_out_of_turns(
 
 def test_errors_list_a_run_the_app_stopped_under_as_failed(library):
     plant(library, CHAT, recorded("killed")[:-1])
-    top, _ = history_of(library).errors(1)
+    top, sub_agent = history_of(library).errors(1)
     assert (top["node"], top["error"]) == (None, f"It ended failed: {LOST}")
+    assert sub_agent["error"] == "It ended cut off."
 
 
 def test_errors_give_what_a_sub_agents_cell_raised_and_its_index_in_its_steps(library):

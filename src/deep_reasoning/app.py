@@ -66,6 +66,7 @@ from deep_reasoning.library import (
     read_namespaces,
     reading,
     same_grants,
+    shown_name,
     unwritable,
 )
 from deep_reasoning.pages import page_exists, page_text
@@ -90,6 +91,7 @@ from deep_reasoning.settings import (
     keyless_environment,
     model_lists,
     provider_list,
+    providers,
     remember_pick,
     remove_server,
     run_key,
@@ -210,7 +212,10 @@ def create_app(library, home):
             )
         if not detail:
             raise error
-        return JSONResponse({"detail": detail}, status_code=HTTPStatus.BAD_REQUEST)
+        # The same request may pass once the file can be written, so the page lets it be sent again.
+        return JSONResponse(
+            {"detail": detail, "retry": True}, status_code=HTTPStatus.BAD_REQUEST
+        )
 
     @app.exception_handler(RequestValidationError)
     async def malformed(request, error):
@@ -237,15 +242,17 @@ def create_app(library, home):
         with closing(open_library(library)) as connection:
             return library_panel(connection)
 
+    # Each answers with the whole Library, as the panel shows it, so the panel draws the
+    # change from one source, and an add or edit with the name it was saved under, as the
+    # server reads its YAML; an edit or delete carries the YAML it opened on (was).
     @app.post("/api/decompositions", status_code=HTTPStatus.CREATED)
     def post_decomposition(
         namespace: Annotated[str, Body()], yaml: Annotated[str, Body()]
     ):
         with closing(open_library(library)) as connection:
             stored, _ = add_decomposition(connection, namespace, yaml)
-            return stored
+            return library_panel(connection) | {"saved": stored["name"]}
 
-    # The rest answer with the whole Library; an edit or delete carries the YAML it opened on (was).
     @app.put("/api/decompositions")
     def put_decomposition(
         namespace: Annotated[str, Body()],
@@ -254,8 +261,8 @@ def create_app(library, home):
         yaml: Annotated[str, Body()],
     ):
         with closing(open_library(library)) as connection:
-            edit_decomposition(connection, namespace, name, was, yaml)
-            return library_panel(connection)
+            saved = edit_decomposition(connection, namespace, name, was, yaml)
+            return library_panel(connection) | {"saved": saved}
 
     # was is null for a decomposition too long to show.
     @app.delete("/api/decompositions")
@@ -331,10 +338,12 @@ def create_app(library, home):
         return found
 
     def known_server(name: str):
-        found = known_provider(name)
+        return custom_server(known_provider(name))
+
+    def custom_server(found):
         if not found.custom:
             raise HTTPException(
-                HTTPStatus.NOT_FOUND, f"There is no custom server {name}."
+                HTTPStatus.NOT_FOUND, f"There is no custom server {found.name}."
             )
         return found
 
@@ -376,9 +385,12 @@ def create_app(library, home):
         update_server(home, library, server, base_url, key)
         return provider_list(home, library)
 
+    # One gone already, as another tab removed it, is no refusal; a vendor is.
     @app.delete("/api/servers/{name}")
-    async def delete_server(server: KnownServer):
-        remove_server(home, library, server)
+    async def delete_server(name: str):
+        found = find_provider(library, name)
+        if found is not None:
+            remove_server(home, library, custom_server(found))
         return provider_list(home, library)
 
     @app.get("/api/models")
@@ -403,14 +415,17 @@ def create_app(library, home):
 
     def starting_points():
         """Where a chat that hasn't picked starts: the Library's default namespace, and the
-        model new chats start on."""
-        return default_namespace(library), starting_model(home, library)
+        model new chats start on; and the names of the providers there are."""
+        every = providers(library)
+        names = {each.name for each in every}
+        return default_namespace(library), starting_model(home, library, every), names
 
     def shown(chat, starts):
         """A chat as the API gives it: with the id of its run that is going, if one is, its
         latest run's, the namespace and model its next message runs on, and whether the
-        folder it chose is missing, as its next message would be refused there."""
-        namespace, model = starts
+        folder it chose, or the provider of the model it picked, is missing, as its next
+        message would be refused."""
+        namespace, model, names = starts
         if chat["model"] is not None:
             model = {"provider": chat["provider"], "name": chat["model"]}
         return {
@@ -421,6 +436,7 @@ def create_app(library, home):
             "last_run": chat["last_run"],
             "namespace": chat["namespace"] or namespace,
             "model": model,
+            "provider_missing": model is not None and model["provider"] not in names,
             "folder": shown_folder(chat["folder"]),
             "folder_missing": folder_gone(chat["folder"]),
             "scratch_folder": short_path(scratch_folder(data, chat["id"])),
@@ -453,10 +469,14 @@ def create_app(library, home):
             turns = chat_turns(connection, chat["id"], going)
         return shown(chat, starting_points()) | {"turns": turns}
 
-    # Asked as the delete confirm opens: the scratch folder goes with the chat.
+    # Asked as the delete confirm opens: the scratch folder goes with the chat, and a run
+    # going in it, from any tab, may yet write there.
     @app.get("/api/chats/{chat}/scratch")
     async def read_scratch(chat: KnownChat):
-        return {"files": holds_files(scratch_folder(data, chat["id"]))}
+        return {
+            "files": holds_files(scratch_folder(data, chat["id"])),
+            "live": runs.live(chat["id"]) is not None,
+        }
 
     @app.patch("/api/chats/{chat}")
     async def patch_chat(chat: KnownChat, change: ChatChange):
@@ -511,7 +531,7 @@ def create_app(library, home):
                     else "no longer exists"
                 )
                 raise LibraryError(
-                    f"This chat's namespace {namespace} {gone} — pick another."
+                    f"This chat's namespace {shown_name(namespace)} {gone} — pick another."
                 )
             turns = [
                 read_turn(connection, run) for run in chat_runs(connection, chat["id"])

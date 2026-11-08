@@ -240,7 +240,10 @@ SNIPPET_CHARS = 60
 NOT_FINDABLE = (
     "find takes the text to look for, as text (a str) of one character or more."
 )
-ENDED_BADLY = ("failed", "stopped", "exhausted")
+STOPPED = "stopped"
+# As fold.js words what a run left going when it ended other than stopped.
+CUT_OFF = "cut off"
+ENDED_BADLY = ("failed", STOPPED, CUT_OFF, "exhausted")
 # The REPL's frame atop a raised traceback, plain or an exception group's, with its source
 # line and any carets: the engine's, not the cell's, so the fold drops it from a cell's
 # output, as the chat does (EXEC_FRAME in tree.js); a step the historian printed carried it.
@@ -362,14 +365,15 @@ def end_agent(tree: Tree, event: Event) -> None:
 
 
 def end_turn(tree: Tree, event: Event) -> None:
-    """What the run left going when it ended was stopped with it, a sub-agent timed to
-    the end."""
+    """What the run left going when it ended was stopped with it, when it was stopped,
+    else cut off, as when the app stopped under it; a sub-agent timed to the end."""
+    status = STOPPED if event.get("outcome") == STOPPED else CUT_OFF
     for row in tree.rows:
         if row["status"] == "running":
-            row |= {"status": "stopped", "seconds": event["t"] - row["started"]}
+            row |= {"status": status, "seconds": event["t"] - row["started"]}
     for cell in tree.cells.values():
         if cell["status"] == "running":
-            cell["status"] = "stopped"
+            cell["status"] = status
 
 
 FOLDS = {

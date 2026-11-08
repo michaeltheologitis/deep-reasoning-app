@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { CLAMPS, COST_NA, SANITIZE, UNFINISHED, WAITING, clamped, costView, element, formatTotal, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
+import { CLAMPS, COST_NA, SANITIZE, UNFINISHED, WAITING, clamped, costView, element, formatCost, formatTotal, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
 
 globalThis.marked = createRequire(import.meta.url)("../src/deep_reasoning/web/vendor/marked.min.js");
 
@@ -138,12 +138,18 @@ test("an opened failed cell shows its traceback without the engine's frame that 
 });
 
 test("a cell's line says how it ended in words as well as colour, for a screen reader", () => {
-  for (const [status, word] of [["failed", "failed"], ["stopped", "stopped"], ["running", "running"]]) {
+  for (const [status, word] of [["failed", "failed"], ["stopped", "stopped"], ["cut off", "cut off"], ["running", "running"]]) {
     const line = renderStep({ kind: "cell", code: "print(1/0)", output: null, status, agents: [] }, false).children[0];
     assert.match(textOf(line), new RegExp(`● ${word}Python\\(print\\(1/0\\)\\)`));
   }
   const done = renderStep({ kind: "cell", code: "print(1)", output: "1", status: "done", agents: [] }, false).children[0];
   assert.equal(textOf(done), "●Python(print(1))");
+});
+
+test("a sub-agent a failed run cut off says so on its row, and its cell's glyph takes one class", () => {
+  assert.match(renderAgent(drive({ status: "cut off", result: null })).textContent, /cut off · 0\.5s/);
+  const cell = renderStep({ kind: "cell", code: "print(1)", output: null, status: "cut off", agents: [] }, false);
+  assert.equal(cell.children[0].children[1].className, "glyph cut-off");
 });
 
 test("a sub-agent on another model than the run's shows its model as a tag, whole in its title", () => {
@@ -167,10 +173,30 @@ test("a run whose only calls never finished costs N/A, saying why, not $0", () =
   assert.equal(costView({ cost: 0, unpriced: false, unfinished: false }), "$0");
 });
 
-test("a chat's total shows the decimals of its finest turn's cost, so it reads as their sum", () => {
+// Costs as every row and the total show them: under a dollar to a hundredth of a cent, from a dollar to the cent.
+const COSTS = [
+  [0.00004, "<$0.0001"],
+  [0.0001, "$0.0001"],
+  [0.009996, "$0.0100"],
+  [0.01, "$0.0100"],
+  [0.0123, "$0.0123"],
+  [0.56, "$0.5600"],
+  [0.99996, "$1.00"],
+  [1.23456, "$1.23"],
+  [12345.678, "$12,345.68"],
+];
+
+test("every cost follows one rule: one cent always one way, a tiny one never $0.0000, thousands separated", () => {
+  for (const [usd, shown] of COSTS) assert.equal(formatCost(usd), shown, usd);
+});
+
+test("a chat's total is never finer than its turns' costs, so the shown costs add up to it", () => {
+  assert.equal(formatTotal([0.0123, 0.0049]), "$0.0172");
+  assert.deepEqual([0.0123, 0.0049].map(formatCost), ["$0.0123", "$0.0049"]);
   assert.equal(formatTotal(Array(23).fill(0.0011)), "$0.0253");
-  assert.equal(formatTotal([0.25, 0.31]), "$0.56");
   assert.equal(formatTotal([0.25, 0.0011, null]), "$0.2511");
+  assert.equal(formatTotal([0.6, 0.6]), "$1.20");
+  assert.equal(formatTotal([0.00004]), "<$0.0001");
   assert.equal(formatTotal([0, null]), null);
 });
 

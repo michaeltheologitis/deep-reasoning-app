@@ -1,7 +1,7 @@
 // What the composer's model and namespace menus list for what is typed.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { modelGroups, namespaceGroups } from "../src/deep_reasoning/web/models.js";
+import { modelGroups, namespaceGroups, shownName } from "../src/deep_reasoning/web/models.js";
 
 const LISTS = [
   { provider: "OpenAI", featured: ["gpt-6-astra", "gpt-6-luna"], models: ["gpt-4", "gpt-6-astra", "gpt-6-luna"], problem: null },
@@ -93,3 +93,24 @@ test("with no name holding the text, the namespace menu says so", () => {
   assert.deepEqual(group.options, []);
   assert.equal(group.note, "no namespace holds “zzz”");
 });
+
+test("a name no list holds goes to the chat's own provider first, so Enter keeps the chat where it is", () => {
+  const current = { provider: "fake", name: "fake-large" };
+  const values = modelGroups(LISTS, "nothing-lists-this", current).flatMap((group) => group.options.map((option) => option.value));
+  assert.deepEqual(values.map((value) => value.provider), ["fake", "OpenAI", "broken"]);
+});
+
+// As Python's ascii() writes a name, which the Library panel's reason shows; a plain name stays as it is.
+for (const [name, shown] of [
+  ["stats.tests", "stats.tests"],
+  ["rоot", "'r\\u043eot'"],
+  ["notes-日本", "'notes-\\u65e5\\u672c'"],
+  ["it'sé", `"it's\\xe9"`],
+  ["zero​width", "'zero\\u200bwidth'"],
+  ["tab\there", "'tab\\there'"],
+  ["\u{1F600}", "'\\U0001f600'"],
+]) {
+  test(`a namespace named ${JSON.stringify(name)} shows as ${shown}`, () => {
+    assert.equal(shownName(name), shown);
+  });
+}
