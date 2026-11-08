@@ -197,9 +197,10 @@ def read_config(path, folder):
     not_one = f"{path} is not a deep_reasoner config"
     try:
         check_composes_within(Path(path).resolve(), folder)
-        check_expanded(path, [payload for _, payload in load_namespaces(Path(path))])
+        composed = [payload for _, payload in load_namespaces(Path(path))]
+        size = check_expanded(path, composed)
         config = load_cli_config(path, schema=V2Config)
-        check_expanded(path, namespace_files(config, folder))
+        check_expanded(path, namespace_files(config, folder), size)
     except LibraryError:
         raise
     except ValidationError as error:
@@ -380,11 +381,11 @@ def namespace_files(config, folder):
     ]
 
 
-def check_expanded(path, files):
-    """Raise if *files*, the data of the files the config at *path* reads, passes
-    MAX_EXPANDED with each alias written out, before the engine writes them out: those
-    conflit composes into it, or those in its namespaces_dir."""
-    size = 0
+def check_expanded(path, files, size=0):
+    """How big the config at *path* is, *size* so far, with *files*, the data of more of
+    the files it reads, as expanded_size() measures them; raise past MAX_EXPANDED, before
+    the engine writes the aliases out. Those conflit composes into it are measured first,
+    then those in its namespaces_dir."""
     for data in files:
         size += expanded_size(data, MAX_EXPANDED - size)
         if size > MAX_EXPANDED:
@@ -392,6 +393,7 @@ def check_expanded(path, files):
                 f"{path} is too big to import: with each alias written out, as the engine"
                 f" reads it, it holds more than {MAX_EXPANDED:,} values and characters."
             )
+    return size
 
 
 def check_settings(settings):

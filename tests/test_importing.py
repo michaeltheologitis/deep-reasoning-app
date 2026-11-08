@@ -1004,8 +1004,21 @@ ALIAS_BOMB = (
 )
 
 
+# Six aliases deep: about 2,350,000 values and characters written out, under the cap
+# alone and past it twice.
+HALF_A_BOMB = (
+    "a: &a [x, x, x, x, x, x, x, x, x, x]\n"
+    + "".join(
+        f"{name}: &{name} [{', '.join([f'*{before}'] * 10)}]\n"
+        for before, name in zip("abcde", "bcdef")
+    )
+    + "max_iter: 3\n"
+)
+
+
 # Where a config's alias bomb may be: the config itself, a file it composes from a
-# folder beside it (named through that folder), or its namespaces_dir.
+# folder beside it (named through that folder), its namespaces_dir, or split between
+# it and its namespaces_dir.
 BOMB_PLACES = {
     "itself": ("bomb.yaml", {}),
     "in a file it composes": (
@@ -1015,6 +1028,13 @@ BOMB_PLACES = {
     "in its namespaces_dir": (
         "config.yaml",
         {"config.yaml": "namespaces_dir: parts\n", "parts/research.yaml": ALIAS_BOMB},
+    ),
+    "halved between it and its namespaces_dir": (
+        "config.yaml",
+        {
+            "config.yaml": f"namespaces_dir: halves\n{HALF_A_BOMB}",
+            "halves/research.yaml": HALF_A_BOMB,
+        },
     ),
 }
 
@@ -1026,8 +1046,7 @@ def test_import_refuses_an_alias_bomb_without_writing_it_out(library, tmp_path, 
     (tmp_path / "parts").mkdir()
     (tmp_path / "parts" / "bomb.yaml").write_text(ALIAS_BOMB)
     config, files = BOMB_PLACES[place]
-    for name, text in files.items():
-        (tmp_path / name).write_text(text)
+    lay_out(tmp_path, files)
     said = "is too big to import: with each alias written out, as the engine reads it"
     started = time.monotonic()
     refused_unchanged(library, tmp_path / config, said)
