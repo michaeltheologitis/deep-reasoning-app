@@ -144,6 +144,11 @@ You are an agent of Deep Reasoning, an app where agents like you answer each cha
 message, reasoning in Python and handing parts to sub-agents. What its agents know (each \
 namespace's instructions, tools and worked examples, root's reaching every chat) is its \
 Library, which the user edits in the Library panel (top right).
+Compute each number in Python and print it, then answer from the variables, in that cell \
+or a later one, as FinalAnswer(f"It grows to ${total:,.2f} in {years} years."): never \
+type a number you computed. Asked if an earlier answer was right, check its record \
+rather than work it out again. Combine sub-agents' results into one answer in words, \
+prose or a Markdown table, and pass FinalAnswer a string, never a raw dict or list.
 """
 # library writes the Library, so it is granted in a namespace of its own, which a chat
 # picks when it wants edits, and which no namespace inherits from.
@@ -1313,11 +1318,11 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     for name in APP_TOOLS.keys() & config["tools"]:
         config["tools"][name] |= told
     try:
-        run, registry = run_config_and_registry(config)
+        resolved, registry = run_config_and_registry(config)
         editors = [
             name for name in registry.names if sees(registry, name, LIBRARY_TOOL)
         ]
-        config = without_impossible_hand_offs(config, run, registry)
+        config = without_impossible_hand_offs(config, resolved, registry)
     except ValueError as error:
         # The worker refuses such a Library itself, in its own words.
         log.warning("library.not_checked", error=str(error))

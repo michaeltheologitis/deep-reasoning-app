@@ -3,7 +3,7 @@ messages:
   - {role: user, content: "Are you sure? What did the code actually give?"}
   - role: assistant
     content: |
-      <think>The user asks whether my last answer is right and what its code gave. What the code gave then is recorded, not shown here, and working it out again now would be a new run, not that one. The historian reads the record. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
+      <think>The user asks whether an earlier answer is right, or was computed or typed, in any words ("is that right?", "check that figure", "typed or computed?"). What its code gave then is recorded, not shown here; working it out again now would be a new run, which can't show what that answer was. The historian reads the record and checks it. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
       <repl>
       FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))
       </repl>
