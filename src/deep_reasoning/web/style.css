@@ -53,6 +53,8 @@ html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--fg); font: 13.5px/1.55 var(--mono); }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
 :focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+/* read by a screen reader, never seen */
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 
 .app { display: grid; grid-template-columns: 270px minmax(0, 1fr); height: 100%; }
 
@@ -124,6 +126,13 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .out.full .text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .out.err { color: var(--err); }
 .out.warn { color: var(--warn); }
+.out .raw { color: var(--dim); }
+/* the newest step is cut last */
+.trail { display: flex; min-width: 0; }
+.trail .part { flex: 0 1 auto; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trail .step { flex-shrink: 0; max-width: 70%; }
+.trail .sep { flex: none; white-space: pre; }
+.waiting { color: var(--dim); font-style: italic; padding-left: 2ch; }
 .more { color: var(--dim); }
 /* a Library change wraps rather than clips: what it changed is the point of it */
 .change .glyph { color: var(--accent); }
@@ -149,21 +158,27 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .show-code:hover { color: var(--fg); }
 .node:hover .show-code, .show-code:focus-visible, .show-code[aria-expanded="true"] { opacity: 1; }
 @media (hover: none) { .show-code { opacity: 1; } }
-.node .meta { flex-shrink: 1; min-width: 0; padding-left: 0; text-align: right; }
+/* on a line of its own, cut rather than wrapped a word a line */
+.node .meta { flex-shrink: 1; min-width: 0; max-width: 100%; padding-left: 0; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .more-rows { color: var(--dim); padding-left: 2ch; }
 .more-rows button { color: var(--fg); }
 .more-rows button:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 .rows { margin-left: var(--indent); display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.row { display: flex; align-items: baseline; gap: 1ch; width: calc(100% + 8px); padding: 1px 4px; margin-inline: -4px; border-radius: 3px; }
+.row { display: flex; align-items: baseline; gap: 1ch; width: calc(100% + 8px); padding: 1px 4px; margin-inline: -4px; border-radius: 3px; overflow: hidden; }
 .row:hover { background: var(--hover); }
 .caret { width: 1ch; flex: none; color: var(--dim); }
-.task { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tag { flex: none; color: var(--dim); border: 1px solid var(--faint); border-radius: 3px; padding: 0 4px; font-size: 0.9em; }
+/* short of room, the task gives way first; the meta is cut only past most of the row */
+.task { flex: 0 1 auto; min-width: min(6ch, 25%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tag { flex: 0 1 auto; min-width: 3ch; max-width: 20ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); border: 1px solid var(--faint); border-radius: 3px; padding: 0 4px; font-size: 0.9em; }
 .meta { flex: none; margin-left: auto; padding-left: 2ch; color: var(--dim); font-variant-numeric: tabular-nums; }
-.children { margin: 2px 0 6px calc(var(--indent) / 4); padding-left: calc(var(--indent) * 3 / 4); border-left: 1px solid var(--faint); }
-/* past a few levels each level indents less, so deep trees keep their width */
-.children .children .children { --indent: 1ch; }
+.row .meta { max-width: 70%; padding-left: 1ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.children { margin: 2px 0 6px calc(var(--indent) / 4); padding-left: calc(var(--indent) * 3 / 4); border-left: 1px solid var(--faint); container-type: inline-size; }
+/* once a level is narrow, the levels in it barely indent, so deep trees keep their width */
+@container (max-width: 40ch) {
+  .rows { margin-left: 0; }
+  .children { margin-left: 0; padding-left: 2px; }
+}
 .word.err { color: var(--err); }
 .word.warn { color: var(--warn); }
 .spin { color: var(--accent); }
@@ -171,8 +186,16 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .answer { overflow-wrap: anywhere; }
 .answer > :first-child { margin-top: 0; }
 .answer > :last-child { margin-bottom: 0; }
-.answer p, .answer ul, .answer ol { margin: 0 0 0.7em; }
-.answer ul, .answer ol { padding-left: 3ch; }
+.answer p, .answer ul, .answer ol, .answer blockquote { margin: 0 0 0.7em; }
+.answer ul { padding-left: 3ch; }
+/* --marker-chars, set by renderAnswer, makes room for numbers like 1984. */
+.answer ol { padding-left: calc((var(--marker-chars, 1) + 2) * 1ch); }
+/* modest, as in a terminal */
+.answer h1, .answer h2, .answer h3, .answer h4, .answer h5, .answer h6 { margin: 1em 0 0.5em; font-size: 1em; font-weight: 600; line-height: 1.4; }
+.answer h1 { font-size: 1.2em; }
+.answer h2 { font-size: 1.1em; }
+.answer h5, .answer h6 { color: var(--dim); }
+.answer blockquote { padding-left: 1.5ch; border-left: 2px solid var(--faint); color: var(--dim); }
 .answer li + li { margin-top: 0.3em; }
 .answer strong { font-weight: 600; }
 .answer code { background: var(--code); padding: 0 3px; border-radius: 3px; }
@@ -208,9 +231,17 @@ textarea::placeholder { color: var(--dim); }
 .stop:hover { color: var(--err); }
 .hints { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 2ch; padding: 4px 2px 0; color: var(--dim); font-size: 0.92em; }
 .hints .err { color: var(--err); }
-.state { margin-left: auto; }
+.state { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; column-gap: 1ch; min-width: 0; max-width: 100%; margin-left: auto; }
 .choices:not([hidden]) + #total:not(:empty)::before { content: "· "; }
-.choice { color: var(--dim); }
+/* each cut to its share of the line, whole in its title */
+.choices:not([hidden]) { display: inline-flex; align-items: baseline; column-gap: 1ch; min-width: 0; max-width: 100%; }
+.choices > span { flex: none; }
+.choice { display: inline-flex; min-width: 0; color: var(--dim); }
+.choice > span:first-child { min-width: 3ch; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.choice > span:last-child { flex: none; white-space: pre; }
+.choice > .provider { flex: none; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+/* already cut in app.js */
+#folder { flex-shrink: 0; }
 .choice:hover, .choice[aria-expanded="true"] { color: var(--fg); }
 
 /* popovers: the composer's menus open above its box, the settings panel's in place */

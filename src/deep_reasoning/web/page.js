@@ -20,7 +20,7 @@ function renderRecord(block) {
 function renderTable({ columns, rows }) {
   const head = columns.length > 0 && element("thead", {}, element("tr", {}, columns.map((name) => element("th", {}, name))));
   const body = element("tbody", {}, rows.map((row) => element("tr", {}, row.map((value) => element("td", {}, value)))));
-  return element("div", { class: "table-scroll" }, element("table", { class: "page-table" }, head, body));
+  return element("div", { class: "table-scroll", tabindex: "0" }, element("table", { class: "page-table" }, head, body));
 }
 
 function renderBlock(block) {
@@ -44,6 +44,7 @@ async function start() {
     byId("title").textContent = page.title;
     byId("blocks").replaceChildren(...blocks);
   } catch (error) {
+    byId("title").textContent = "No page to show";
     byId("blocks").replaceChildren(element("p", { class: "word err" }, `This page can't be shown: ${error.message}`));
   }
 }

@@ -1,9 +1,10 @@
 """Record real runs against the tests' fake model, as the fold's test fixtures.
 
 Each scenario runs deep_reasoner in a worker, as the app does, with tests/fake_model.py
-answering on 127.0.0.1; its events, as the app file holds them, are written to
-tests/runs/<scenario>.jsonl, one JSON line each, with this machine's site-packages folder,
-which tracebacks name, written as SITE, and the runs' temporary home as HOME.
+answering on 127.0.0.1 and saying what each call cost, as a server may; its events, as
+the app file holds them, are written to tests/runs/<scenario>.jsonl, one JSON line each,
+with this machine's site-packages folder, which tracebacks name, written as SITE, and the
+runs' temporary home as HOME.
 
 Run from the repo root: uv run python scripts/record_runs.py [scenario ...], every
 scenario unless some are named.
@@ -32,9 +33,11 @@ from fake_model import (
     WORD_COUNT,
     FakeOpenAI,
     library_cell,
+    own_cost_usage,
     repl,
     scripted,
     task_and_turn,
+    word_count_usage,
     write,
 )
 
@@ -52,8 +55,8 @@ OUT = TESTS / "runs"
 SITE_PACKAGES = sysconfig.get_paths()["purelib"]
 CHAT = "recorded"
 LIBRARY = "library.sqlite"
-PRICED = "gpt-6-luna"
-UNPRICED = "a-model-nobody-prices"
+MODEL = "gpt-6-luna"
+SMALLER_MODEL = "fake-small"
 SPIN = "while True:\n    pass"
 SLEEP = "import time\ntime.sleep(60)"
 # A cell blocked in C holds up a clean stop, so the server kills the worker this soon.
@@ -72,10 +75,28 @@ FAN_OUT = {
 }
 SCENARIOS = {
     "fanout": {"prompt": "Summarize two courses.", "plan": FAN_OUT},
+    # The fake is no vendor, so a call it sends no cost for has none.
     "unpriced": {
         "prompt": "Summarize two courses.",
         "plan": FAN_OUT,
-        "settings": {"model": UNPRICED},
+        "usage": word_count_usage,
+    },
+    "unanswered": {
+        "prompt": "Ask a broken server.",
+        "plan": {"Ask a broken server.": [repl("FinalAnswer('never')")]},
+        "failing": ("Ask a broken server.", 0),
+    },
+    "models": {
+        "prompt": "Ask a smaller model.",
+        "plan": {
+            "Ask a smaller model.": [
+                repl(
+                    f"print(subagent('Count on fewer weights.', model='{SMALLER_MODEL}'))"
+                ),
+                repl("FinalAnswer('asked')"),
+            ],
+            "Count on fewer weights.": [repl("FinalAnswer(3)")],
+        },
     },
     "nested": {
         "prompt": "Plan the term.",
@@ -253,7 +274,7 @@ def config_on(fake, settings):
     """The engine config of a run whose model is *fake*."""
     client = {"base_url": fake.base_url, "api_key_env": "OPENAI_API_KEY"}
     return {
-        "model": PRICED,
+        "model": MODEL,
         "client": client | {"max_retries": 0},
         "system_prompt": "You are a scripted test agent.",
         "max_iter": 6,
@@ -276,7 +297,8 @@ async def record(home, name, scenario):
                 change_namespace(connection, given, text)
             else:
                 add_namespace(connection, given, text)
-    with FakeOpenAI(responder(scenario)) as fake:
+    usage = scenario.get("usage", own_cost_usage)
+    with FakeOpenAI(responder(scenario), usage=usage) as fake:
 
         def config_for(folder):
             # The Library's config, as the app builds a run's, with the fake's model.

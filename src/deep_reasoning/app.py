@@ -12,7 +12,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from fastapi import Path as InPath
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, StringConstraints
@@ -548,14 +548,14 @@ def create_app(library, home):
             raise HTTPException(HTTPStatus.NOT_FOUND, NO_PAGE)
         return Response(text, media_type="application/json")
 
-    # The tab a page's link opens: page.js reads the page from the API and draws it.
+    # The tab a page's link opens: page.js reads the page from the API and draws it, or,
+    # for one that isn't there, says so in the app's look.
     @app.get("/pages/{page}")
     def page_tab(page: str):
         with closing(open_library(library)) as connection:
             found = page_exists(connection, page)
-        if not found:
-            return PlainTextResponse(NO_PAGE, status_code=HTTPStatus.NOT_FOUND)
-        return FileResponse(WEB / "page.html", headers=POLICY)
+        status = HTTPStatus.OK if found else HTTPStatus.NOT_FOUND
+        return FileResponse(WEB / "page.html", status_code=status, headers=POLICY)
 
     # A mount at / answers every path, so API routes must be added above it.
     app.mount("/", Web(directory=WEB, html=True))

@@ -40,7 +40,7 @@ from fake_model import (
 from fastapi.testclient import TestClient
 
 from deep_reasoning import settings as settings_module
-from deep_reasoning.app import WEB, create_app
+from deep_reasoning.app import NO_PAGE, WEB, create_app
 from deep_reasoning.chats import TITLE_CHARS, create_chat
 from deep_reasoning.folders import data_folder
 from deep_reasoning.importing import import_config
@@ -2622,11 +2622,14 @@ def test_a_page_is_read_from_the_api_and_its_tab_is_the_page_drawing_it(client):
 
 
 @pytest.mark.parametrize("page", ["no-such-page", "not%20an%20id", "x" * 101])
-def test_a_page_not_there_or_with_no_pages_id_is_a_plain_404(client, page):
+def test_a_page_not_there_or_with_no_pages_id_is_a_404_its_tab_says_in_the_apps_look(
+    client, page
+):
     read, tab = client.get(f"/api/pages/{page}"), client.get(f"/pages/{page}")
     assert (read.status_code, tab.status_code) == (404, 404)
-    assert read.json()["detail"] == tab.text
-    assert tab.headers["content-type"].startswith("text/plain")
+    assert read.json()["detail"] == NO_PAGE
+    assert tab.text == (WEB / "page.html").read_text()
+    assert "default-src 'self'" in tab.headers["content-security-policy"]
 
 
 @pytest.mark.parametrize("path", ["/api/pages/{}", "/pages/{}"])
