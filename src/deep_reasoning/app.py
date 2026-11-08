@@ -33,6 +33,7 @@ from deep_reasoning.folders import (
     FolderError,
     chosen_folder,
     data_folder,
+    holds_files,
     list_folders,
     remove_unless_kept,
     scratch_folder,
@@ -380,10 +381,12 @@ def create_app(library, home):
 
     def shown(chat, starts):
         """A chat as the API gives it: with the id of its run that is going, if one is, its
-        latest run's, and the namespace and model its next message runs on."""
+        latest run's, the namespace and model its next message runs on, and whether its
+        scratch folder, which goes with it, holds files."""
         namespace, model = starts
         if chat["model"] is not None:
             model = {"provider": chat["provider"], "name": chat["model"]}
+        scratch = scratch_folder(data, chat["id"])
         return {
             "id": chat["id"],
             "title": chat["title"],
@@ -393,7 +396,8 @@ def create_app(library, home):
             "namespace": chat["namespace"] or namespace,
             "model": model,
             "folder": shown_folder(chat["folder"]),
-            "scratch_folder": short_path(scratch_folder(data, chat["id"])),
+            "scratch_folder": short_path(scratch),
+            "scratch_files": holds_files(scratch),
         }
 
     # The chat routes are coroutines, so they run on the event loop with the runs: what

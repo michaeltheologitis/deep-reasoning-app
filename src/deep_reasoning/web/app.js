@@ -190,11 +190,13 @@ function renderRename(chat) {
 }
 
 // The confirm takes the row's place with Keep focused, as the Library panel's do; Keep or Esc goes back to its ✕.
+// The chat's scratch folder goes with it: one holding files says so, as what the agent wrote there goes too.
 function renderConfirmDelete(chat) {
+  const question = chat.scratch_files ? "Delete this chat? Its scratch folder, with the files the agent wrote there, goes too." : "Delete this chat?";
   return element(
     "li",
     { class: "chat confirm", role: "group", "aria-labelledby": "chat-delete-question" },
-    element("span", { id: "chat-delete-question" }, "Delete this chat?"),
+    element("span", { id: "chat-delete-question" }, question),
     element("button", { type: "button", class: "yes", "data-key": `chat-yes:${chat.id}`, onclick: () => remove(chat) }, "Delete"),
     element("button", { type: "button", class: "no", "data-key": `chat-keep:${chat.id}`, onclick: () => keep(chat) }, "Keep"),
   );
@@ -933,13 +935,15 @@ function drawLive(live) {
   });
 }
 
-// The stream closes after turn.end; left open, EventSource would reconnect to it. A list read before it ended is read again.
+// The stream closes after turn.end; left open, EventSource would reconnect to it. The list is read again, as the run
+// may have written files in the chat's scratch folder.
 function finish(live) {
   live.source.close();
   live.chat.live = null;
   changes += 1;
   if (state.live === live) state.live = null;
   render("follow");
+  refresh();
 }
 
 // EventSource retries a dropped stream itself; it gives up only when refused (a run deleted meanwhile), so the chat is read afresh.
@@ -1055,10 +1059,15 @@ function wire() {
   });
   PHONE.addEventListener("change", () => setDrawer(false));
   setDrawer(false);
-  // back in this window, or this tab shown again: another tab may have changed the chats
-  window.addEventListener("focus", () => refresh());
+  // back in this window, or this tab shown again: another tab, the librarian or an import may have changed the chats or
+  // the Library, whose namespaces the menu under the message box lists
+  const comeBack = () => {
+    byId("library").dispatchEvent(new Event(LIBRARY_CHANGED));
+    refresh();
+  };
+  window.addEventListener("focus", comeBack);
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) refresh();
+    if (!document.hidden) comeBack();
   });
   byId("composer").addEventListener("submit", (e) => {
     e.preventDefault();

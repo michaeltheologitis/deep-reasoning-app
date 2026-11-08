@@ -86,7 +86,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 
 **Working folders**
 - The agent's Python runs in the chat's folder, so files it writes are there for the next message.
-- A scratch folder by default, in `~/.deep-reasoning` (hover the folder's name for its path), deleted with the chat.
+- A scratch folder by default, in `~/.deep-reasoning` (hover the folder's name for its path), deleted with the chat;
+  deleting a chat whose scratch folder holds files says so first.
   A folder you pick is never deleted.
 - Settings has a default folder for new chats; one that isn't on this computer is marked missing and gives them a
   scratch folder.
@@ -116,8 +117,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   template is checked, never run, so whether `vars.x` holds what it reads isn't. A stored decomposition that fails
   the check, as a shared Library may hold, is marked ✗ with why.
 - A save or delete in the panel is refused if what you opened was changed meanwhile (by the librarian, another tab
-  or an import): your draft stays, beside what is stored now, and saving again replaces it. The panel reads the
-  Library again whenever you open it or come back to its window.
+  or an import): your draft stays, beside what is stored now, and saving again replaces it. The panel, and the
+  namespace menu under the message box, read the Library again whenever you open the panel or come back to the window.
 - The Tools tab shows each tool, with the Python of the Library's own, and deletes one of the Library's that no
   namespace grants. Run settings can't be changed in the panel, but one the engine doesn't read, as an import may
   bring, can be deleted.

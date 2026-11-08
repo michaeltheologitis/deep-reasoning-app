@@ -3094,11 +3094,12 @@ async def test_a_chat_without_a_folder_works_in_its_scratch_folder_across_messag
         async with connect(library_on(fake)) as api:
             chat = await new_chat(api)
             before = (data / "work" / chat).exists()
+            empty = (await api.get(f"/api/chats/{chat}")).json()["scratch_files"]
             first = await run_events(api, await send(api, chat, "Write a note."))
             second = await run_events(api, await send(api, chat, "Read the note."))
             read = (await api.get(f"/api/chats/{chat}")).json()
     scratch = data / "work" / chat
-    assert not before
+    assert not before and not empty and read["scratch_files"]
     assert (read["folder"], read["scratch_folder"]) == (
         None,
         f"~/files/{data.name}/work/{chat}",

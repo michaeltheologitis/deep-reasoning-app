@@ -836,10 +836,7 @@ panel.addEventListener("keydown", (e) => {
   if (deleting && !deleting.refusal) keep(deleting.key);
   else setOpen(false);
 });
-// Back in this window, the Library is read again while the panel is open: a CLI import or another tab may have changed it.
-window.addEventListener("focus", () => {
-  if (!panel.hidden) load();
-});
+// Back in this window, app.js asks for the Library again (LIBRARY_CHANGED): a CLI import or another tab may have changed it.
 // Elsewhere, Esc closes the panel unless the chat used it, to stop its run or keep a chat; app.js's handler runs first.
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !e.defaultPrevented && !panel.hidden) setOpen(false);
