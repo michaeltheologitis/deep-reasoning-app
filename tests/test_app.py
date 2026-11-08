@@ -530,9 +530,7 @@ async def test_a_chat_in_a_namespace_the_engine_cant_read_is_refused_saying_so(
     assert fake.calls == []
 
 
-def test_a_namespace_whose_name_holds_a_slash_is_left_out_and_deleted(
-    client, imported
-):
+def test_a_namespace_whose_name_holds_a_slash_is_left_out_and_deleted(client, imported):
     with closing(open_library(imported)) as connection, writing(connection):
         connection.execute(UPSERT_NAMESPACE, ("team/a", ""))
     edited = client.put(
@@ -646,6 +644,7 @@ def test_a_tool_granted_nowhere_and_a_run_setting_the_engine_doesnt_read_are_del
     ("url", "problem"),
     [
         ("/api/tools/nothing", 'The Library holds no tool "nothing" to delete.'),
+        ("/api/tools/llm", "llm is the engine's own, not the Library's, so it can't"),
         ("/api/run-settings/max_iter", "max_iter is a run setting the engine reads"),
     ],
 )
@@ -1794,6 +1793,21 @@ def test_a_panel_save_refused_for_what_costs_nothing_builds_no_tool(
     response = client.request(method, path, json=body)
     assert response.status_code in (400, 409)
     assert refused in response.json()["detail"]
+    assert time.monotonic() - started < SLOW_BUILD_SECONDS
+
+
+def test_the_panel_refuses_to_grant_a_tool_named_as_python_names_what_agents_use(
+    client, imported
+):
+    with closing(open_library(imported)) as connection, writing(connection):
+        block = dump({"factory": "build", "factory_from": "max.py"})
+        connection.execute(UPSERT_TOOL, ("max", block, SLOW))
+    started = time.monotonic()
+    response = client.post(
+        "/api/namespaces", json={"name": "counting", "yaml": "tools: [max]\n"}
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith('Tool "max" would hide Python\'s own')
     assert time.monotonic() - started < SLOW_BUILD_SECONDS
 
 
@@ -4039,6 +4053,11 @@ UNREADABLE_ROWS = {
         ("my-tool", "factory: build\nfactory_from: my-tool.py\n", WORD_COUNT),
         'needs a Python name, like \\"waitlist\\"',
     ),
+    "a-tool-named-as-a-module": (
+        "tools",
+        ("json", "factory: build\nfactory_from: json.py\n", WORD_COUNT),
+        "would hide the json module",
+    ),
     "a-tool-named-as-the-repls-own": (
         "tools",
         ("subagent", "factory: build\nfactory_from: subagent.py\n", WORD_COUNT),
@@ -4191,8 +4210,9 @@ HELLO = {"Hi.": [repl("FinalAnswer('hello')")]}
     [
         ("tally", "- not a mapping\n", None),
         ("my-tool", "factory: build\nfactory_from: my-tool.py\n", WORD_COUNT),
+        ("json", "factory: build\nfactory_from: json.py\n", WORD_COUNT),
     ],
-    ids=["not-a-mapping", "not-named-in-python"],
+    ids=["not-a-mapping", "not-named-in-python", "named-as-a-module"],
 )
 async def test_a_granted_tool_left_out_is_ignored_so_runs_and_writes_go_on(
     library_on, connect, row
@@ -4209,15 +4229,18 @@ async def test_a_granted_tool_left_out_is_ignored_so_runs_and_writes_go_on(
             unrelated = await api.post(
                 "/api/namespaces", json={"name": "notes", "yaml": ""}
             )
-            refused = await api.delete(f"/api/tools/{name}")
             tally = by_name((await api.get("/api/library")).json()["tools"])[name]
+            deleted = await api.delete(f"/api/tools/{name}")
+            after = (await api.get("/api/library")).json()
+            again = await run_events(api, await send(api, chat, "Hi."))
     assert events[-1]["outcome"] == "answered"
     assert unrelated.status_code == 201, unrelated.text
     assert (tally["granted_in"], tally["problems"][-1]) == (["drafts"], GRANT_IGNORED)
-    assert refused.json()["detail"] == tally["refusal"]
-    assert tally["refusal"] == (
-        f"{name} is granted in drafts: take it out of their tools first."
-    )
+    # Its grants, which runs ignored, go with it.
+    assert (tally["refusal"], deleted.status_code) == (None, 200)
+    assert name not in by_name(after["tools"])
+    assert by_name(after["namespaces"])["drafts"]["yaml"] == "tools: []\n"
+    assert again[-1]["outcome"] == "answered"
 
 
 @pytest.mark.anyio

@@ -73,7 +73,8 @@ to stop it.
 **The agent's Python** runs on your computer by default, unsandboxed, in the chat's working folder, with the app's
 own Python packages: numpy, pandas (with tabulate, so `to_markdown()` works) and requests are there; scipy, sympy
 and matplotlib are not. Add packages by starting the app with them: `uv run --with scipy --with sympy
-deep-reasoning`. A module file in the chat's folder imports too.
+deep-reasoning`; the agent never installs one itself, but names the one it lacks. A module file in the chat's folder
+imports too.
 
 ## What it supports
 
@@ -96,13 +97,14 @@ deep-reasoning`. A module file in the chat's folder imports too.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
   its own words after.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,
-  `2*3*4`). Raw HTML shows as text, an image as a link (never loaded), and links open in a new tab. A long prompt or
-  answer shows its first lines with **show all**; a run that ran out of turns says so.
+  `2*3*4`). Raw HTML shows as text, an image as a link (never loaded), and links open in a new tab; a link to a file
+  in the chat's folder, which the app doesn't serve, shows as text with its address. A long prompt or answer shows its
+  first lines with **show all**; a run that ran out of turns says so.
 - Follow-ups see the chat's earlier messages and answers, and can ask how one was worked out, whether it was
   computed, what its sub-agents did or what went wrong: root hands those to the `historian`.
 - The agent can show you a page of its own (Markdown, tables, and steps or sub-agents of earlier messages, drawn as
   the chat draws them), linked under its answer and opening in a new tab; pages are deleted with their chat. A new
-  Library grants this to the historian, so "show me on a page how you got that" goes there.
+  Library grants this to the historian, so "show me on a page how you got that", or a page of new data, goes there.
 - Each chat has its own model, namespace and working folder, picked under the message box (typing filters the
   menus); a change applies from the next message.
 - Light and dark themes with text at WCAG AA contrast; phone width, where the chats are a drawer (☰; Esc shuts it)
@@ -157,8 +159,8 @@ deep-reasoning`. A module file in the chat's folder imports too.
   or split; a name with outer spaces, invisible characters or a word mixing alphabets (a Cyrillic `а` among Latin
   letters); a namespace named oddly,
   with a backbone the engine doesn't know, or with a var whose name isn't a Python name, starts with `_`, is a
-  keyword or built-in, or is a tool's; and a namespace granting a tool of yours that no namespace granted yet, if it
-  doesn't build (built first, up to a minute).
+  keyword or built-in, or is a tool's; a namespace newly granting a tool marked ✗; and a namespace granting a tool
+  of yours that no namespace granted yet, if it doesn't build (built first, up to a minute).
 - A save or delete is refused if what you opened changed meanwhile (the librarian, another tab or an import): your
   draft stays beside what is stored. A delete the panel knows would be refused says why at once. The panel and the
   namespace menu read the Library again when you open the panel or come back to the window.
@@ -168,14 +170,24 @@ deep-reasoning`. A module file in the chat's folder imports too.
   the app at run time", and marks a listed namespace that is gone; no save stores text that reads as one.
 - A shared Library's rows the engine can't read are left out, so the rest works, and so is every row a save would
   refuse: a worked example with a template or name no save takes, or stored under a name its YAML doesn't give; a
-  namespace or tool named as no save names one (`Root`, `historian `, a tool `my-tool`), whose grants runs then
-  ignore; text that reads as a run's own line; YAML whose aliases stand for millions of values. The panel marks each
-  ✗ with why, to fix or delete; a row named as one of the app's own tools is listed under it, and Delete removes only
-  the row. Its templates run sandboxed, reaching no Python internals.
+  namespace or tool named as no save names one (`Root`, `historian `, a tool `my-tool` or `json`); text that reads
+  as a run's own line; YAML whose aliases stand for millions of values. The panel marks each ✗ with why, to fix or
+  delete. Runs ignore a left-out tool's grants, and its Delete takes them out with it; a row named as one of the
+  app's own tools is listed under it, and Delete removes only the row. Its templates run sandboxed, reaching no
+  Python internals.
 - Every run builds every tool some namespace grants, whatever its chat's namespace: a granted tool's code runs at the
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never
-  runs, but to check it builds.
+  runs, but to check it builds. While a run builds its tools, its tree says "starting…".
+- Agents see each tool of yours by the name a namespace grants it under, with its signature and its `Func`
+  description, else its docstring, which the Tools tab shows. It is built afresh for each message, so its state lasts
+  one message, shared by every agent in that run. An async tool's calls return coroutines, which agents drive
+  with `run_all([...])`, as the REPL has no top-level `await`: a worked example calling it that way helps.
+- A tool of yours may not be named as one of Python's built-ins or a module agents' code commonly uses (`len`, `json`,
+  `pandas`), which it would hide: the librarian, an import and the panel's grant refuse it. Built to check it (the
+  panel, an import), a tool sees no key: only the key variables your shell sets hold a placeholder, as only those
+  reach every chat's run (a key saved in settings goes only to its own provider's chats), so one that reads any
+  other key is refused, as it would stop the chats that lack it.
 - A new Library's root has a `system_suffix`, which every namespace inherits, telling agents about the app and how to
   answer; read, edit or delete it in the panel.
 

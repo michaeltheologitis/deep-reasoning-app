@@ -141,18 +141,24 @@ FRESH_ROOT = {"tools": ["llm"]}
 # What app its agents are in, which every namespace inherits; a fresh Library's only.
 ROOT_SUFFIX = """\
 You are an agent of Deep Reasoning, an app on the user's own computer: agents like you \
-answer each chat message in Python, run unsandboxed in the chat's working folder (write \
-files there, never /mnt/data; no sandbox: links), handing parts to sub-agents; the ✻ \
-line under each answer opens its tree of steps. What they know is the app's Library, \
-saved with the chats in its file and edited by the user in the Library panel (top \
-right): each namespace's system_suffix (root's and yours included: the user's own text, \
-no secret), tools and worked examples, root's reaching every chat.
+answer each chat message in Python, run unsandboxed in the chat's working folder (files \
+you write go there, never /mnt/data: give each one's path in code, never a link), \
+handing parts to sub-agents; the ✻ line under each answer opens its tree of steps and \
+code, and a page is never a file: hand every page ask, of any data, on as your worked \
+examples do. Never install a package: name the missing one, which the user adds by \
+restarting the app as `uv run --with PKG deep-reasoning`. What they know is the app's \
+Library, saved with the chats in its file (by default ~/.deep-reasoning/library.sqlite) \
+and edited by the user in the Library panel (top right): each namespace's system_suffix \
+(root's and yours included: the user's own text, no secret), tools and worked examples, \
+root's reaching every chat.
 Compute each number in Python and print it, then answer from the variables, in that cell \
 or a later one, as FinalAnswer(f"The mean of {n} values is {mean:.2f}."): never type a \
-number you computed. Asked if an earlier answer was right, check its record rather than \
-work it out again. Combine sub-agents' results into one answer in prose or a Markdown \
-table, never a raw dict or list, and no LaTeX. Only your FinalAnswer reaches whoever \
-asked: put your results in it, and leave out your failed cells unless asked.
+number you computed. When the user names a namespace or tool to use, pass on its answer, \
+computing nothing beside it, and say if it couldn't be used. Asked if an earlier answer \
+was right, check its record rather than work it out again. Combine sub-agents' results \
+into one answer in prose or a Markdown table, never a raw dict or list, and no LaTeX. \
+Only your FinalAnswer reaches whoever asked: put your results in it, and leave out your \
+failed cells unless asked.
 """
 # library writes the Library, so it is granted in a namespace of its own, which a chat
 # picks when it wants edits, and which no namespace inherits from.
@@ -402,6 +408,11 @@ DOCUMENTED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 FUNC = "Func"
 NO_DESCRIPTION = "no description found in its source"
 BUILT_DESCRIPTION = "set when it's built: {}"
+# The setting a tool's factory may describe it by, as the engine's own do.
+DESCRIBED_BY = "description"
+# The engine's factories that take their own description for an empty one too; the
+# others keep it empty.
+EMPTY_TAKES_DEFAULT = {"kg", "claude_code"}
 BUILTIN_DESCRIPTIONS = {
     "llm": _DEFAULT_LLM_DESCRIPTION,
     "rag": DEFAULT_RAG_DESCRIPTION,
@@ -633,7 +644,9 @@ TOO_LONG_ROW = f"It is longer than the {MAX_YAML_CHARS:,} characters the Library
 ALIASES_STAND_FOR = 2
 ALIASES_ALLOWANCE = 10_000
 YAML_NOT_TEXT = "Its YAML isn't text."
-GRANT_IGNORED = "Runs ignore its grants until it is fixed or deleted."
+GRANT_IGNORED = (
+    "Runs ignore its grants until it is fixed; Delete takes it out of their tools too."
+)
 SHADOWS_AN_APP_TOOL = (
     "It has the name of the app's own {} tool, which runs build in its place: Delete"
     " removes only this row."
@@ -651,6 +664,20 @@ DECOMPOSITIONS_KEPT = 256
 FIELDS_MAPPING = 'The YAML should be a mapping of fields, like "tools: [llm]".'
 # A var named as one of these hides it from the agent's code, as max: 10 breaks max(numbers).
 BUILTIN_NAMES = frozenset(dir(builtins))
+# Modules the agent's code commonly uses, and the names it imports some as: a tool named
+# as one hides it, until the code imports it, which hides the tool.
+COMMON_MODULES = frozenset(
+    {
+        *("asyncio", "base64", "collections", "copy", "csv", "datetime", "decimal"),
+        *("functools", "glob", "hashlib", "heapq", "io", "itertools", "json"),
+        *("logging", "math", "operator", "os", "pathlib", "pickle", "random", "re"),
+        *("shutil", "sqlite3", "statistics", "string", "subprocess", "sys"),
+        *("tempfile", "textwrap", "time", "typing", "urllib", "uuid", "zipfile"),
+        *("numpy", "np", "pandas", "pd", "scipy", "matplotlib", "plt", "seaborn"),
+        *("sns", "sklearn", "sympy", "networkx", "nx", "polars", "requests", "httpx"),
+        *("yaml", "bs4", "PIL"),
+    }
+)
 # Alphabets with letters that pass for one another's, as Cyrillic а for Latin a.
 LOOK_ALIKE_SCRIPTS = {"LATIN", "CYRILLIC", "GREEK", "ARMENIAN"}
 # Characters that don't show: controls and formats, such as a zero-width space.
@@ -1015,8 +1042,9 @@ def check_tool_block(name, block):
 
 def check_tool_name(name, block):
     """Raise unless a tool of the Library may be named *name*, as its config *block*
-    makes it: a Python name (tool_file()), as agents call it by its name, and none taken
-    (taken()), but by a built-in's own block, which gives that built-in its settings."""
+    makes it: a Python name (tool_file()), as agents call it by its name; none taken
+    (taken()), but by a built-in's own block, which gives that built-in its settings; and
+    none hiding one of Python's (tool_name_problem())."""
     tool_file(name)
     the_builtin = (
         block.get("factory_from") is None
@@ -1030,6 +1058,8 @@ def check_tool_name(name, block):
             " place in every namespace. Rename it; a block may use a built-in's name"
             " only to give that built-in its settings."
         )
+    if problem := tool_name_problem(name):
+        raise LibraryError(problem)
 
 
 def tool_block(name, text, source):
@@ -1205,13 +1235,20 @@ def config_of(read):
     for row in read["decompositions"]:
         if row["decomposition"] is not None:
             decompositions[row["namespace"]].append(row["decomposition"].model_dump())
-    ignored = read["tools_left"].keys() - BROUGHT_BY_A_MODEL - APP_TOOLS.keys()
+    ignored = grants_ignored(read["tools_left"])
     namespaces = {
         name: without_grants(name, fields, ignored)
         | {"decompositions": decompositions[name]}
         for name, fields in read["namespaces"].items()
     }
     return {**read["settings"], "tools": tools, "namespaces": namespaces}
+
+
+def grants_ignored(left):
+    """The tools whose grants runs ignore, of those left out (*left*, by name, as
+    read_tools() gives them): all but the llm a model brings and an app tool, whose own
+    the app builds in its place."""
+    return left.keys() - BROUGHT_BY_A_MODEL - APP_TOOLS.keys()
 
 
 def without_grants(name, fields, ignored):
@@ -2245,6 +2282,22 @@ def var_problem(name):
     return None
 
 
+def tool_name_problem(name):
+    """Why a tool of your own may not be named *name*, beside taken(): None when it may.
+    As a var, it would hide one of Python's built-ins from the agent's code; or a module
+    that code commonly uses."""
+    if name in BUILTIN_NAMES:
+        hidden = f"Python's own {name}"
+    elif name in COMMON_MODULES:
+        hidden = f"the {name} module"
+    else:
+        return None
+    return (
+        f'Tool "{name}" would hide {hidden}, which the agent\'s code may use; rename it,'
+        f' like "{name}_tool".'
+    )
+
+
 def hidden_vars(registry, names):
     """Raise if, in any of the namespaces *names*, a tool takes the place of a var of
     the same name, as the engine binds tools over vars."""
@@ -2503,6 +2556,8 @@ def built_grants(
             text = merged(namespace_yaml(connection, name) or "", text)
         namespace, _ = authored(name, text)
         afresh = granted_afresh(connection, namespace)
+        if ignored := ignored_grants(connection, namespace):
+            raise LibraryError("\n".join(ignored))
         if locks is not None:
             locks(connection, namespace, afresh)
         if adding:
@@ -2513,6 +2568,19 @@ def built_grants(
     if afresh:
         build(afresh)
     return afresh
+
+
+def ignored_grants(connection, namespace):
+    """Why each tool *namespace* grants that its stored self doesn't, but runs would
+    ignore, as it is left out (grants_ignored()), may not be granted: its why, and so."""
+    left = read_tools(connection)[1]
+    stored = read_namespaces(connection)[0].get(namespace.name, {}).get("tools", [])
+    return [
+        f"{left[tool]} Runs ignore a grant of it until it is fixed: fix or delete it"
+        " in the Tools tab first."
+        for tool in namespace.tools
+        if tool in grants_ignored(left) and tool not in stored
+    ]
 
 
 def same_grants(built, locks, connection, namespace):
@@ -2545,10 +2613,17 @@ def store_tool(connection, name, block, source, allowed=None):
 
 def delete_tool(connection, name):
     """Delete the Library's tool *name*, or raise LibraryError saying why not: a
-    namespace grants it, or the Library holds no row for it."""
+    namespace grants it, or the Library holds no row for it. One left out, whose grants
+    runs ignore, goes with its grants, which changes no run."""
     with writing(connection):
-        # As stored: a grant of a tool left out, which runs ignore, still holds it.
-        granting = grants_of(read_namespaces(connection)[0], name)
+        namespaces = read_namespaces(connection)[0]
+        granting = grants_of(namespaces, name)
+        if name in grants_ignored(read_tools(connection)[1]):
+            for each in granting:
+                tools = [tool for tool in namespaces[each]["tools"] if tool != name]
+                fields = dump(namespaces[each] | {"tools": tools})
+                connection.execute(UPSERT_NAMESPACE, (each, fields))
+            granting = []
         stored = connection.execute("SELECT 1 FROM tools WHERE name = ?", (name,))
         refusal = tool_refusal(name, granting, stored.fetchone() is not None)
         if refusal:
@@ -2560,6 +2635,12 @@ def tool_refusal(name, granting, stored):
     """Why tool *name* can't be deleted, as the namespaces *granting* grant it and the
     Library holds a row for it or not (*stored*); None when it can. A row under an app
     tool's name, as a shared file may hold, holds no grant: the app's tool keeps them."""
+    if not stored and (name in BUILDERS or name in APP_TOOLS):
+        whose = "the app's" if name in APP_TOOLS else "the engine's"
+        return (
+            f"{name} is {whose} own, not the Library's, so it can't be deleted; agents"
+            " use it only where a namespace grants it."
+        )
     if granting and name not in APP_TOOLS:
         return (
             f"{name} is granted in {', '.join(granting)}: take it out of their tools"
@@ -2805,11 +2886,12 @@ def run_settings(read):
     return rows
 
 
-def source_description(source, factory):
+def source_description(source, factory, block):
     """What the agent is told a custom tool does, as far as its *source* says without
-    running it: the description its *factory* gives Func(...), as text or a module's text
-    constant, else, when it gives none, the docstring of the function or class it wraps.
-    Empty when neither says, or the source doesn't parse, as a shared file may hold."""
+    running it: the description its *factory* gives Func(...), as text, a module's text
+    constant or its *block*'s description setting, else, when it gives none, the
+    docstring of the function or class it wraps. Empty when neither says, or the source
+    doesn't parse, as a shared file may hold."""
     try:
         module = parsed_python(source)
     except LibraryError:
@@ -2824,12 +2906,43 @@ def source_description(source, factory):
         for target in node.targets
         if isinstance(target, ast.Name)
     }
+    # A class factory's Func(...) is its own instance, which no call here shows.
+    parameters = [] if isinstance(build, ast.ClassDef) else positional(build.args)
+    settings = parameters[1].arg if len(parameters) > 1 else None
     for call in ast.walk(build):
         if isinstance(call, ast.Call) and called(call.func) == FUNC:
             # As Python finds a name in the factory: its own defs, then the module's.
             scope = top_level(module.body) | top_level(build.body)
-            return func_description(call, scope, texts)
+            read = partial(read_setting, settings, block)
+            return func_description(call, scope, texts, read)
     return ""
+
+
+def positional(arguments):
+    """The parameters a function's *arguments* take by position, in order."""
+    return [*arguments.posonlyargs, *arguments.args]
+
+
+def read_setting(settings, block, node):
+    """*node* as a factory whose settings are its parameter *settings* reads it from
+    *block*: for settings["description"], the setting; for settings.get("description",
+    default), the setting or else the default; any other *node* as it is."""
+    if isinstance(node, ast.Subscript):
+        got, key, default = node.value, node.slice, node
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and node.args
+    ):
+        got, key = node.func.value, node.args[0]
+        default = node.args[1] if len(node.args) > 1 else ast.Constant(None)
+    else:
+        return node
+    named = isinstance(got, ast.Name) and got.id == settings
+    if not (named and isinstance(key, ast.Constant) and key.value == DESCRIBED_BY):
+        return node
+    return ast.Constant(block[DESCRIBED_BY]) if DESCRIBED_BY in block else default
 
 
 def top_level(body):
@@ -2837,10 +2950,13 @@ def top_level(body):
     return {node.name: node for node in body if isinstance(node, DOCUMENTED)}
 
 
-def func_description(call, scope, texts):
+def func_description(call, scope, texts, read):
     """What the Func(value, description=None) *call* tells the agent: its description,
-    else value's docstring, where value names one of *scope*'s functions or classes."""
+    as *read* (read_setting()) reads it, else value's docstring, where value names one of
+    *scope*'s functions or classes."""
     given = argument(call, "description", 1)
+    if given is not None:
+        given = read(given)
     if given is not None and not is_none(given):
         text = literal_text(given, texts)
         return BUILT_DESCRIPTION.format(ast.unparse(given)) if text is None else text
@@ -2881,8 +2997,7 @@ def literal_text(node, texts):
 
 
 def origin(name, factory, block, source):
-    """Where a tool comes from, as the panel shows it, and what the agent is told it does
-    unless its block says."""
+    """Where a tool comes from, as the panel shows it, and what the agent is told it does."""
     if name in APP_TOOLS:
         made = {"file": APP_TOOLS_MODULE, "defined_in": APP, "badge": "the app's"}
         return made, APP_TOOLS[name][1]
@@ -2892,9 +3007,12 @@ def origin(name, factory, block, source):
             "defined_in": None,
             "badge": "built-in",
         }
-        return made, BUILTIN_DESCRIPTIONS[factory]
+        default = BUILTIN_DESCRIPTIONS[factory]
+        if factory in EMPTY_TAKES_DEFAULT:
+            return made, block.get(DESCRIBED_BY) or default
+        return made, block.get(DESCRIBED_BY, default)
     made = {"file": block["factory_from"], "defined_in": "the Library", "badge": None}
-    return made, source_description(source, factory) or NO_DESCRIPTION
+    return made, source_description(source, factory, block) or NO_DESCRIPTION
 
 
 def granted_in(registry, names, tool):
@@ -2934,7 +3052,7 @@ def tool_rows(config, registry, names, sources):
             name in sources,
             factory=factory,
             **made,
-            description=block.get("description") or description,
+            description=description,
             config=dump({name: block}).rstrip() if block else None,
             source=sources.get(name),
         )
@@ -3086,7 +3204,9 @@ def listed_tools(read, config, registry, names):
             rows[name] |= {"stored": True, "refusal": refusal, "problems": problems}
             continue
         ignored = [GRANT_IGNORED] if granting else []
-        rows[name] = listed_tool(name, granting, True, problems=[*problems, *ignored])
+        problems = [*problems, *ignored]
+        # Its grants go with it (delete_tool()).
+        rows[name] = listed_tool(name, granting, True, problems=problems, refusal=None)
     return list(rows.values())
 
 

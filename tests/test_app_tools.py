@@ -1724,6 +1724,8 @@ HOLDS_ITSELF.append(HOLDS_ITSELF)
             ("counter", RAISING.replace("build", "claude_code"), "claude_code"),
             'names factory "claude_code", one of the engine\'s own',
         ),
+        (("sum", RAISING, "build"), 'Tool "sum" would hide Python\'s own sum'),
+        (("json", RAISING, "build"), 'Tool "json" would hide the json module'),
     ],
     ids=[
         "name-not-plain-text",
@@ -1739,6 +1741,8 @@ HOLDS_ITSELF.append(HOLDS_ITSELF)
         "a-key-in-a-bytes-literal",
         "a-source-too-deep-to-parse",
         "a-factory-named-as-the-engines-claude-code",
+        "a-name-python-has-built-in",
+        "a-name-of-a-module-agents-use",
     ],
 )
 def test_a_tool_the_tool_refuses_says_why_and_stores_nothing(

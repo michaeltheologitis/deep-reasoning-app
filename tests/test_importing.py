@@ -760,6 +760,24 @@ def test_import_refuses_a_tool_of_your_own_named_as_a_built_in(library, tmp_path
         import_into(library, config)
 
 
+@pytest.mark.parametrize(
+    ("name", "refusal"),
+    [
+        ("max", 'Tool "max" would hide Python\'s own max'),
+        ("pandas", 'Tool "pandas" would hide the pandas module'),
+    ],
+)
+def test_import_refuses_a_tool_named_as_python_names_what_agents_use(
+    library, tmp_path, name, refusal
+):
+    (tmp_path / "mine.py").write_text("def build(client, params): ...\n")
+    config = config_file(
+        tmp_path, f"tools:\n  {name}: {{factory: build, factory_from: mine.py}}\n"
+    )
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        import_into(library, config)
+
+
 def test_import_gives_a_built_in_its_settings_under_its_own_name(library, tmp_path):
     config = config_file(
         tmp_path,
@@ -1307,8 +1325,8 @@ def test_a_tool_that_doesnt_build_is_named_with_the_configs_own_file(library, tm
         "namespaces:\n  helper: {tools: [scrape]}\n",
     )
     said = (
-        "Tool scrape (helpers/scraping.py) doesn't build: build in scrape.py raised"
-        " RuntimeError"
+        "Tool scrape (helpers/scraping.py) doesn't build: build in helpers/scraping.py"
+        " raised RuntimeError"
     )
     refused_unchanged(library, config, said)
 

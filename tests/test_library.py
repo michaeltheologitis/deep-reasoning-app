@@ -14,6 +14,8 @@ import yaml
 from deep_reasoner.config import resolve_api_key
 from deep_reasoner.namespaces import ROOT, build_registry
 from deep_reasoner.tools import load_tool_factory
+from deep_reasoner.tools.base import DEFAULT_CLAUDE_DESCRIPTION
+from deep_reasoner.tools.safe_url import DEFAULT_SAFE_URL_DESCRIPTION
 from deep_reasoner.v2 import DeepReasoner
 from deep_reasoner.v2.agent import _render_context, _rendered_turns
 from deep_reasoner.v2.cli import (
@@ -69,6 +71,7 @@ from deep_reasoning.library import (
     LibraryError,
     add_decomposition,
     add_namespace,
+    built_grants,
     change_namespace,
     default_namespace,
     delete_decomposition,
@@ -90,6 +93,7 @@ from deep_reasoning.library import (
     sandbox_templates,
     store_tool,
     stored_config,
+    tool_name_problem,
     tool_text,
     turn_problems,
     writing,
@@ -701,8 +705,9 @@ def test_root_is_told_to_pass_the_message_as_written_only_in_its_examples(
     namespaces = run_config(library, tmp_path).namespaces
     assert namespaces[ROOT].system_suffix == ROOT_SUFFIX
     assert "ctx.task" not in ROOT_SUFFIX and "subagent" not in ROOT_SUFFIX
-    # It names no librarian, so it holds with none.
-    assert LIBRARIAN not in ROOT_SUFFIX
+    # It names no librarian or historian, so it holds with neither: pages and Library
+    # questions go where root's worked examples hand them.
+    assert LIBRARIAN not in ROOT_SUFFIX and HISTORIAN not in ROOT_SUFFIX
     assert "ctx.task" not in namespaces[HISTORIAN].system_suffix
 
 
@@ -964,6 +969,20 @@ def build(client, params):
 """
 
 
+# A Func of its own, built by calling the class: no Func(...) call says what it's told.
+CLASS_FACTORY = """from deep_reasoner.primitives import Func
+
+
+def count_words(text):
+    \"\"\"Count the words in text.\"\"\"
+
+
+class build(Func):
+    def __init__(self, client, params):
+        super().__init__(count_words, params.get("description"))
+"""
+
+
 @pytest.mark.parametrize(
     ("source", "description"),
     [
@@ -994,6 +1013,7 @@ def build(client, params):
         (COUNT_WORDS.format(made="Func(lambda text: 0)"), NO_DESCRIPTION),
         (COUNT_WORDS.format(made='Func(params["made"])'), NO_DESCRIPTION),
         (SHADOWED, "Count the words in text."),
+        (CLASS_FACTORY, NO_DESCRIPTION),
         ("def build(client, params):\n    return 1\n", NO_DESCRIPTION),
         ("def build(client, params) 1\n", NO_DESCRIPTION),
     ],
@@ -1008,6 +1028,7 @@ def build(client, params):
         "lambda",
         "unknown-value",
         "shadowed",
+        "a-class-factory",
         "no-func",
         "not-python",
     ],
@@ -1020,6 +1041,76 @@ def test_a_custom_tools_description_is_what_its_source_tells_the_agent(
         connection.execute(UPSERT_TOOL, ("count_words", block, source))
         tools = {tool["name"]: tool for tool in panel(connection)["tools"]}
     assert tools["count_words"]["description"] == description
+
+
+@pytest.mark.parametrize(
+    ("made", "settings", "description"),
+    [
+        (
+            "Func(count_words)",
+            {"description": "Settings say."},
+            "Count the words in text.",
+        ),
+        (
+            'Func(count_words, description=params["description"])',
+            {"description": "Settings say."},
+            "Settings say.",
+        ),
+        (
+            'Func(count_words, description=params.get("description"))',
+            {"description": "Settings say."},
+            "Settings say.",
+        ),
+        (
+            'Func(count_words, description=params.get("description"))',
+            {},
+            "Count the words in text.",
+        ),
+        (
+            'Func(count_words, params.get("description", "Counts."))',
+            {},
+            "Counts.",
+        ),
+        (
+            'Func(count_words, params.get("description"))',
+            {"description": "Settings say.", "positional_only": True},
+            "Settings say.",
+        ),
+    ],
+    ids=["ignored", "read", "got", "got-none", "got-a-default", "positional-only"],
+)
+def test_a_custom_tools_description_is_its_settings_only_when_its_factory_reads_them(
+    library, made, settings, description
+):
+    source = COUNT_WORDS.format(made=made)
+    if settings.pop("positional_only", False):
+        source = source.replace(
+            "def build(client, params):", "def build(client, params, /):"
+        )
+    block = {"factory": "build", "factory_from": "count_words.py"} | settings
+    with closing(open_library(library)) as connection:
+        store_tool(connection, "count_words", block, source)
+        tools = {tool["name"]: tool for tool in panel(connection)["tools"]}
+    assert tools["count_words"]["description"] == description
+
+
+@pytest.mark.parametrize(
+    ("tool", "settings", "description"),
+    [
+        ("safe_url", {"description": ""}, ""),
+        ("safe_url", {}, DEFAULT_SAFE_URL_DESCRIPTION),
+        ("safe_url", {"description": "Fetch a page."}, "Fetch a page."),
+        ("claude_code", {"description": ""}, DEFAULT_CLAUDE_DESCRIPTION),
+    ],
+    ids=["empty", "unset", "set", "empty-where-the-engine-takes-its-own"],
+)
+def test_a_built_in_tools_description_is_its_settings_as_the_engine_reads_them(
+    library, tool, settings, description
+):
+    with closing(open_library(library)) as connection:
+        store_tool(connection, tool, settings, None)
+        tools = {each["name"]: each for each in panel(connection)["tools"]}
+    assert tools[tool]["description"] == description
 
 
 @pytest.mark.parametrize(
@@ -1702,11 +1793,33 @@ def test_a_tool_is_deleted_only_once_no_namespace_grants_it(library):
 
 
 @pytest.mark.parametrize(
+    ("name", "problem"),
+    [
+        (
+            "len",
+            "Tool \"len\" would hide Python's own len, which the agent's code may use;",
+        ),
+        ("open", 'Tool "open" would hide Python\'s own open,'),
+        ("json", 'Tool "json" would hide the json module, which the agent\'s code may'),
+        ("pandas", 'Tool "pandas" would hide the pandas module,'),
+        ("np", 'Tool "np" would hide the np module,'),
+    ],
+)
+def test_a_tool_may_not_be_named_as_a_built_in_or_a_module_agents_use(name, problem):
+    assert tool_name_problem(name).startswith(problem)
+
+
+@pytest.mark.parametrize("name", ["wordcount", "csv_stats", "waitlist"])
+def test_a_tool_may_have_a_name_python_doesnt_use(name):
+    assert tool_name_problem(name) is None
+
+
+@pytest.mark.parametrize(
     ("name", "refusal"),
     [
-        ("llm", "llm is granted in root: take it out of their tools first."),
-        ("history", 'The Library holds no tool "history" to delete.'),
-        ("rag", 'The Library holds no tool "rag" to delete.'),
+        ("llm", "llm is the engine's own, not the Library's, so it can't be deleted;"),
+        ("history", "history is the app's own, not the Library's, so it can't be"),
+        ("rag", "rag is the engine's own, not the Library's, so it can't be deleted;"),
     ],
 )
 def test_a_tool_the_library_holds_no_row_for_is_not_deleted(library, name, refusal):
@@ -2205,3 +2318,15 @@ def test_a_decomposition_named_in_two_alphabets_is_refused(library):
     )
     with pytest.raises(LibraryError, match=r"mixes alphabets .*\(U\+0430\)"):
         change(library, add_decomposition, HISTORIAN, example)
+
+
+def test_a_tool_left_out_is_granted_afresh_nowhere_but_kept_where_it_was(library):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_TOOL, ("tally", "- not a mapping\n", None))
+        connection.execute(UPSERT_NAMESPACE, ("drafts", "tools: [tally]\n"))
+    granting = "tools: [tally]\nsystem_suffix: Draft.\n"
+    with closing(open_library(library)) as connection:
+        refused = "Runs ignore a grant of it until it is fixed: fix or delete it"
+        with pytest.raises(LibraryError, match=refused):
+            built_grants(connection, "notes", granting, print, adding=True)
+        assert built_grants(connection, "drafts", granting, print, adding=False) == {}
