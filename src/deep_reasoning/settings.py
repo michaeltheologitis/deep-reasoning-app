@@ -269,9 +269,15 @@ def settings_in(connection: sqlite3.Connection) -> dict[str, Any]:
     settings = {}
     for key, text in connection.execute("SELECT key, json FROM app_settings"):
         try:
-            settings[key] = json.loads(text)
+            value = json.loads(text)
+            # An escape can make half a character, which no response can carry.
+            json.dumps(value, ensure_ascii=False).encode()
+        except UnicodeEncodeError:
+            log.warning("settings.left_out", key=key, why="half a character")
         except ValueError:
             log.warning("settings.left_out", key=key, why="not JSON")
+        else:
+            settings[key] = value
     return {key: value for key, value in settings.items() if well_shaped(key, value)}
 
 

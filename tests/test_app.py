@@ -3846,10 +3846,20 @@ UNREADABLE_ROWS = {
         (ROOT, "bytes", b"name: bytes\nmessages: [{role: user, content: hi}]\n"),
         YAML_NOT_TEXT,
     ),
+    "a-decomposition-escaping-half-a-character": (
+        "decompositions",
+        (ROOT, "half", 'name: half\nmessages: [{role: user, content: "\\uD800"}]\n'),
+        "half of a character (U+D800)",
+    ),
     "a-namespace-the-engine-refuses": (
         "namespaces",
         ("coder", "reasoner: claude_code\n"),
         "reasoner should be a mapping",
+    ),
+    "a-namespace-escaping-half-a-character": (
+        "namespaces",
+        ("drafts", 'system_suffix: "Be brief. \\uDE00"\n'),
+        "half of a character (U+DE00)",
     ),
     "a-namespace-under-none-there": (
         "namespaces",
