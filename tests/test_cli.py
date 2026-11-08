@@ -722,6 +722,23 @@ def test_a_reset_that_deletes_nothing_leaves_and_lists_no_side_file_of_its_own(
     assert [path for path in side_files(library) if path.exists()] == []
 
 
+def test_a_declined_reset_lists_and_leaves_only_the_side_files_already_there(
+    app_home, monkeypatch, capsys
+):
+    library = app_home / "library.sqlite"
+    app_file(app_home, library)
+    with closing(sqlite3.connect(library)) as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+    wal, shm = side_files(library)
+    wal.write_bytes(b"")
+    monkeypatch.setattr(sys, "stdin", Terminal("no\n"))
+    with pytest.raises(SystemExit, match="Nothing was deleted"):
+        cli.main(["reset"])
+    said = capsys.readouterr().out
+    assert re.findall(r"-wal|-shm", said) == ["-wal"]
+    assert (wal.exists(), shm.exists()) == (True, False)
+
+
 @pytest.mark.parametrize("before", [True, False], ids=["before reset", "after reset"])
 def test_reset_library_resets_that_file_alone_not_the_default_or_old_leftovers(
     app_home, tmp_path, before

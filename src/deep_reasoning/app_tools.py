@@ -469,19 +469,13 @@ def snippet(text: str, match: re.Match) -> str:
     return f"{'…' * (start > 0)}{text[start:end]}{'…' * (end < len(text))}"
 
 
-def open_existing(
-    library: str | Path, mode: str = "ro", immutable: bool = False
-) -> sqlite3.Connection:
+def open_existing(library: str | Path, mode: str = "ro") -> sqlite3.Connection:
     """The app file at *library* as it is, to read ("ro") or to write ("rw"): unlike
     open_library, it never makes a moved or deleted file afresh. It runs none of the file's
     own triggers or views, and wipes what it deletes. In WAL mode a reader holds up no event
-    the server saves meanwhile. *immutable* reads the file alone, making no side file,
-    for one nothing else writes and that has none beside it."""
-    unchanging = "&immutable=1" if immutable else ""
+    the server saves meanwhile."""
     connection = sqlite3.connect(
-        f"{Path(library).as_uri()}?mode={mode}{unchanging}",
-        uri=True,
-        isolation_level=None,
+        f"{Path(library).as_uri()}?mode={mode}", uri=True, isolation_level=None
     )
     connection.execute("PRAGMA secure_delete = ON")
     distrust(connection)

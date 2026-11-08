@@ -242,12 +242,11 @@ def file_or_exit(library):
 
 
 def chosen_in(library):
-    """The folders the Library's chats and settings chose, read without writing the file;
-    a LibraryError for a file that isn't a Library this version can open."""
-    # With no side file, it holds all it has itself: read so, it leaves none behind,
-    # where a reader of one in WAL mode leaves a -wal and -shm.
-    alone = not any(os.path.lexists(path) for path in sides_of(library))
-    with contextlib.closing(open_existing(library, "ro", alone)) as connection:
+    """The folders the Library's chats and settings chose, read without writing the file
+    or leaving a side file beside it; a LibraryError for a file that isn't a Library this
+    version can open."""
+    reading = contextlib.closing(open_existing(library, "ro"))
+    with leaving_no_side_file(library), reading as connection:
         version = schema_version(connection)
         if not LIBRARY_ONLY <= version <= SCHEMA_VERSION:
             raise LibraryError(
@@ -258,6 +257,18 @@ def chosen_in(library):
         chosen = [chat["folder"] for chat in chats_in(connection)]
         chosen.append(settings_in(connection).get(DEFAULT_FOLDER))
     return [folder for folder in chosen if folder]
+
+
+@contextlib.contextmanager
+def leaving_no_side_file(library):
+    """Take away, after the block, each of SQLite's files beside *library* that it made:
+    a reader of a Library in WAL mode makes a -wal and -shm, empty, and leaves them."""
+    there = {path for path in sides_of(library) if os.path.lexists(path)}
+    try:
+        yield
+    finally:
+        for made in set(sides_of(library)) - there:
+            made.unlink(missing_ok=True)
 
 
 def chosen_or_exit(library):
