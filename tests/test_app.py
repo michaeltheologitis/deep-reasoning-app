@@ -43,6 +43,7 @@ from deep_reasoning import settings as settings_module
 from deep_reasoning.app import WEB, create_app
 from deep_reasoning.chats import create_chat
 from deep_reasoning.folders import data_folder
+from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
     HAND_OFF_TURNS,
     HISTORIAN,
@@ -57,7 +58,6 @@ from deep_reasoning.library import (
     UPSERT_TOOL,
     dump,
     hand_off,
-    import_config,
     open_library,
     parsed,
     running_code,
@@ -1620,7 +1620,7 @@ TOOL_REFUSALS = [
     ),
     (
         library_cell("write_tool", "counter", RAISES, "build"),
-        "raised RuntimeError: no index",
+        "build in counter.py raised RuntimeError: no index",
     ),
     (
         library_cell(

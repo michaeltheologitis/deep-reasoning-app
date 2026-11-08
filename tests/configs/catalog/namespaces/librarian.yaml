@@ -1,0 +1,10 @@
+# Trusted namespace holding the course catalog; a leaf that delegates to nothing.
+spawn: []
+vars:
+  catalog:
+    CS101:
+      title: Intro to Programming
+      prereqs: []
+    CS201:
+      title: Data Structures
+      prereqs: [CS101]
