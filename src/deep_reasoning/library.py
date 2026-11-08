@@ -24,7 +24,6 @@ from pathlib import Path
 import jinja2
 import structlog
 import yaml
-from deep_reasoner.config import load_cli_config
 from deep_reasoner.namespaces import (
     CONFIG_SOURCE,
     ROOT,
@@ -32,6 +31,7 @@ from deep_reasoner.namespaces import (
     NamespaceSpawnError,
     check_spawn,
 )
+from deep_reasoner.primitives import RESERVED_NAMES
 from deep_reasoner.prompt_config import Decomposition
 from deep_reasoner.tools import TOOL_BUILDERS
 from deep_reasoner.tools.base import DEFAULT_CLAUDE_DESCRIPTION, DEFAULT_RAG_DESCRIPTION
@@ -266,25 +266,8 @@ CHATS_DECIDE = {"model", "client"}
 # Every run has one, so the Library is checked and shown as a run sees it: with the llm
 # tool a model brings.
 A_MODEL = {"model": "the chat's model"}
-# Left to the Library, not a config: content (own tables), per-run paths, and the model and its key.
-NOT_IMPORTED = {
-    "namespaces",
-    "namespaces_dir",
-    "decompositions",
-    "tools",
-    "config_path",
-    "task",
-    "task_id",
-    "run_prefix",
-    "log_dir",
-    "load_dotenv",
-    "model",
-    "planner_model",
-    "models",
-    "llm_kwargs",
-    "client",
-    "reasoner",
-}
+# A tool of this factory, or a reasoner of this type, runs on the user's subscription.
+CLAUDE_CODE = "claude_code"
 ENTRY_NAMESPACE = "entry_namespace"
 # The run settings the panel always lists, with the engine's default when unset.
 SHOWN_SETTINGS = ("max_iter", "max_depth", ENTRY_NAMESPACE, "repl")
@@ -483,6 +466,9 @@ APP_TOOLS = {
 }
 APP_TOOLS_MODULE = f"{__package__}.{APP_TOOLS_FILE.stem}"
 APP = "Deep Reasoning"
+# No tool of your own may have one of these names, nor a Python keyword's; a config may
+# give a built-in its settings under the built-in's name.
+TAKEN_NAMES = (*BUILDERS, *APP_TOOLS, *sorted(RESERVED_NAMES))
 # A new namespace's name, from the page: plain words, joined by dots for a child.
 NAMESPACE_NAME = re.compile(r"[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*")
 NAME_IT = 'Name the namespace, like "research"; "research.papers" goes under research.'
@@ -1048,79 +1034,42 @@ def check_backbones(registry, names):
             )
 
 
-def tool_row(name, block, config_dir):
-    """A tool's row: its config block, and for a tool of your own its Python source."""
-    if name in APP_TOOLS:
-        raise LibraryError(
-            f'Tool "{name}" has the name of one of the app\'s own tools; rename yours.'
-        )
-    factory = block.get("factory", name)
-    factory_from = block.get("factory_from")
-    if not isinstance(factory, str) or not isinstance(factory_from, str | None):
-        raise LibraryError(f'Tool "{name}": factory and factory_from should be text.')
-    if factory_from is None:
-        if factory not in BUILDERS:
-            raise LibraryError(
-                f'Tool "{name}" names factory "{factory}", which is not built in; '
-                "give its block a factory_from: file."
+def texts_in(data):
+    """Every text in parsed YAML *data*, keys included, and bytes read as latin-1, as a
+    key written as !!binary is; each mapping or list once, as aliases may share or nest them."""
+    stack, seen = [data], set()
+    while stack:
+        value = stack.pop()
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, bytes):
+            yield value.decode("latin-1")
+        elif isinstance(value, dict | list) and id(value) not in seen:
+            seen.add(id(value))
+            stack.extend(
+                [*value, *value.values()] if isinstance(value, dict) else value
             )
-        if factory == "llm":
-            # It runs on the chat's model, as the chat does; the config's model or preset may not exist there.
-            block = {key: value for key, value in block.items() if key != "model"}
-        return name, dump(block), None
-    stored_file = tool_file(name)
-    file = config_dir / factory_from
-    source = file.read_text(encoding="utf-8")
-    parsed_python(source, str(file))
-    return name, dump({**block, "factory_from": stored_file}), source
 
 
-def store_decompositions(connection, namespace, decompositions):
-    rows = [(namespace, each.name, dump(each.model_dump())) for each in decompositions]
-    connection.executemany(UPSERT_DECOMPOSITION, rows)
-
-
-def import_config(connection, path):
-    """Read the deep_reasoner config at *path* into the Library, replacing same-named items.
-
-    It takes the config's namespaces (inline and from its namespaces_dir) with their
-    decompositions, its tools with the Python files their factory_from: names, and its run
-    settings but for the model and how to reach it. Top-level decompositions are left out:
-    with namespaces they are only `dr --main-decomposition` openings, which a chat has none of.
-    All of it lands, or none.
-    """
-    config = load_cli_config(path, schema=V2Config)
-    registry = build_namespace_registry(config)
-    settings = config.model_dump(exclude_unset=True, exclude=NOT_IMPORTED)
-    tools = [
-        tool_row(name, block, config.config_dir) for name, block in config.tools.items()
+def literals(tree):
+    """Each text and bytes literal in the parsed Python *tree*, as an escape can spell a
+    key the raw text doesn't hold."""
+    constants = [
+        node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
     ]
-    # A root that sets nothing, like the bare one the engine adds, must not blank the Library's.
-    namespaces = [
-        namespace
-        for namespace in map(registry.config, registry.names)
-        if namespace.name != ROOT
-        or namespace.decompositions
-        or namespace.model_fields_set - {"name", "decompositions"}
-    ]
-    with writing(connection):
-        connection.executemany(
-            UPSERT_SETTING, [(k, dump(v)) for k, v in settings.items()]
-        )
-        connection.executemany(UPSERT_TOOL, tools)
-        for namespace in namespaces:
-            own = namespace.model_dump(
-                exclude_unset=True, exclude={"name", "decompositions"}
-            )
-            connection.execute(UPSERT_NAMESPACE, (namespace.name, dump(own)))
-            store_decompositions(connection, namespace.name, namespace.decompositions)
-        _, registry = check(connection)
-        check_backbones(registry, registry.names)
-    return {
-        "namespaces": len(namespaces),
-        "decompositions": sum(len(each.decompositions) for each in namespaces),
-        "tools": len(tools),
-    }
+    return list(texts_in(constants))
+
+
+def refuse_keys(texts, secrets, refusal):
+    """Raise LibraryError(*refusal*) if any of *texts* holds one of *secrets*."""
+    if any(secret in text for secret in secrets for text in texts):
+        raise LibraryError(refusal)
+
+
+def taken(name):
+    """Whether a tool of your own may not have *name*: a Python keyword, a built-in's or
+    the app's, or one the REPL binds itself."""
+    return keyword.iskeyword(name) or name in TAKEN_NAMES
 
 
 def problem(error):
@@ -1357,6 +1306,12 @@ def example_problems(decomposition):
     return turn_problems(decomposition.model_dump()["messages"])
 
 
+def decomposition_problems(decomposition, names):
+    """The problems of *decomposition*, as a worked example and as templates reading only
+    *names*."""
+    return example_problems(decomposition) + template_problems(decomposition, names)
+
+
 def stored_problems(text, names):
     """The problems of the decomposition stored as YAML *text*: its shape's, as a shared
     file may hold anything, or else its turns', as a worked example and as templates
@@ -1365,7 +1320,7 @@ def stored_problems(text, names):
         decomposition = parsed(text)
     except LibraryError as error:
         return str(error).splitlines()
-    return example_problems(decomposition) + template_problems(decomposition, names)
+    return decomposition_problems(decomposition, names)
 
 
 def add_decomposition(connection, namespace, text, replace=False, allowed=None):
@@ -1493,10 +1448,11 @@ def own_yaml(text):
 
 
 def accepted(connection):
-    """Raise unless the engine accepts the Library, in words for the panel; check's answer."""
+    """Raise unless the engine accepts the Library, in words for the panel; check's answer.
+    A row that isn't YAML, as a shared file may hold, is the engine's to refuse too."""
     try:
         return check(connection)
-    except ValueError as error:
+    except (ValueError, yaml.YAMLError) as error:
         raise LibraryError(f"The engine refuses it: {error}") from error
 
 
@@ -2127,8 +2083,7 @@ def checked(rows, namespace, names):
         return [row | {"problems": stored_problems(row["yaml"], names)} for row in rows]
     pairs = zip(rows, namespace.decompositions, strict=True)
     return [
-        row | {"problems": example_problems(each) + template_problems(each, names)}
-        for row, each in pairs
+        row | {"problems": decomposition_problems(each, names)} for row, each in pairs
     ]
 
 

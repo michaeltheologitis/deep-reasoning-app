@@ -165,6 +165,28 @@ def test_what_a_tool_leaves_running_neither_holds_the_check_up_nor_outlives_it(
         assert not running(int(pid_file.read_text()))
 
 
+def starts_a_child_and_ends_the_check(pid_file):
+    """A tool that starts a child, notes its pid in *pid_file*, and ends the check."""
+    return f"""import os
+import subprocess
+from pathlib import Path
+
+
+def build(client, params):
+    child = subprocess.Popen(["sleep", "1234"])
+    Path({str(pid_file)!r}).write_text(str(child.pid))
+    os._exit(3)
+"""
+
+
+def test_a_child_of_a_tool_that_ends_the_check_doesnt_outlive_it(tmp_path):
+    pid_file = tmp_path / "pid.txt"
+    source = starts_a_child_and_ends_the_check(pid_file)
+    found = verdicts({"ends": source}, tmp_path / "work")
+    assert found["ends"].startswith("building it ended the check")
+    assert not running(int(pid_file.read_text()))
+
+
 def test_the_tools_are_built_in_the_environment_given(tmp_path):
     given = dict(os.environ) | {"A_SETTING": "given"}
     assert verdicts({"env": READS_THE_ENVIRONMENT}, tmp_path, env=given) == {
@@ -173,3 +195,33 @@ def test_the_tools_are_built_in_the_environment_given(tmp_path):
     without = {key: value for key, value in given.items() if key != "A_SETTING"}
     [why] = verdicts({"env": READS_THE_ENVIRONMENT}, tmp_path, env=without).values()
     assert why == "build in env.py raised KeyError: 'A_SETTING'"
+
+
+def forges(elsewhere):
+    """A tool that notes it built, beside its own file, where it runs and in *elsewhere*
+    once it has moved there, then ends the check before its own verdict."""
+    return f"""import os
+from pathlib import Path
+
+FAKE = '{{"built": "forger", "verdict": null}}\\n'
+
+
+def build(client, params):
+    for folder in (Path(__file__).parent, Path.cwd()):
+        with open(folder / "notes", "a") as notes:
+            notes.write(FAKE)
+    os.chdir({str(elsewhere)!r})
+    Path("notes").write_text(FAKE)
+    os._exit(0)
+"""
+
+
+def test_a_verdict_a_tool_writes_beside_its_file_or_where_it_runs_counts_for_nothing(
+    tmp_path,
+):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    source = forges(elsewhere)
+    verdicts = check_tools({"forger": (BLOCK, source)}, CONFIG, os.environ, tmp_path)
+    assert verdicts["forger"].startswith("building it ended the check")
+    assert (elsewhere / "notes").is_file()

@@ -1,5 +1,4 @@
 import json
-import math
 import re
 import socket
 import sqlite3
@@ -11,7 +10,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from deep_reasoner.config import load_cli_config, resolve_api_key
+from deep_reasoner.config import resolve_api_key
 from deep_reasoner.namespaces import ROOT, build_registry
 from deep_reasoner.tools import load_tool_factory
 from deep_reasoner.v2 import DeepReasoner
@@ -25,6 +24,7 @@ from deep_reasoner.v2.cli import (
 )
 from structlog.testing import capture_logs
 
+from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
     APP_TOOLS_FILE,
     BEFORE_EVENTS,
@@ -62,7 +62,6 @@ from deep_reasoning.library import (
     engine_config,
     hand_off,
     handed_to,
-    import_config,
     open_library,
     panel,
     parsed,
@@ -109,6 +108,9 @@ ADDED = "name: added\nmessages: [{role: user, content: hi}]\n"
 RESEARCH = "vars: {topic: ml}\nsystem_suffix: |\n  Cite each source.\n"
 WAIT_FOR_THE_LOCK_S = 0.3
 PANEL_READ_S = 5
+# A build stopped at 5 seconds, with time for its process to start and be stopped.
+WAIT_FOR_A_BUILD_S = 15
+RAISES_ON_BUILD = "def build(client, params):\n    raise RuntimeError('offline')\n"
 CONFIGS = Path(__file__).parent / "configs"
 # Each case's turns and the problems they have, shared with tests/turns.test.mjs.
 TURN_CASES = json.loads(
@@ -153,8 +155,9 @@ def run_config(library, tmp_path, namespace=ROOT):
 
 
 def import_into(library, config):
+    """What importing *config* into *library* changed, as the lines it says."""
     with closing(open_library(library)) as connection:
-        return import_config(connection, config)
+        return import_config(connection, config)["changes"]
 
 
 def dumped(library):
@@ -482,34 +485,6 @@ def test_a_read_only_library_with_an_empty_root_still_opens_as_it_is(
     assert [entry["event"] for entry in logs] == ["library.root_not_upgraded"]
 
 
-@pytest.mark.parametrize(
-    "root",
-    [
-        "{tools: []}",
-        "{vars: {term: fall}}",
-        "{decompositions: [{name: hi, messages: [{role: user, content: hi}]}]}",
-    ],
-)
-def test_a_root_that_was_imported_or_edited_keeps_what_it_has(library, tmp_path, root):
-    written = tmp_path / "root.yaml"
-    written.write_text(f"namespaces:\n  root: {root}\n")
-    import_into(library, written)
-    assert run_config(library, tmp_path).namespaces[ROOT].tools == []
-
-
-@pytest.mark.parametrize("root", ["{}", "{decompositions: []}"])
-def test_an_imported_root_that_sets_nothing_leaves_the_librarys_as_it_is(
-    library, tmp_path, root
-):
-    denied = tmp_path / "denied.yaml"
-    denied.write_text("namespaces:\n  root: {tools: []}\n")
-    nothing = tmp_path / "nothing.yaml"
-    nothing.write_text(f"namespaces:\n  root: {root}\n  helper: {{}}\n")
-    import_into(library, denied)
-    import_into(library, nothing)
-    assert run_config(library, tmp_path).namespaces[ROOT].tools == []
-
-
 def test_a_library_that_still_holds_a_model_and_client_opens_and_they_go_unread(
     library, tmp_path
 ):
@@ -571,67 +546,6 @@ def test_an_open_reader_does_not_hold_up_a_write(library):
         ] == [*(each.name for each in LIBRARIANS), "added"]
 
 
-def test_import_brings_the_configs_namespaces_decompositions_and_prompt(
-    imported, tmp_path
-):
-    config = run_config(imported, tmp_path)
-    router = config.namespaces["router"]
-    assert set(config.namespaces) == IMPORTED_NAMESPACES
-    # Its spawn list leaves the historian out, so it is shown root's hand-offs saying so.
-    assert [each.name for each in router.decompositions] == ROUTER_SHOWN
-    assert router.spawn == ["course_advisor", "health_advisor"]
-    assert config.namespaces["course_advisor"].vars["catalog"]["CS201"]["prereqs"] == [
-        "CS101"
-    ]
-    assert config.system_prompt.startswith("You solve each request")
-    assert default_namespace(imported) == "router"
-
-
-def test_import_brings_no_model_or_client(library, tmp_path):
-    written = tmp_path / "own_model.yaml"
-    written.write_text(
-        "model: qwen/qwen3-30b\nclient: {base_url: 'https://api.novita.ai/v3/openai'}\n"
-    )
-    import_into(library, written)
-    config = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)
-    assert "model" not in config and "client" not in config
-    assert run_config(library, tmp_path).llm_kwargs == {}
-
-
-def test_an_imported_llm_tool_runs_on_the_chats_model(library, tmp_path):
-    written = tmp_path / "tiers.yaml"
-    written.write_text(
-        "models: {coder: {model: qwen/qwen3-coder-30b-a3b-instruct}}\n"
-        "tools:\n"
-        "  code_reviewer: {factory: llm, model: coder, system_prompt: Review it.}\n"
-        "namespaces: {root: {tools: [llm, code_reviewer]}}\n"
-    )
-    import_into(library, written)
-    config = run_config(library, tmp_path)
-    assert config.tools["code_reviewer"] == {
-        "factory": "llm",
-        "system_prompt": "Review it.",
-    }
-    assert "models" not in engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)
-
-
-def test_an_import_reads_back_as_the_engine_loads_the_config(library, tmp_path):
-    written = tmp_path / "typed.yaml"
-    written.write_text(TYPED)
-    import_into(library, written)
-    expected = load_cli_config(written, schema=V2Config)
-    config = run_config(library, tmp_path)
-    assert config.system_prompt == expected.system_prompt == "Solve it.\n"
-    assert config.namespaces[ROOT].vars == expected.namespaces[ROOT].vars
-    assert config.namespaces[ROOT].vars["by_year"][2024] == 10
-    assert config.namespaces[ROOT].vars["due"] == date(2026, 10, 25)
-    assert config.namespaces[ROOT].vars["cap"] == math.inf
-    assert config.namespaces[ROOT].decompositions == [
-        *HAND_OFFS,
-        *expected.namespaces[ROOT].decompositions,
-    ]
-
-
 @pytest.mark.parametrize(
     "text",
     [
@@ -654,92 +568,6 @@ def test_dumped_text_reads_back_exactly(text):
 
 def test_dumped_non_ascii_text_stays_readable():
     assert "é中🚀" in dump({"note": "é中🚀"})
-
-
-def test_an_imported_var_holding_a_nel_keeps_it(library, tmp_path):
-    written = tmp_path / "nel.yaml"
-    written.write_text('namespaces:\n  root:\n    vars: {note: "a\\Nb"}\n')
-    import_into(library, written)
-    assert run_config(library, tmp_path).namespaces[ROOT].vars["note"] == "a\x85b"
-
-
-def test_a_configs_run_level_openings_are_left_out(library, tmp_path):
-    written = tmp_path / "openings.yaml"
-    written.write_text(
-        "decompositions:\n"
-        "  - name: full_triage\n"
-        "    messages: [{role: user, content: '{{ task }}'}]\n"
-    )
-    assert import_into(library, written)["decompositions"] == 0
-    assert run_config(library, tmp_path).namespaces[ROOT].decompositions == HAND_OFFS
-
-
-def test_import_replaces_same_named_items_and_keeps_the_rest(imported, tmp_path):
-    newer = tmp_path / "newer.yaml"
-    newer.write_text(
-        "max_iter: 3\n"
-        "namespaces:\n"
-        "  router:\n"
-        "    spawn: [course_advisor]\n"
-        "    decompositions:\n"
-        "      - name: decline anything else\n"
-        '        messages: [{role: user, content: "Only courses, please."}]\n'
-    )
-    import_into(imported, newer)
-    config = run_config(imported, tmp_path)
-    router = config.namespaces["router"]
-    assert router.spawn == ["course_advisor"]
-    assert [each.name for each in router.decompositions] == ROUTER_SHOWN
-    declining = router.decompositions[
-        ROUTER_DECOMPOSITIONS.index("decline anything else")
-    ]
-    assert declining.messages[0].content == "Only courses, please."
-    assert config.max_iter == 3
-    assert config.namespaces[ROOT].tools == ["llm"]
-    assert set(config.namespaces) == IMPORTED_NAMESPACES
-
-
-def test_a_failed_import_leaves_the_library_unchanged(imported, tmp_path):
-    broken = tmp_path / "broken.yaml"
-    broken.write_text(
-        "max_iter: 1\nnamespaces:\n  router: {tools: [ghost]}\n  extra: {}\n"
-    )
-    before = dumped(imported)
-    with pytest.raises(ValueError, match="grants unknown tool 'ghost'"):
-        import_into(imported, broken)
-    assert dumped(imported) == before
-
-
-@pytest.mark.parametrize(
-    ("block", "files", "problem"),
-    [
-        (
-            "{factory: build, factory_from: ./broken.py}",
-            {"broken.py": "def build(:\n"},
-            "broken.py is not valid Python",
-        ),
-        (
-            "{factory: telepathy}",
-            {},
-            'names factory "telepathy", which is not built in',
-        ),
-        ("{factory: [a, b]}", {}, "factory and factory_from should be text"),
-        (
-            "{factory: build, factory_from: 5}",
-            {},
-            "factory and factory_from should be text",
-        ),
-    ],
-)
-def test_import_refuses_a_tool_the_engine_could_not_build(
-    library, tmp_path, block, files, problem
-):
-    for name, text in files.items():
-        (tmp_path / name).write_text(text)
-    config = tmp_path / "tool.yaml"
-    config.write_text(f"tools:\n  mine: {block}\n")
-    with pytest.raises(LibraryError, match=problem):
-        import_into(library, config)
 
 
 def test_a_custom_tools_source_round_trips_and_the_engine_loads_its_factory(
@@ -944,16 +772,6 @@ def test_a_runs_config_tells_each_app_tool_the_app_file_the_chat_and_the_run(
         "namespace": ROOT,
         "key_names": [],
     }
-    with closing(open_library(library)) as connection:
-        assert connection.execute("SELECT count(*) FROM tools").fetchone() == (0,)
-
-
-@pytest.mark.parametrize("tool", ["history", "library", "page"])
-def test_an_import_may_not_give_a_tool_an_app_tools_name(library, tmp_path, tool):
-    config = tmp_path / "tool.yaml"
-    config.write_text(f"tools:\n  {tool}: {{factory: llm}}\n")
-    with pytest.raises(LibraryError, match="one of the app's own tools"):
-        import_into(library, config)
     with closing(open_library(library)) as connection:
         assert connection.execute("SELECT count(*) FROM tools").fetchone() == (0,)
 
@@ -1751,14 +1569,3 @@ def test_a_reasoner_the_engine_doesnt_know_elsewhere_holds_up_no_other_change(li
         change(library, add_namespace, "odd.child", "")
     with pytest.raises(LibraryError, match="namespace 'odd': unknown reasoner type"):
         change(library, change_namespace, "odd", "reasoner: {type: chatgpt}\n")
-
-
-def test_an_import_with_a_reasoner_the_engine_doesnt_know_is_refused(library, tmp_path):
-    config = tmp_path / "odd.yaml"
-    config.write_text(
-        "namespaces:\n  odd:\n    reasoner: {type: chatgpt}\n", encoding="utf-8"
-    )
-    before = dumped(library)
-    with pytest.raises(LibraryError, match="namespace 'odd': unknown reasoner type"):
-        import_into(library, config)
-    assert dumped(library) == before

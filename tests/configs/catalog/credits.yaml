@@ -1,0 +1,8 @@
+# Credit hours per course — loaded by the `total_credits` tool factory in the
+# "Build & extend your own CLI" how-to via its `catalog_path` hyperparameter.
+CS101:   {credits: 3}
+MATH200: {credits: 3}
+CS201:   {credits: 4}
+CS310:   {credits: 4}
+CS330:   {credits: 3}
+CS450:   {credits: 4}
