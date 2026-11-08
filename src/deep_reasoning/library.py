@@ -26,7 +26,6 @@ from pathlib import Path
 import jinja2
 import structlog
 import yaml
-from conflit.config import YamlRootError
 from deep_reasoner.config import load_cli_config
 from deep_reasoner.namespaces import (
     CONFIG_SOURCE,
@@ -305,16 +304,18 @@ NOWHERE = {
         "max_retries": 0,
     }
 }
-# What the check says of a tool whose file or module wasn't there.
+# What the check says of a tool whose file, module or package wasn't there.
 MISSING = re.compile(r"raised (FileNotFoundError|ModuleNotFoundError|ImportError)\b")
 NOT_CARRIED = (
-    "A tool is built from its own Python file alone: the config's data files and the"
-    " modules beside it aren't carried into the Library, so put what it reads in its"
-    " settings or in its file."
+    "If it reads a file or module from beside the config, those aren't carried into the"
+    " Library: a tool is built from its own Python file alone, so put what it reads in"
+    " its settings or in its file. If it needs a package, install it in the app's"
+    " environment."
 )
+NOT_A_MAPPING = 'it should be a mapping of settings, like "max_iter: 20".'
 IMPORTS_A_KEY = (
-    "{} holds a provider's key, and the Library file is shared, so keys never go in it:"
-    " take it out of the config."
+    "{} holds a key, and the Library file is shared, so keys never go in it: take it"
+    " out of the config."
 )
 # How much of a value an import's report shows.
 BRIEF_CHARS = 60
@@ -1124,10 +1125,9 @@ def texts_in(data):
             )
 
 
-def literals(source):
-    """Each text and bytes literal in the Python *source*, as an escape can spell a key
-    the raw text doesn't hold."""
-    tree = parsed_python(source)
+def literals(tree):
+    """Each text and bytes literal in the parsed Python *tree*, as an escape can spell a
+    key the raw text doesn't hold."""
     constants = [
         node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
     ]
@@ -1168,8 +1168,10 @@ def yaml_problem(error, path):
 
 
 def tool_row(name, block, config_dir):
-    """A tool's block as the Library stores it, and for a tool of your own its Python
-    source. A tool may take a built-in's name only to give that built-in its settings."""
+    """A tool's block as the Library stores it, for a tool of your own its Python source
+    (None for a built-in's), and the texts of its source a key could hide in: the source
+    and its literals. A tool may take a built-in's name only to give that built-in its
+    settings."""
     if name in APP_TOOLS:
         raise LibraryError(
             f'Tool "{name}" has the name of one of the app\'s own tools; rename yours.'
@@ -1195,7 +1197,7 @@ def tool_row(name, block, config_dir):
         if factory == "llm":
             # It runs on the chat's model, as the chat does; the config's model or preset may not exist there.
             block = {key: value for key, value in block.items() if key != "model"}
-        return block, None
+        return block, None, []
     file = config_dir / factory_from
     try:
         source = file.read_text(encoding="utf-8")
@@ -1203,8 +1205,8 @@ def tool_row(name, block, config_dir):
         raise LibraryError(
             f'Tool "{name}" names factory_from {factory_from}. {file_problem(error)}'
         ) from error
-    parsed_python(source, str(file))
-    return {**block, "factory_from": tool_file(name)}, source
+    tree = parsed_python(source, str(file))
+    return {**block, "factory_from": tool_file(name)}, source, [source, *literals(tree)]
 
 
 def config_problem(error):
@@ -1221,7 +1223,7 @@ def config_problem(error):
 
 def read_config(path):
     """The deep_reasoner config at *path*, as the engine loads it, or a LibraryError in
-    plain words; a key the engine doesn't read, as a typo or a data file holds, is refused."""
+    plain words; a file none of whose keys the engine reads, as a data file, is refused."""
     not_one = f"{path} is not a deep_reasoner config"
     try:
         config = load_cli_config(path, schema=V2Config)
@@ -1229,27 +1231,26 @@ def read_config(path):
         raise LibraryError("\n".join(map(config_problem, error.errors()))) from error
     except OSError as error:
         raise LibraryError(file_problem(error)) from error
-    except YamlRootError as error:
-        raise LibraryError(
-            f'{not_one}: it should be a mapping of settings, like "max_iter: 20".'
-        ) from error
     except yaml.YAMLError as error:
         raise LibraryError(yaml_problem(error, path)) from error
+    except ValueError as error:
+        # conflit's YamlRootError, a ValueError, is the one that says "YAML root".
+        detail = NOT_A_MAPPING if "YAML root" in str(error) else str(error)
+        raise LibraryError(f"{not_one}: {detail}") from error
     unknown = list(config.model_extra or {})
-    if not unknown:
-        return config
-    if not config.model_fields_set - {"config_path", *unknown}:
+    if unknown and not config.model_fields_set - {"config_path", *unknown}:
         raise LibraryError(
             f"{not_one}: none of its keys ({', '.join(unknown)}) is a setting the engine"
             " reads."
         )
-    raise LibraryError("\n".join(unknown_key(key) for key in unknown))
+    return config
 
 
 def unknown_key(key):
+    """A key a config holds that the engine doesn't read, as an import leaves it out."""
     close = difflib.get_close_matches(key, V2Config.model_fields, n=1)
     meant = f" (did you mean {close[0]}?)" if close else ""
-    return f"{key} is not a setting the engine reads{meant}: fix it or take it out."
+    return f"Left out: {key}, which is not a setting the engine reads{meant}."
 
 
 def check_not_the_apps(names):
@@ -1268,7 +1269,8 @@ def check_not_the_apps(names):
 
 
 def check_imports_no_key(settings, namespaces, tools, secrets):
-    """Raise if what an import would store holds any of *secrets*, naming where."""
+    """Raise if what an import would store holds any of *secrets*, naming where; each of
+    *tools* as tool_row gives it."""
     places = [
         (f"Setting {key}", [key, *texts_in(value)]) for key, value in settings.items()
     ]
@@ -1277,16 +1279,11 @@ def check_imports_no_key(settings, namespaces, tools, secrets):
         for each in namespaces
     ]
     places += [
-        (f"Tool {name}", [name, *texts_in(block), *python_source(source)])
-        for name, (block, source) in tools.items()
+        (f"Tool {name}", [name, *texts_in(block), *source_texts])
+        for name, (block, _, source_texts) in tools.items()
     ]
     for place, texts in places:
         refuse_keys(texts, secrets, IMPORTS_A_KEY.format(place))
-
-
-def python_source(source):
-    """A tool's *source* and its literals, none for a built-in's (None)."""
-    return [] if source is None else [source, *literals(source)]
 
 
 def check_builds(tools, environment):
@@ -1393,6 +1390,13 @@ def imported_state(settings, namespaces, tools, before):
     }
 
 
+def canonical(value):
+    """*value* as text that is the same for equal values, a NaN's included, which no
+    NaN equals; a tool's (block, source) as a list."""
+    plain = list(value) if isinstance(value, tuple) else value
+    return yaml.safe_dump(plain, sort_keys=True, allow_unicode=True)
+
+
 def changes_of(before, imported):
     """What *imported* holds and the Library *before* it doesn't, as it is, by kind
     (settings, namespaces, decompositions, tools) and then by key; a run setting the
@@ -1402,7 +1406,7 @@ def changes_of(before, imported):
         kind: {
             key: value
             for key, value in imported[kind].items()
-            if held[kind].get(key, UNSET) != value
+            if key not in held[kind] or canonical(held[kind][key]) != canonical(value)
         }
         for kind in imported
     }
@@ -1446,17 +1450,6 @@ def to_build(before, imported, changes):
     ]
 
 
-@contextmanager
-def trying(connection):
-    """One transaction under the write lock, rolled back at its end: the Library as a
-    change would leave it, to check, never kept."""
-    connection.execute("BEGIN IMMEDIATE")
-    try:
-        yield
-    finally:
-        connection.execute("ROLLBACK")
-
-
 def import_config(connection, path, secrets=(), environment=None):
     """Read the deep_reasoner config at *path* into the Library, replacing same-named
     items, and say in plain words what it changed and what it left out, as
@@ -1469,18 +1462,19 @@ def import_config(connection, path, secrets=(), environment=None):
     keeping the rest. Top-level decompositions are left out: with namespaces they are only
     `dr --main-decomposition` openings, which a chat has none of. It refuses a key the
     engine doesn't read, a namespace of the app's own or under one, a tool named as a
-    built-in but not that built-in, any of *secrets*, the providers' keys, in what it would
-    store, and, once the engine accepts the Library as the import would leave it, a tool
-    of your own that a namespace newly grants, or the config changes, that doesn't build
-    in a process of its own with *environment* (none when not given: the caller leaves
-    out the keys, as the command does). The builds hold no lock on the file; the import
-    is refused if the Library changed meanwhile. All of it lands, or none.
+    built-in but not that built-in, any of *secrets*, the keys, in what it would store,
+    and, once the engine accepts the Library as the import would leave it, a tool of your
+    own that a namespace newly grants, or the config changes, that doesn't build in a
+    process of its own with *environment* (none when not given: the caller leaves out the
+    keys, as the command does). A key the engine doesn't read is left out, and said so.
+    All of it lands, or none.
     """
     config = read_config(path)
     registry = build_namespace_registry(config)
-    settings = config.model_dump(exclude_unset=True, exclude=NOT_IMPORTED)
+    unread = NOT_IMPORTED | set(config.model_extra or {})
+    settings = config.model_dump(exclude_unset=True, exclude=unread)
     check_not_the_apps([*registry.names, settings.get(ENTRY_NAMESPACE)])
-    tools = {
+    rows = {
         name: tool_row(name, block, config.config_dir)
         for name, block in config.tools.items()
     }
@@ -1492,25 +1486,29 @@ def import_config(connection, path, secrets=(), environment=None):
         or namespace.decompositions
         or namespace.model_fields_set - {"name", "decompositions"}
     ]
-    check_imports_no_key(settings, namespaces, tools, secrets)
-    with trying(connection):
+    check_imports_no_key(settings, namespaces, rows, secrets)
+    tools = {name: (block, source) for name, (block, source, _) in rows.items()}
+    # The command holds the app's lock on the file (owning), so no other writer waits on
+    # the builds this holds the write lock through; a config the engine refuses runs no
+    # code, as the builds come after its check.
+    with writing(connection):
         before = library_state(connection)
         imported = imported_state(settings, namespaces, tools, before)
         changes = changes_of(before, imported)
         store_changes(connection, changes)
         stored, registry = accepted(connection)
         check_backbones(registry, registry.names)
-    built = to_build(before, imported, changes)
-    check_builds(built, environment or {})
-    with writing(connection):
-        if library_state(connection) != before:
-            raise LibraryError(
-                "The Library changed while its tools were being built, so nothing was"
-                " imported: import again."
-            )
-        store_changes(connection, changes)
+        built = to_build(before, imported, changes)
+        check_builds(built, environment or {})
+    decompositions = {
+        (namespace.name, each.name): each
+        for namespace in namespaces
+        for each in namespace.decompositions
+    }
     return {
-        "changes": import_report(before, changes, built, template_names(stored)),
+        "changes": import_report(
+            before, changes, built, decompositions, template_names(stored)
+        ),
         "left_out": left_out(config),
     }
 
@@ -1599,19 +1597,17 @@ def note_lines(before, changes):
     return lines
 
 
-def import_report(before, changes, built, names):
+def import_report(before, changes, built, decompositions, names):
     """What an import changed, in lines of plain words, from the Library *before* it and
-    its *changes*, having *built* those tools; a decomposition's templates may read
-    *names*."""
+    its *changes*, having *built* those tools; the config's *decompositions* by
+    (namespace, name), whose templates may read *names*."""
     sections = {
         "Run settings, for every chat:": setting_lines(before, changes),
         "Namespaces:": namespace_lines(before, changes),
         "Tools:": tool_lines(before, changes, built),
-        "The panel will mark these decompositions ✗, stored all the same:": [
-            f"  {namespace} / {name}: {' '.join(problems)}"
-            for (namespace, name), each in changes["decompositions"].items()
-            if (problems := stored_problems(dump(each), names))
-        ],
+        "The panel will mark these decompositions ✗, stored all the same:": (
+            crossed_lines(changes, decompositions, names)
+        ),
     }
     lines = [
         line for title, rows in sections.items() if rows for line in [title, *rows]
@@ -1627,9 +1623,21 @@ def import_report(before, changes, built, names):
     return lines
 
 
+def crossed_lines(changes, decompositions, names):
+    """Each decomposition an import changes that the panel will mark ✗, with why: the
+    config's *decompositions*, by (namespace, name), whose templates may read *names*."""
+    lines = []
+    for namespace, name in changes["decompositions"]:
+        each = decompositions[namespace, name]
+        problems = example_problems(each) + template_problems(each, names)
+        if problems:
+            lines.append(f"  {namespace} / {name}: {' '.join(problems)}")
+    return lines
+
+
 def left_out(config):
     """What of *config* an import leaves out, in lines of plain words."""
-    lines = []
+    lines = [unknown_key(key) for key in config.model_extra or {}]
     openings = [each.name for each in config.decompositions]
     if openings:
         lines.append(

@@ -973,13 +973,6 @@ def test_import_refuses_a_config_naming_the_apps_own_namespaces(
             ),
         ),
         (
-            "max_iters: 3\nmax_iter: 4\n",
-            (
-                "max_iters is not a setting the engine reads (did you mean max_iter?): fix it"
-                " or take it out."
-            ),
-        ),
-        (
             "just: text\n",
             (
                 "mine.yaml is not a deep_reasoner config: none of its keys (just) is a setting"
@@ -987,9 +980,9 @@ def test_import_refuses_a_config_naming_the_apps_own_namespaces(
             ),
         ),
     ],
-    ids=["a data file", "a typo", "text"],
+    ids=["a data file", "text"],
 )
-def test_import_refuses_a_key_the_engine_does_not_read(
+def test_import_refuses_a_file_none_of_whose_keys_the_engine_reads(
     library, tmp_path, config, problem
 ):
     if isinstance(config, str):
@@ -1213,28 +1206,40 @@ def test_a_tool_that_changes_folder_and_writes_a_verdict_of_its_own_is_refused(
         import_into(library, config)
 
 
-CHANGES_THE_LIBRARY = """\
-import sqlite3
-from deep_reasoner.primitives import Func
-
-def build(client, params):
-    with sqlite3.connect(params["settings"]["library"]) as connection:
-        connection.execute("UPDATE namespaces SET yaml = 'vars: {by: tool}' WHERE name = 'historian'")
-    return Func(lambda: 1)
-"""
-
-
-def test_an_import_whose_library_changed_while_its_tools_built_is_refused(
-    library, tmp_path
+@pytest.mark.parametrize(
+    ("config", "note"),
+    [
+        (
+            "x-defaults: &defaults {spawn: []}\nnamespaces:\n  helper: *defaults\n",
+            "Left out: x-defaults, which is not a setting the engine reads.",
+        ),
+        (
+            "max_iters: 3\nmax_depth: 4\n",
+            (
+                "Left out: max_iters, which is not a setting the engine reads (did you mean"
+                " max_iter?)."
+            ),
+        ),
+    ],
+    ids=["an anchor block", "a typo"],
+)
+def test_a_key_the_engine_doesnt_read_is_left_out_and_said_so(
+    library, tmp_path, config, note
 ):
-    open_library(library).close()
-    config = grants_mine(tmp_path, CHANGES_THE_LIBRARY, f"{{library: {library}}}")
-    with pytest.raises(LibraryError, match="changed while its tools were being built"):
-        import_into(library, config)
+    written = tmp_path / "mine.yaml"
+    written.write_text(config)
     with closing(open_library(library)) as connection:
-        shown = stored_config(connection)["namespaces"]
-    assert shown[HISTORIAN]["vars"] == {"by": "tool"}
-    assert "helper" not in shown
+        said = import_config(connection, written)
+        settings = stored_config(connection)
+    assert note in said["left_out"]
+    assert not {"x-defaults", "max_iters"} & settings.keys()
+
+
+def test_a_nan_the_library_holds_reads_as_unchanged(library, tmp_path):
+    config = tmp_path / "nan.yaml"
+    config.write_text("namespaces:\n  helper: {vars: {limit: .nan}}\n")
+    assert import_into(library, config) == ["Namespaces:", "  helper: added"]
+    assert import_into(library, config) == []
 
 
 def test_a_row_that_isnt_yaml_is_left_out_with_a_warning_and_an_import_can_mend_it(
@@ -1370,7 +1375,7 @@ def test_import_refuses_a_providers_key(library, tmp_path, config):
     before = dumped(library)
     with (
         closing(open_library(library)) as connection,
-        pytest.raises(LibraryError, match="holds a provider's key"),
+        pytest.raises(LibraryError, match="holds a key"),
     ):
         import_config(connection, written, secrets=[FAKE_KEY])
     assert dumped(library) == before

@@ -140,14 +140,16 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   replace root's own and root keeps the rest. It then says what it changed: each run setting before and after, root's
   fields, the namespaces and tools it added or replaced, the decompositions the panel will mark ✗, a tool no
   namespace grants any more, what reaches the historian and librarian too (the system prompt, an `llm` block, root's
-  `system_suffix`, `repl`, `reasoner` and `spawn`), and what it left out (top-level decompositions, the model and
-  client). It changes nothing, saying why, for a file that isn't a config, a key the engine doesn't read (a typo such
-  as `max_iters`), a namespace named `historian` or `librarian` (the app's own) or under one, a tool named as a
-  built-in (`llm`, `rag`, `kg`, `safe_url`, `claude_code`) but not that built-in given its settings, a provider's key
-  anywhere in it, or a tool of your own that a namespace grants after the import (one already in the Library
-  included) and that doesn't build. It builds each such tool once to check it, from its own file alone as a run does
-  (a data file or module beside the config isn't carried in), in a process of its own with the environment a run
-  gets but no provider's key, stopped after 60 seconds; a tool no namespace grants isn't built, and the import says
+  `system_suffix`, `repl`, `reasoner` and `spawn`), and what it left out: top-level decompositions, the model and
+  client, and a key the engine doesn't read (an anchor block such as `x-defaults`, or a typo such as `max_iters`,
+  with what it may have meant). It changes nothing, saying why, for a file none of whose keys the engine reads, a
+  namespace named `historian` or `librarian` (the app's own) or under one, a tool named as a built-in (`llm`, `rag`,
+  `kg`, `safe_url`, `claude_code`) but not that built-in given its settings, a key anywhere in it (a provider's, or
+  Claude Code's `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`), or a tool of your own that a namespace grants
+  after the import (one already in the Library included) and that doesn't build. It builds each such tool once to
+  check it, from its own file alone as a run does (a file or module beside the config isn't carried in, and a
+  package it needs must be installed in the app's environment), in a process of its own with the environment a run
+  gets but none of those keys, stopped after 60 seconds; a tool no namespace grants isn't built, and the import says
   so. The build runs as you, so its code can read your files, `~/.deep-reasoning/.env` included, as any granted
   tool's can at the start of a run: import only configs you trust.
 - `uv run deep-reasoning reset` starts afresh: it deletes the Library file (`--library PATH` for another), with its

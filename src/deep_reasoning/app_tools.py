@@ -970,7 +970,9 @@ def check_tool(
         raise LibraryError(TOOL_TOO_LONG)
     check_whole([source, *texts_in(settings)])
     # texts holds the source itself.
-    check_no_key([*texts, *texts_in(settings), *literals(source)], key_names)
+    check_no_key(
+        [*texts, *texts_in(settings), *literals(parsed_python(source))], key_names
+    )
 
 
 def check_tool_locks(config: V2Config, registry: NamespaceRegistry, name: str) -> None:

@@ -12,16 +12,17 @@ check's deleted after. It returns a verdict per tool: None when it builds, else 
 not, in words, naming its file only by its name.
 
 Each check runs `python -P -m deep_reasoning.tool_check` from an empty folder, so the
-tools see no chat's files or modules, in a process group of its own that is ended
-after, so nothing a tool starts outlives it, and is stopped past BUILD_TIMEOUT_S. The
-parent names the file the verdicts go to before any tool's code runs; the child notes
-each tool's name in it before building it and its verdict after, and ends itself
-whatever happens, so a thread a tool left can't hold it up. The tools' files are in a
-folder of their own, apart from that file, so a tool that writes a file of that name
-beside its own, or in its working folder, changes no verdict (one that seeks the file
-out could forge one: it is the user's own code, unsandboxed in every run anyway). A tool
-that ends or hangs the check is the one blamed, and the tools after it are checked again
-without it.
+tools see no chat's files or modules, in a process group of its own, and is stopped past
+BUILD_TIMEOUT_S. The parent names the file the verdicts go to before any tool's code
+runs; the child notes each tool's name in it before building it and its verdict after,
+and ends itself whatever happens, so a thread a tool left can't hold it up. The parent
+then kills its group before reaping it, so a process a tool started goes too, however
+the check ended (a tool's os._exit or crash included). The tools' files are in a folder
+of their own, apart from the notes, so a tool that writes a file of that name beside its
+own, or in its working folder, changes no verdict (one that seeks the notes out could
+forge one: it is the user's own code, unsandboxed in every run anyway). A tool that ends
+or hangs the check is the one blamed, and the tools after it are checked again without
+it.
 """
 
 import json
@@ -31,6 +32,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
@@ -51,6 +53,8 @@ BUILD_TIMEOUT_S = 60
 SHOWN_OUTPUT_CHARS = 2_000
 # The check's folder holds the tools' files in a folder of their own.
 TOOLS = "tools"
+# How often the caller looks whether the check has ended.
+POLL_S = 0.05
 Tools = Mapping[str, tuple[dict[str, Any], str]]
 
 
@@ -123,33 +127,45 @@ def run(
     its own that is ended after: what it noted, what it printed, and whether it ran out
     of time."""
     empty, printed, notes = folder / "cwd", folder / "printed.txt", folder / "notes"
+    request = folder / "request.yaml"
     empty.mkdir()
     notes.touch()
-    asked = {"tools": blocks, "config": config, "notes": str(notes)}
-    timed_out = False
-    with printed.open("w") as output:
+    request.write_text(dump({"tools": blocks, "config": config, "notes": str(notes)}))
+    with printed.open("w") as output, request.open() as asked:
         check = subprocess.Popen(
             [sys.executable, "-P", "-m", __name__],
-            stdin=subprocess.PIPE,
+            stdin=asked,
             stdout=output,
             stderr=output,
             cwd=empty,
             env=dict(env),
             start_new_session=True,
-            text=True,
         )
         try:
-            check.communicate(dump(asked), BUILD_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            timed_out = True
+            timed_out = not ended(check, time.monotonic() + BUILD_TIMEOUT_S)
         finally:
-            # Only while it is unreaped, so its pid, and its group's, is no one else's;
-            # once it has ended, it has ended its group itself.
-            if check.returncode is None:
-                with suppress(ProcessLookupError, PermissionError):
-                    os.killpg(check.pid, signal.SIGKILL)
+            # Whether it ended or not, and however (a tool may end it with os._exit, or
+            # crash it), what a tool started goes too: unreaped, its pid and its group's
+            # are no one else's.
+            with suppress(ProcessLookupError, PermissionError):
+                os.killpg(check.pid, signal.SIGKILL)
             check.wait()
     return read_notes(notes), printed.read_text(errors="replace"), timed_out
+
+
+def ended(check: subprocess.Popen, deadline: float) -> bool:
+    """Whether the process *check* ended before *deadline* (time.monotonic()), seen
+    without reaping it, by os.waitid. Where there is none (macOS), poll reaps it, so its
+    group is killed straight after, which is as close as it can be."""
+    while time.monotonic() < deadline:
+        if hasattr(os, "waitid"):
+            seen = os.waitid(os.P_PID, check.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if seen is not None:
+                return True
+        elif check.poll() is not None:
+            return True
+        time.sleep(POLL_S)
+    return False
 
 
 def read_notes(notes: Path) -> list[dict[str, Any]]:
@@ -210,10 +226,7 @@ def main() -> None:
             note(notes, {"failed": f"{type(error).__name__}: {error}"})
         raise
     finally:
-        # Whatever happened, and whatever thread or process a tool left running: its
-        # group, which this process leads when the check starts it, goes with it.
-        if os.getpgrp() == os.getpid():
-            os.killpg(os.getpgrp(), signal.SIGKILL)
+        # Whatever happened, and whatever thread a tool left running.
         os._exit(0)
 
 

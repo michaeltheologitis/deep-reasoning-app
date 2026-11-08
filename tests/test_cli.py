@@ -218,7 +218,11 @@ def build(client, params):
 def test_import_builds_its_tools_with_the_runs_environment_but_no_key(
     tmp_path, monkeypatch
 ):
-    keys = [*(vendor.key_env for vendor in VENDORS), "ANTHROPIC_API_KEY"]
+    keys = [
+        *(vendor.key_env for vendor in VENDORS),
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ]
     for name in keys:
         monkeypatch.setenv(name, KEY_IN_A_FRAME)
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
@@ -236,18 +240,21 @@ def test_import_builds_its_tools_with_the_runs_environment_but_no_key(
     assert not seen & set(keys)
 
 
-@pytest.mark.parametrize("where", ["settings", "the shell"])
-def test_import_refuses_a_providers_key_saved_in_settings_or_set_in_the_shell(
+@pytest.mark.parametrize(
+    "where",
+    ["settings", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+)
+def test_import_refuses_a_key_saved_in_settings_or_set_in_the_shell(
     tmp_path, app_home, monkeypatch, where
 ):
     if where == "settings":
         app_home.mkdir()
         (app_home / ".env").write_text(f"OPENROUTER_API_KEY={KEY_IN_A_FRAME}\n")
     else:
-        monkeypatch.setenv("GEMINI_API_KEY", KEY_IN_A_FRAME)
+        monkeypatch.setenv(where, KEY_IN_A_FRAME)
     config = tmp_path / "keyed.yaml"
     config.write_text(f"namespaces:\n  helper: {{vars: {{key: {KEY_IN_A_FRAME}}}}}\n")
-    with pytest.raises(SystemExit, match="Namespace helper holds a provider's key"):
+    with pytest.raises(SystemExit, match="Namespace helper holds a key"):
         cli.main(["import", str(config), "--library", str(tmp_path / "lib.sqlite")])
 
 

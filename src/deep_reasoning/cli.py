@@ -77,6 +77,9 @@ NOT_STARTED = (
 )
 NOT_IMPORTED = "nothing was imported: stop it first, then import"
 NOT_DELETED = "nothing was deleted: stop it first, then reset"
+# Claude Code's: an API key it would bill in place of the subscription, and the
+# subscription's own token.
+CLAUDE_CODES_KEYS = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
 log = structlog.get_logger()
 
@@ -168,15 +171,15 @@ def take(lock, library, refused):
 
 
 def provider_keys(library, home):
-    """Each provider's key variable, and each key, saved in settings or set in the shell:
-    none may be imported."""
-    names = [each.key_env for each in providers(library)]
+    """Each key variable, a provider's or Claude Code's, and each key, saved in settings
+    or set in the shell: none may be imported, nor reach a tool built to check it."""
+    names = [*(each.key_env for each in providers(library)), *CLAUDE_CODES_KEYS]
     return names, [*secrets_of(os.environ, names), *secrets_of(saved_keys(home), names)]
 
 
 def keyless(names, secrets):
-    """What a run's worker gets of this environment, but any provider's key: what the
-    tools an import builds to check them get."""
+    """What a run's worker gets of this environment, but any key: what the tools an
+    import builds to check them get."""
     return {
         name: value
         for name, value in worker_env({}).items()
