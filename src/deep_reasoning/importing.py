@@ -48,7 +48,6 @@ from deep_reasoning.library import (
     granted_in,
     handed_to,
     in_chain_order,
-    lacking_vars,
     literals,
     namespace_problem,
     parsed,
@@ -1089,7 +1088,7 @@ def import_report(before, changes, decompositions, names, earlier, later, enviro
         "Namespaces:": namespace_lines(before, changes),
         "Tools:": tool_lines(before, changes, later[1]),
         "The panel will mark these decompositions ✗, stored all the same:": (
-            crossed_lines(changes, decompositions, names, later[1])
+            crossed_lines(changes, decompositions, names)
         ),
         "What this changes in the app:": [
             f"  {line}"
@@ -1099,15 +1098,13 @@ def import_report(before, changes, decompositions, names, earlier, later, enviro
     return [line for title, rows in sections.items() if rows for line in [title, *rows]]
 
 
-def crossed_lines(changes, decompositions, names, registry):
+def crossed_lines(changes, decompositions, names):
     """Each decomposition an import changes that the panel will mark ✗, with why: the
-    config's *decompositions*, by (namespace, name), whose templates may read *names*,
-    and vars by name as the Library's *registry* resolves them."""
+    config's *decompositions*, by (namespace, name), whose templates may read *names*."""
     lines = []
     for namespace, name in changes["decompositions"]:
         each = decompositions[namespace, name]
         problems = decomposition_problems(each, names)
-        problems += lacking_vars(registry, namespace, each)
         if problems:
             lines.append(f"  {namespace} / {name}: {' '.join(problems)}")
     return lines

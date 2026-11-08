@@ -91,6 +91,7 @@ from deep_reasoning.library import (
     handed_to,
     has_namespace,
     library_tools,
+    namespace_yaml,
     open_library,
     panel,
     parsed,
@@ -2163,20 +2164,14 @@ def test_a_template_refused_says_how_to_keep_its_braces_where_they_are(text, hin
         ("{{ vars.rate.value }}", {"rate"}),
         ("{{ vars['rate'].value }}", {"rate"}),
         ("{{ vars.get('rate').value }}", {"rate"}),
+        ("{{ vars.get('rate', 0.2) }}", set()),
         ("{{ vars.items()|list }} {{ vars.keys() }} {{ vars.values() }}", set()),
         ("{% for name in vars %}{{ name }}{% endfor %}", set()),
     ],
-    ids=["an-attribute", "an-item", "get", "its-methods", "each-name"],
+    ids=["an-attribute", "an-item", "get", "get-or-else", "its-methods", "each-name"],
 )
 def test_the_vars_a_worked_example_reads_are_those_it_names(template, read):
     assert vars_read(parsed(answering("reads", f'print("{template}")'))) == read
-
-
-def lacking(var, namespace):
-    return (
-        f"Turn 2 (assistant) reads vars.{var}, which {namespace} doesn't have: set"
-        f" {var} in its vars, or in those of a namespace above it."
-    )
 
 
 def problems_in(library, namespace):
@@ -2186,22 +2181,24 @@ def problems_in(library, namespace):
     return {each["name"]: each["problems"] for each in shown["decompositions"]}
 
 
-def test_a_worked_example_reading_a_var_its_namespace_lacks_is_marked_never_refused(
-    library,
-):
+def test_a_worked_example_reading_a_var_its_namespace_doesnt_set_is_not_marked(library):
+    # A caller may pass the var as it spawns the agent, which no check can know.
     change(library, add_namespace, "pricing", "vars: {currency: EUR}\n")
     reads_rate = answering("apply", 'print("{{ vars.rate.value }}")')
     stored, _ = change(library, add_decomposition, "pricing", reads_rate)
+    assert stored["problems"] == []
+    assert problems_in(library, "pricing") == {"apply": []}
+
+
+@pytest.mark.parametrize("held", ["vars: null", "vars: 5", "vars: [rate, fee]"])
+def test_a_namespace_left_out_for_its_vars_is_mended_by_a_save(library, held):
     with closing(open_library(library)) as connection, writing(connection):
-        shared = answering("shared", 'print("{{ vars.fee.value }}")')
-        connection.execute(UPSERT_DECOMPOSITION, ("pricing", "shared", shared))
-    assert stored["problems"] == [lacking("rate", "pricing")]
-    assert problems_in(library, "pricing") == {
-        "apply": [lacking("rate", "pricing")],
-        "shared": [lacking("fee", "pricing")],
-    }
-    change(library, change_namespace, ROOT, "tools: [llm]\nvars: {rate: 0.2, fee: 1}\n")
-    assert problems_in(library, "pricing") == {"apply": [], "shared": []}
+        connection.execute(UPSERT_NAMESPACE, ("pricing", f"{held}\n"))
+    reads_rate = answering("apply", 'print("{{ vars.rate.value }}")')
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_DECOMPOSITION, ("pricing", "apply", reads_rate))
+    change(library, change_namespace, "pricing", "vars: {currency: EUR}\n")
+    assert change(library, namespace_yaml, "pricing") == "vars: {currency: EUR}\n"
 
 
 def test_taking_away_a_var_read_with_get_is_refused_and_a_var_named_get_is_not_read(
@@ -2293,6 +2290,10 @@ WIDE_TEMPLATES = {
     "ljust": f"{{{{ 'x'.ljust({UNALLOCATABLE}) }}}}",
     "rjust": f"{{{{ 'x'.rjust({UNALLOCATABLE}) }}}}",
     "zfill": f"{{{{ '1'.zfill({UNALLOCATABLE}) }}}}",
+    "expandtabs": f"{{{{ '\\t'.expandtabs({UNALLOCATABLE}) }}}}",
+    "the indent filter": f"{{{{ 'a\\nb'|indent({UNALLOCATABLE}) }}}}",
+    "the wordwrap filter": f"{{{{ 'a b'|wordwrap({UNALLOCATABLE}) }}}}",
+    "the truncate filter": f"{{{{ 'ab'|truncate({UNALLOCATABLE}) }}}}",
     "a printf width": f"{{{{ '%0{UNALLOCATABLE}d' % 1 }}}}",
     "a format width": f"{{{{ '{{:>{UNALLOCATABLE}}}'.format(1) }}}}",
 }
@@ -2352,6 +2353,9 @@ NUMBERS_PAST_THE_LIMIT = {
     "printf formatted": ("{{ '%d people' % 8000000000 }}", "8000000000 people"),
     "through the format filter": ("{{ '%.1e'|format(8000000000) }}", "8.0e+09"),
     "a filter's value": ("{{ 8000000000|filesizeformat }}", "8.0 GB"),
+    "a var's default": ("{{ vars.get('budget', 2000000) }}", "2000000"),
+    "a default": ("{{ nothing|default(5000000) }}", "5000000"),
+    "a tool's argument": ("{{ tool(10000000) }}", "10000000"),
 }
 
 
@@ -2361,7 +2365,16 @@ NUMBERS_PAST_THE_LIMIT = {
     ids=NUMBERS_PAST_THE_LIMIT,
 )
 def test_a_number_past_the_limit_that_pads_nothing_renders(template, rendered):
-    assert SANDBOXED().from_string(template).render() == rendered
+    given = {"vars": {}, "tool": lambda number: number}
+    assert SANDBOXED().from_string(template).render(given) == rendered
+
+
+def test_a_template_done_rendering_just_past_its_time_is_kept():
+    def slow():
+        time.sleep(RENDER_S + 0.2)
+        return "done"
+
+    assert SANDBOXED().from_string("{{ slow() }}").render(slow=slow) == "done"
 
 
 def rendering_forever():

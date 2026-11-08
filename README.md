@@ -153,9 +153,8 @@ imports too.
   namespace's `vars` that are tables (a list of records) as tables, to read (edit them in Namespaces). In its
   editors Tab indents, Esc leaves, and Ctrl+Enter or Cmd+Enter saves.
 - Each worked example is marked ✓ or ✗ by whether its turns are shaped like `deep_reasoner`'s own (the task; each
-  assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last) and whether
-  its namespace, or one above it, sets each var it reads by name (`{{ vars.rate }}`), and a ✗ says why; it still
-  saves, as a draft agents are shown from the next message. A new one starts in the namespace of
+  assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last), and a ✗
+  says why; it still saves, as a draft agents are shown from the next message. A new one starts in the namespace of
   the chat on screen. Its code isn't run.
 - Saving refuses what would fail every run there: a template (`{{` or `{%`) the engine can't render, that names
   anything but what it fills in (`task`, `vars`, `funcs`, `coroutines`, the run settings'

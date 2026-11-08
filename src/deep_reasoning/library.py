@@ -722,6 +722,9 @@ TOO_SLOW = f"it was still rendering after {RENDER_S} s"
 TEMPLATE_CODE = "<template>"
 # What a template reads of vars by name that is no var: its methods, as vars.get.
 DICT_METHODS = frozenset(name for name in dir(dict) if not name.startswith("_"))
+# The str methods and filters that pad, wrap or cut to a width they are given.
+WIDTH_METHODS = frozenset({"center", "ljust", "rjust", "zfill", "expandtabs"})
+WIDTH_FILTERS = frozenset({"center", "indent", "wordwrap", "truncate"})
 
 
 class LibraryError(ValueError):
@@ -1792,8 +1795,8 @@ def refuse_past_the_limit(size):
 
 
 def refuse_widths(values):
-    """Raise if a whole number of *values*, a call's arguments, is past
-    MAX_RENDERED_CHARS, as a width it could pad to, before the call makes it."""
+    """Raise if a whole number of *values*, the arguments of a call that pads to a
+    width, is past MAX_RENDERED_CHARS, before the call makes it."""
     refuse_past_the_limit(
         max((each for each in values if type(each) is int), default=0)
     )
@@ -1838,17 +1841,27 @@ def size_made(operator, left, right):
     return 0
 
 
-def bounded_filter(function):
-    """*function*, a filter, refusing a whole number past MAX_RENDERED_CHARS among its
-    arguments after the value it filters, before it runs, and its result past it."""
+def bounded_filter(function, widths):
+    """*function*, a filter, its result refused past MAX_RENDERED_CHARS; with *widths*,
+    one taking a width, a width past it among its arguments after the value it filters
+    is refused before it runs."""
     after = 2 if hasattr(function, "jinja_pass_arg") else 1
 
     @wraps(function)
     def filtered(*args, **kwargs):
-        refuse_widths((*args[after:], *kwargs.values()))
+        if widths:
+            refuse_widths((*args[after:], *kwargs.values()))
         return within_limit(function(*args, **kwargs))
 
     return filtered
+
+
+def pads(function):
+    """Whether *function* is a str's method that pads to a width it is given."""
+    owner = getattr(function, "__self__", None)
+    return (
+        isinstance(owner, str) and getattr(function, "__name__", None) in WIDTH_METHODS
+    )
 
 
 def bounded_format(value, *args, **kwargs):
@@ -1859,7 +1872,8 @@ def bounded_format(value, *args, **kwargs):
 
 
 BOUNDED_FILTERS = {
-    name: bounded_filter(each) for name, each in DEFAULT_FILTERS.items()
+    name: bounded_filter(each, name in WIDTH_FILTERS)
+    for name, each in DEFAULT_FILTERS.items()
 } | {"format": bounded_format}
 
 
@@ -1880,32 +1894,32 @@ class BoundedEscapeFormatter(BoundedFormatter, EscapeFormatter):
     """BoundedFormatter, escaping what it fills in, for a Markup's format method."""
 
 
-@contextmanager
-def deadline():
-    """Raise TimeoutError in a template rendering within, past RENDER_S: a tracer on this
-    thread looks at the time at each of its lines and at each call, as no signal
-    reaches a sub-agent's, which renders on a cell's thread."""
-    ends = time.monotonic() + RENDER_S
+def timing_until(ends):
+    """A tracer that raises TimeoutError at a line of a template's own code run past
+    *ends*, the time.monotonic() its render must end by, and nowhere else."""
 
     def timing(frame, event, arg):
-        if time.monotonic() > ends:
+        if frame.f_code.co_filename != TEMPLATE_CODE:
+            return None
+        if event == "line" and time.monotonic() > ends:
             raise TimeoutError(TOO_SLOW)
-        return timing if frame.f_code.co_filename == TEMPLATE_CODE else None
+        return timing
 
-    tracer = sys.gettrace()
-    sys.settrace(timing)
-    try:
-        yield
-    finally:
-        sys.settrace(tracer)
+    return timing
 
 
 class TimedTemplate(Template):
-    """A template whose render stops past RENDER_S (deadline())."""
+    """A template whose render stops past RENDER_S: a tracer on the rendering thread
+    times the template's lines, as no signal reaches a sub-agent's, which renders on a
+    cell's thread. The thread's own tracer is put back however it ends."""
 
     def render(self, *args, **kwargs):
-        with deadline():
+        tracer = sys.gettrace()
+        sys.settrace(timing_until(time.monotonic() + RENDER_S))
+        try:
             return super().render(*args, **kwargs)
+        finally:
+            sys.settrace(tracer)
 
 
 class Rendered(list):
@@ -1961,8 +1975,7 @@ class BoundedSandbox(SandboxedEnvironment):
         given = (*args, *kwargs.values())
         for each in given:
             within_limit(each)
-        # A str's format method measures its own fields, whatever numbers it formats.
-        if not getattr(obj, "measures_its_fields", False):
+        if pads(obj):
             refuse_widths(given)
         return within_limit(super().call(context, obj, *args, **kwargs))
 
@@ -1985,7 +1998,6 @@ class BoundedSandbox(SandboxedEnvironment):
             )
             return type(text)(formatter.vformat(text, args, kwargs))
 
-        formatted.measures_its_fields = True
         return update_wrapper(formatted, value)
 
     def concat(self, pieces):
@@ -2089,14 +2101,12 @@ def template_problems(decomposition, names):
 
 
 def check_templates(connection, decomposition):
-    """Raise unless every turn of *decomposition* is a template the engine renders; the
-    Library's namespaces as the engine resolves them."""
-    config, registry = config_and_registry(connection)
+    """Raise unless every turn of *decomposition* is a template the engine renders."""
+    config, _ = config_and_registry(connection)
     names = template_names(config.prompt_template_variables)
     problems = template_problems(decomposition, names)
     if problems:
         raise LibraryError("\n".join(problems))
-    return registry
 
 
 def running_code(content):
@@ -2219,10 +2229,9 @@ def add_decomposition(connection, namespace, text, replace=False, allowed=None):
         found = stored_decomposition(connection, namespace, name)
         if found is not None and not replace:
             raise already_has(namespace, name)
-        registry = check_templates(connection, decomposition)
+        check_templates(connection, decomposition)
         connection.execute(UPSERT_DECOMPOSITION, tuple(stored.values()))
     problems = example_problems(decomposition)
-    problems += lacking_vars(registry, namespace, decomposition)
     return stored | {"problems": problems}, found
 
 
@@ -2501,20 +2510,19 @@ def check_vars_kept(registry, removed, below):
 
 
 def vars_read(decomposition):
-    """The vars *decomposition*'s templates read by name (turn_vars())."""
-    return set().union(*(turn_vars(turn.content) for turn in decomposition.messages))
-
-
-def turn_vars(text):
-    """The vars the turn *text* reads by name as a template: vars.rate, vars["rate"] or
-    vars.get("rate"), never a method such as vars.items; none for one that doesn't parse."""
-    if not _has_jinja(text):
-        return set()
-    try:
-        template = JINJA.parse(text)
-    except TEMPLATE_FAILURES:
-        return set()
-    return {each for each in map(var_named, template.find_all(VAR_READS)) if each}
+    """The vars *decomposition*'s templates read by name: vars.rate, vars["rate"] or
+    vars.get("rate"), never a method such as vars.items; a turn that doesn't parse reads
+    none."""
+    found = set()
+    for turn in decomposition.messages:
+        if not _has_jinja(turn.content):
+            continue
+        try:
+            template = JINJA.parse(turn.content)
+        except TEMPLATE_FAILURES:
+            continue
+        found |= {each for each in map(var_named, template.find_all(VAR_READS)) if each}
+    return found
 
 
 def var_named(node):
@@ -2522,8 +2530,10 @@ def var_named(node):
     None for none."""
     if isinstance(node, nodes.Call):
         called = node.node
+        # vars.get("x") alone: with a default, it does without x
         gets = isinstance(called, nodes.Getattr) and called.attr == "get"
-        return text_of(node.args[0]) if gets and of_vars(called) and node.args else None
+        alone = len(node.args) == 1 and not node.kwargs
+        return text_of(node.args[0]) if gets and alone and of_vars(called) else None
     if not of_vars(node):
         return None
     if isinstance(node, nodes.Getattr):
@@ -2541,21 +2551,6 @@ def text_of(node):
         if isinstance(node, nodes.Const) and type(node.value) is str
         else None
     )
-
-
-def lacking_vars(registry, namespace, decomposition):
-    """Each var *decomposition*, stored in *namespace*, reads by name that *namespace*'s
-    agents don't have, there or above, in words; none for a namespace the engine can't
-    read."""
-    if namespace not in registry.names:
-        return []
-    have = registry.resolve(namespace).vars.keys()
-    return [
-        f"Turn {number} ({turn.role}) reads vars.{var}, which {namespace} doesn't have:"
-        f" set {var} in its vars, or in those of a namespace above it."
-        for number, turn in enumerate(decomposition.messages, start=1)
-        for var in sorted(turn_vars(turn.content) - have)
-    ]
 
 
 def add_namespace(connection, name, text, allowed=None):
@@ -2665,21 +2660,21 @@ def change_namespace(connection, name, text, allowed=None, was=NOT_OPENED, merge
         namespace, stored = authored(name, text)
         if allowed is not None:
             allowed(connection, namespace)
-        before = check_unchanged(connection, name, was)
-        own = fields_of(before).get("vars", {})
-        write_namespace(connection, name, stored, adding=False, vars_before=own)
+        before, vars_before = check_unchanged(connection, name, was)
+        write_namespace(connection, name, stored, False, vars_before)
     return before, stored
 
 
 def check_unchanged(connection, name, was):
-    """Namespace *name*'s own YAML, as namespace_yaml() gives it; raise if the Library
-    has none of that name, or, given *was*, the YAML the person opened it on,
-    ChangedMeanwhile unless it is still stored so."""
+    """Namespace *name*'s own YAML, as namespace_yaml() gives it, and the vars it sets
+    itself as it is read (none for one left out); raise if the Library has none of that
+    name, or, given *was*, the YAML the person opened it on, ChangedMeanwhile unless it
+    is still stored so."""
     before = check_namespace(connection, name)
-    shown = read_namespaces(connection)[2][name]
-    if was is not NOT_OPENED and own_yaml(shown) != was:
+    namespaces, _, shown = read_namespaces(connection)
+    if was is not NOT_OPENED and own_yaml(shown[name]) != was:
         raise changed_meanwhile(f"Namespace {name}")
-    return before
+    return before, namespaces.get(name, {}).get("vars", {})
 
 
 def granted_afresh(connection, namespace):
@@ -3287,7 +3282,7 @@ def namespace_rows(read, config, registry):
                 if name in readable
                 else []
             ),
-            "decompositions": checked(decompositions[name], registry),
+            "decompositions": checked(decompositions[name]),
             "yaml": own_yaml(read["namespace_yaml"].get(name, "")),
             "handed_to": handed[name],
             "usable": usable(name, left),
@@ -3309,29 +3304,26 @@ def hand_offs_made(registry, targets):
             yield target
 
 
-def checked(rows, registry):
+def checked(rows):
     """A namespace's stored decompositions, *rows* as read_decompositions() reads them,
-    each with its problems as a worked example, a var it lacks in *registry* among them;
-    or, for one left out, which agents aren't shown (read: false), why: its templates
-    were checked as it was read."""
+    each with its problems as a worked example; or, for one left out, which agents aren't
+    shown (read: false), why: its templates were checked as it was read."""
     return [
         {
             "name": row["name"],
             "yaml": row["yaml"],
-            "problems": problems_of(row, registry),
+            "problems": problems_of(row),
             "read": row["decomposition"] is not None,
         }
         for row in rows
     ]
 
 
-def problems_of(row, registry):
+def problems_of(row):
     decomposition = row["decomposition"]
     if decomposition is None:
         return row["why"].splitlines()
-    return example_problems(decomposition) + lacking_vars(
-        registry, row["namespace"], decomposition
-    )
+    return example_problems(decomposition)
 
 
 def listed_tools(read, config, registry, names):
