@@ -36,7 +36,6 @@ from deep_reasoning.library import (
     HISTORIAN,
     HISTORIAN_SUFFIX,
     HISTORIANS_EXAMPLES,
-    HISTORIANS_OWN,
     HISTORY_DESCRIPTION,
     LIBRARIAN,
     LIBRARIAN_HAND_OFFS,
@@ -129,8 +128,6 @@ messages:
 """
 # A fresh Library's worked examples: the historian's, and root's hand-offs of the same names.
 HISTORIANS = [parsed(text) for text in HISTORIANS_EXAMPLES]
-# And the historian's alone, after them.
-HISTORIANS_ALL = [*HISTORIANS, *(parsed(text) for text in HISTORIANS_OWN)]
 HAND_OFFS = [parsed(hand_off(text)) for text in HISTORIANS_EXAMPLES]
 LIBRARIANS = [parsed(text) for text in LIBRARIANS_EXAMPLES]
 # And root's hand-offs of questions about the Library, each named as one of the librarian's,
@@ -206,20 +203,11 @@ def test_a_fresh_library_grants_llm_at_root_history_and_page_to_the_historian_an
     assert config.namespaces[ROOT].tools == ["llm"]
     assert config.namespaces[HISTORIAN].tools == ["history", "page"]
     assert config.namespaces[HISTORIAN].spawn == []
+    assert config.namespaces[HISTORIAN].system_suffix == HISTORIAN_SUFFIX
     assert config.namespaces[LIBRARIAN].tools == ["library"]
     # It may ask the historian about earlier messages, but never spawn itself.
     assert config.namespaces[LIBRARIAN].spawn == [HISTORIAN]
-    # Each suffix as stored, then where its agents may hand work, as the run says.
-    for name, suffix in ((HISTORIAN, HISTORIAN_SUFFIX), (LIBRARIAN, LIBRARIAN_SUFFIX)):
-        assert config.namespaces[name].system_suffix.startswith(suffix)
-    assert config.namespaces[HISTORIAN].system_suffix.endswith(
-        "You can't hand work to sub-agents: subagent is refused here, so do the work"
-        " yourself.\n"
-    )
-    assert config.namespaces[LIBRARIAN].system_suffix.endswith(
-        "You can hand work to sub-agents only in historian or namespaces under them: pass"
-        ' namespace= on every subagent call, as in subagent(namespace="historian").\n'
-    )
+    assert config.namespaces[LIBRARIAN].system_suffix == LIBRARIAN_SUFFIX
 
 
 def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_messages(
@@ -231,7 +219,7 @@ def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_mess
     assert shown[ROOT] == ROOTS
     assert [
         each for each in shown[HISTORIAN] if each.name not in to_librarian
-    ] == HISTORIANS_ALL
+    ] == HISTORIANS
     # The librarian's own in place of root's hand-offs to it, and its others after.
     own = {each.name: each for each in LIBRARIANS}
     assert shown[LIBRARIAN] == [
@@ -354,9 +342,9 @@ def test_with_the_historian_deleted_no_namespace_hands_off_to_it(library, tmp_pa
     with closing(open_library(library)) as connection:
         # The librarian's spawn list names the historian: it goes first.
         with pytest.raises(LibraryError, match="First take historian out of the spawn"):
-            delete_namespace(connection, HISTORIAN, len(HISTORIANS_ALL))
+            delete_namespace(connection, HISTORIAN, len(HISTORIANS))
         change_namespace(connection, LIBRARIAN, "tools: [library]\n")
-        delete_namespace(connection, HISTORIAN, len(HISTORIANS_ALL))
+        delete_namespace(connection, HISTORIAN, len(HISTORIANS))
     shown = shown_hand_offs(library, tmp_path)
     for name in (ROOT, LIBRARIAN):
         hand_offs = {each.name: shown[name][each.name] for each in HAND_OFFS}
@@ -405,37 +393,6 @@ def test_a_spawn_list_the_librarian_restricts_keeps_both_hand_offs(library, tmp_
         add_namespace(connection, "scheduler", "spawn: [historian, librarian]\n")
     shown = shown_hand_offs(library, tmp_path)
     assert shown["scheduler"] == shown[ROOT]
-
-
-def test_a_namespace_that_sets_a_spawn_list_is_told_where_it_can_hand_work(
-    library, tmp_path
-):
-    with closing(open_library(library)) as connection:
-        add_namespace(connection, "searcher", "spawn: []\nsystem_suffix: Search.\n")
-        add_namespace(connection, "searcher.deep", "")
-        add_namespace(connection, "planner", "spawn: [searcher]\n")
-        add_namespace(connection, "planner.wide", "spawn: [searcher, historian]\n")
-    namespaces = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)[
-        "namespaces"
-    ]
-    own = {name: fields.get("system_suffix") for name, fields in namespaces.items()}
-    assert own["searcher"].startswith("Search.\n")
-    assert "You can't hand work to sub-agents" in own["searcher"]
-    assert (
-        'only in searcher or namespaces under them: pass namespace= on every subagent call, as in subagent(namespace="searcher")'
-        in own["planner"]
-    )
-    assert "only in searcher, historian or namespaces under them" in own["planner.wide"]
-    # Below a namespace told otherwise, the nearer line says it holds.
-    assert "whatever the line above" in own["planner.wide"]
-    assert "whatever the line above" not in own["planner"]
-    # One that sets none inherits its parent's line, as it does its spawn list.
-    assert own["searcher.deep"] is None
-    assert own[ROOT] == ROOT_SUFFIX
-    # The line is the run's, never stored.
-    assert (
-        panel_rows(library)["searcher"]["yaml"] == "spawn: []\nsystem_suffix: Search.\n"
-    )
 
 
 @pytest.mark.parametrize(
@@ -552,7 +509,7 @@ def test_a_run_config_holds_an_example_only_where_what_a_namespace_inherits_diff
     # trips.with_history, which can hand off to the historian, the originals back.
     assert held == {
         ROOT: roots,
-        HISTORIAN: [*(each.name for each in HISTORIANS_ALL), *to_librarian],
+        HISTORIAN: [*(each.name for each in HISTORIANS), *to_librarian],
         LIBRARIAN: [each.name for each in LIBRARIANS],
         "trips": roots,
         "trips.hotels": [],
@@ -1219,8 +1176,8 @@ def test_the_seeded_examples_and_the_engines_own_namespace_examples_pass(library
         for row in namespaces
         for each in row["decompositions"]
     ]
-    # the twenty seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
-    assert len(rows) == 27
+    # the nineteen seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
+    assert len(rows) == 26
     assert rows == [(name, []) for name, _ in rows]
 
 

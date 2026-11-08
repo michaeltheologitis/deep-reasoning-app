@@ -51,7 +51,6 @@ from deep_reasoning.library import (
     HISTORIAN,
     HISTORIAN_SUFFIX,
     HISTORIANS_EXAMPLES,
-    HISTORIANS_OWN,
     HISTORY_DESCRIPTION,
     LIBRARIAN,
     LIBRARIAN_HAND_OFFS,
@@ -973,37 +972,6 @@ async def test_a_namespace_that_may_not_hand_off_to_the_historian_says_it_cant(
     )
 
 
-TEAM_PLAN = {
-    "Plan it.": [
-        repl("print(subagent('Find it.', namespace='searcher'))"),
-        repl("FinalAnswer('done')"),
-    ],
-    "Find it.": [repl("FinalAnswer('found')")],
-}
-
-
-@pytest.mark.anyio
-async def test_a_leaf_namespaces_agents_are_told_they_cant_hand_work_on(
-    library_on, connect
-):
-    with FakeOpenAI(scripted(TEAM_PLAN)) as fake:
-        async with connect(library_on(fake)) as api:
-            for name, text in (("searcher", "spawn: []\n"), ("planner", "")):
-                added = await api.post(
-                    "/api/namespaces", json={"name": name, "yaml": text}
-                )
-                assert added.status_code == 201, added.text
-            chat = await chat_in(api, "planner")
-            events = await run_events(api, await send(api, chat, "Plan it."))
-    assert events[-1]["answer"] == "done"
-    told = {
-        call.messages[-1]["content"]: prompt
-        for call, prompt in zip(fake.calls, system_prompts(fake.calls))
-    }
-    assert "You can't hand work to sub-agents" in told["Find it."]
-    assert "hand work to sub-agents" not in told["Plan it."]
-
-
 # Message 1 of the examples that read sub-agents, as the fake answers it.
 SUB_AGENTS_FIRST_MESSAGE = (
     "Add the sum of the first 10 primes to the 10th Fibonacci number.",
@@ -1360,7 +1328,7 @@ FRESH_DECOMPOSITIONS = [
     [{"name": parsed(text).name, "yaml": text, "problems": []} for text in texts]
     for texts in (
         [*LIBRARIAN_HAND_OFFS, *(hand_off(text) for text in HISTORIANS_EXAMPLES)],
-        [*HISTORIANS_EXAMPLES, *HISTORIANS_OWN],
+        HISTORIANS_EXAMPLES,
         LIBRARIANS_EXAMPLES,
     )
 ]

@@ -48,7 +48,6 @@ from deep_reasoning.app_tools import (
 from deep_reasoning.library import (
     HISTORIAN,
     HISTORIANS_EXAMPLES,
-    HISTORIANS_OWN,
     HISTORY_DESCRIPTION,
     LIBRARIAN,
     LIBRARIAN_HAND_OFFS,
@@ -725,8 +724,7 @@ def library_tool(library, namespace="librarian"):
 
 
 # A fresh app file's decompositions: root's hand-offs to the librarian, then to the
-# historian, then the historian's examples of the same names and its own, then the
-# librarian's.
+# historian, then the historian's examples of the same names, then the librarian's.
 FRESH = [
     *[("root", parsed(text).name) for text in LIBRARIAN_HAND_OFFS],
     *[
@@ -734,7 +732,6 @@ FRESH = [
         for namespace in ("root", HISTORIAN)
         for text in HISTORIANS_EXAMPLES
     ],
-    *[(HISTORIAN, parsed(text).name) for text in HISTORIANS_OWN],
     *[(LIBRARIAN, parsed(text).name) for text in LIBRARIANS_EXAMPLES],
 ]
 

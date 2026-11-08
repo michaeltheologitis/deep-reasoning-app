@@ -47,12 +47,11 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   chat's earlier runs (each message's sub-agents, thoughts and cells) with the app's own `history` tool, and root
   hands such questions to a sub-agent there, with your message as you wrote it and the conversation so far: root's
   worked examples, which every namespace inherits, show the hand-off, and the historian's show reading `history`
-  before answering, and, asked to run something again, saying it only reads the record. `history` lists each
-  sub-agent with its result, seconds and cost (`agents`), what went wrong anywhere in a message, the top agent's own
-  cells included, with each agent's namespace (`errors`), finds any text you name (`find`), and cuts each text past
-  2,000 characters, so a huge output can't swamp the model (`full` reads one step whole). A namespace whose `spawn`
-  list leaves `historian` out can't hand off, nor can any once `historian` is deleted: a run there is shown, in
-  each hand-off's place, the same question answered by saying it
+  before answering. `history` lists each sub-agent with its result, seconds and cost (`agents`), what went wrong
+  anywhere in a message, the top agent's own cells included, with each agent's namespace (`errors`), finds any text
+  you name (`find`), and cuts each text past 2,000 characters, so a huge output can't swamp the model (`full` reads
+  one step whole). A namespace whose `spawn` list leaves `historian` out can't hand off, nor can any once
+  `historian` is deleted: a run there is shown, in each hand-off's place, the same question answered by saying it
   can't, so the agent says so rather than guess or pass the question to another namespace; a hand-off of your own to
   a namespace it can't reach is shown answered there as best it can. The Library is left as it is; the panel says so
   under the namespace's Hand-offs, and deleting `historian` warns of it (a new Library's `librarian` lists it in its
@@ -119,8 +118,6 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   saves it, so a draft can be saved; from the next message, agents in its namespace and those under it are shown
   it as it is, so a new one starts in the namespace of the chat on screen, not root. The code isn't run, so an
   observation isn't checked against it.
-- A namespace that sets a `spawn` list has its agents told, in each run, where they can hand work: nowhere for
-  `spawn: []`, else only the namespaces it names and those under them. The line is the run's, not stored.
 - Saving refuses what would make every run there fail: a decomposition holding `{{` or `{%` (which the engine reads
   as a Jinja template) whose template doesn't parse, names anything but what the engine fills in (`task`, `vars`,
   `funcs`, `coroutines` and the run settings' `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`),
@@ -164,18 +161,18 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   subscription; adds no namespace under one that grants `library` or runs Claude Code; never deletes, and never
   writes a key. A change applies from your next message. These limits guard the tool, not the file: the agent's Python isn't sandboxed, and could open the file
   itself. A new Library has `librarian`; in an older one, add a namespace with `tools: [library]`.
-- Any chat can be asked about the Library ("what namespaces do I have?", "what does the historian's suffix say?",
-  "add a namespace for legal questions", "make every chat answer in British English"): a new Library's root hands
-  such questions to a `librarian` sub-agent, with your message as you wrote it. Outside a `librarian` chat it only
-  reads: asked for a change, it says what it would change and that you pick `librarian` under the message box and ask
-  there, or, for what the tool never does, how to do it in the panel (what every chat should do goes in root's
-  `system_suffix`, with Edit YAML in the Namespaces tab). A namespace that can't reach `librarian` (left out of its
-  `spawn` list, or deleted) answers such questions itself as best it can, as for the historian. A new Library's root
-  also has a `system_suffix` saying what app its agents are in, to compute each number in Python and answer from
-  what it printed, never typing one, and to combine sub-agents' results into one answer in words; every namespace
-  inherits it; edit or delete it in the panel. An older Library keeps what it has: to have the same, give root a new
-  Library's `system_suffix`, `read the Library` and `add a namespace with a worked example`, and `librarian` a new
-  Library's `read the Library`.
+- Any chat can be asked about the Library ("what namespaces do I have?", "what does the historian's suffix
+  say?", "add a namespace for legal questions", "make every chat answer in British English"): a new Library's
+  root hands such questions to a `librarian` sub-agent, with your message as you wrote it. Outside a `librarian`
+  chat it only reads: asked for a change, it says what it would change and that you pick `librarian` under the
+  message box and ask there, or, for what the tool never does, how to do it in the panel (what every chat should
+  do goes in root's `system_suffix`, with Edit YAML in the Namespaces tab). A namespace that can't reach
+  `librarian` (left out of its `spawn` list, or deleted) answers such questions itself as best it can, as for
+  the historian. A new Library's root also has a `system_suffix`, which every namespace inherits, saying what
+  app its agents are in, to answer each number from what Python computed and printed, never typing one, and to
+  combine sub-agents' results into one answer in words; edit or delete it in the panel. An older Library keeps
+  what it has; to have the same, give root a new Library's `system_suffix` and its hand-offs `read the Library`
+  and `add a namespace with a worked example`, and the librarian its own `read the Library`.
 - Each Library change the agent makes shows in the chat, under its answer and where it was made in the tree, and opens
   onto its YAML (or a tool's block and Python) before and after; ask the librarian to undo it, and it writes the
   before back from the record. The library panel and the
