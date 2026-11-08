@@ -1,7 +1,7 @@
-// What the model menu lists for what is typed.
+// What the composer's model and namespace menus list for what is typed.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { modelGroups } from "../src/deep_reasoning/web/models.js";
+import { modelGroups, namespaceGroups } from "../src/deep_reasoning/web/models.js";
 
 const LISTS = [
   { provider: "OpenAI", featured: ["gpt-6-astra", "gpt-6-luna"], models: ["gpt-4", "gpt-6-astra", "gpt-6-luna"], problem: null },
@@ -36,4 +36,22 @@ test("typed, a provider lists every model it knows that holds the text, in any c
 
 test("with no name exact anywhere, the providers keep their order", () => {
   assert.deepEqual(modelGroups(LISTS, "luna", null).map((group) => group.name), ["OpenAI", "fake", "broken"]);
+});
+
+const NAMESPACES = ["root", "research", "research.papers", "historian"].map((name) => ({ value: name, label: name }));
+const names = (groups) => groups.flatMap((group) => group.options.map((option) => option.value));
+
+test("untyped, the namespace menu lists every namespace in the Library's order", () => {
+  assert.deepEqual(names(namespaceGroups(NAMESPACES, "")), ["root", "research", "research.papers", "historian"]);
+});
+
+test("typed, the namespace menu keeps the names holding the text, in any case", () => {
+  assert.deepEqual(names(namespaceGroups(NAMESPACES, " PAPER ")), ["research.papers"]);
+  assert.deepEqual(names(namespaceGroups(NAMESPACES, "r")), ["root", "research", "research.papers", "historian"]);
+});
+
+test("with no name holding the text, the namespace menu says so", () => {
+  const [group] = namespaceGroups(NAMESPACES, "zzz");
+  assert.deepEqual(group.options, []);
+  assert.equal(group.note, "no namespace holds “zzz”");
 });

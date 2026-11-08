@@ -1,15 +1,17 @@
 /* One screen: chat list left, conversation right, all on the terminal's monospace grid. */
+/* Text colours are at least 4.5:1 on --bg, --panel, --hover, --code and --user; --edge, a field's border, 3:1 on --bg. */
 :root {
   --bg: #fcfbfa;
   --panel: #f4f2ef;
   --fg: #1f1e1c;
-  --dim: #77716a;
+  --dim: #6c665f;
   --faint: #e3dfd9;
+  --edge: #8c8781;
   --hover: #ebe8e3;
-  --accent: #c15f3c;
-  --ok: #2c7a39;
+  --accent: #aa4a27;
+  --ok: #287636;
   --err: #b42c41;
-  --warn: #94691b;
+  --warn: #8a5f0a;
   --code: #f1eeea;
   --user: #eeebe6;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
@@ -21,8 +23,9 @@
     --bg: #1a1918;
     --panel: #141312;
     --fg: #e8e5e1;
-    --dim: #8e8881;
+    --dim: #958f88;
     --faint: #34312e;
+    --edge: #706c67;
     --hover: #252320;
     --accent: #d77757;
     --ok: #4eba65;
@@ -37,8 +40,9 @@
   --bg: #1a1918;
   --panel: #141312;
   --fg: #e8e5e1;
-  --dim: #8e8881;
+  --dim: #958f88;
   --faint: #34312e;
+  --edge: #706c67;
   --hover: #252320;
   --accent: #d77757;
   --ok: #4eba65;
@@ -221,7 +225,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .composer { padding-block: 6px max(12px, env(safe-area-inset-bottom, 0px)); padding-left: 16px; padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 .box, .hints, .above { max-width: 868px; margin: 0 auto; }
 .above { position: relative; }
-.box { display: flex; align-items: flex-start; gap: 1ch; border: 1px solid var(--faint); border-radius: 6px; padding: 8px 10px; }
+.box { display: flex; align-items: flex-start; gap: 1ch; border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; }
 .box:focus-within { border-color: var(--dim); }
 .prompt { color: var(--dim); }
 textarea:focus-visible { outline: none; }
@@ -251,7 +255,8 @@ textarea::placeholder { color: var(--dim); }
 }
 .above .menu-pop { position: absolute; right: 0; bottom: 6px; z-index: 4; width: min(46ch, 100%); overflow-y: auto; }
 .above .folder-pop { width: min(60ch, 100%); }
-.menu-filter, .set-input { min-width: 0; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--faint); border-radius: 3px; padding: 2px 6px; }
+.folder-form { display: flex; flex-direction: column; gap: 4px; }
+.menu-filter, .set-input { min-width: 0; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--edge); border-radius: 3px; padding: 2px 6px; }
 .menu-filter::placeholder, .set-input::placeholder { color: var(--dim); }
 .menu-list { max-height: min(22rem, 45vh); overflow-y: auto; }
 .menu-head { color: var(--dim); padding: 4px 6px 2px; }

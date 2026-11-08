@@ -1,6 +1,6 @@
 // The Deep Reasoning chat: chats and their runs from the app's API, each run's events folded into its tree, live as they stream.
 import { asText, clip, field, foldEvent, foldEvents, newFold, nodesOf } from "./fold.js";
-import { modelGroups } from "./models.js";
+import { modelGroups, namespaceGroups } from "./models.js";
 import {
   COST_NA,
   MS_PER_SECOND,
@@ -410,7 +410,8 @@ function pickNamespace() {
   if (!library.namespaces.includes(chat.namespace)) options.unshift({ value: chat.namespace, label: [chat.namespace, element("span", { class: "gone" }, "no longer exists")] });
   showMenu(byId("namespace"), byId("above"), {
     label: "Namespaces",
-    groups: () => [{ options }],
+    filter: "filter the namespaces",
+    groups: (query) => namespaceGroups(options, query),
     isCurrent: (name) => name === chat.namespace,
     pick: (name) => library.namespaces.includes(name) && choose(chat, { namespace: name }),
   });
@@ -604,15 +605,20 @@ function folderPicker(button, host, spec) {
   const browser = element("div", { class: "folder-browser", role: "group", "aria-label": "Folders", onmousedown: (e) => e.preventDefault() });
   const use = element("button", { type: "submit", class: "lib-action lib-primary" });
   const picker = { button, spec, field, problem, browser, use, asked: null };
+  // a form may not be a dialog, so the dialog holds it
   const el = element(
-    "form",
-    { class: "menu-pop folder-pop", method: "dialog", role: "dialog", "aria-label": spec.label, onsubmit: (e) => useFolder(e, picker) },
-    element("label", { class: "menu-head", for: field.id }, spec.label),
-    field,
-    problem,
-    element("p", { class: "menu-note", id: "folder-pop-note" }, spec.note),
-    browser,
-    element("div", { class: "lib-actions" }, use),
+    "div",
+    { class: "menu-pop folder-pop", role: "dialog", "aria-label": spec.label },
+    element(
+      "form",
+      { class: "folder-form", method: "dialog", onsubmit: (e) => useFolder(e, picker) },
+      element("label", { class: "menu-head", for: field.id }, spec.label),
+      field,
+      problem,
+      element("p", { class: "menu-note", id: "folder-pop-note" }, spec.note),
+      browser,
+      element("div", { class: "lib-actions" }, use),
+    ),
   );
   field.addEventListener("input", () => {
     problem.textContent = "";
@@ -1058,7 +1064,7 @@ function isDark() {
 function labelTheme() {
   const next = isDark() ? "light" : "dark";
   byId("theme").textContent = next;
-  byId("theme").setAttribute("aria-label", `Switch to ${next}`);
+  byId("theme").setAttribute("aria-label", `Switch to ${next} theme`);
 }
 
 function toggleTheme() {

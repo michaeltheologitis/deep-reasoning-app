@@ -74,10 +74,10 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   are kept in the Library file and deleted with their chat. A new Library grants `page` in `historian`, beside
   `history`, with worked examples of showing an earlier answer or an error on a page, and of making none when
   there is nothing to show, so asking to be shown how an answer was reached goes there too.
-- Each chat has its own model, namespace and working folder, picked under the message box; a change applies from
-  the next message.
-- Light and dark themes; works at phone width, where the chats are a drawer (☰; Esc shuts it), and with no internet:
-  the page loads nothing but the app.
+- Each chat has its own model, namespace and working folder, picked under the message box (typing in the model or
+  namespace menu filters it); a change applies from the next message.
+- Light and dark themes, each with text at WCAG AA contrast; works at phone width, where the chats are a drawer
+  (☰; Esc shuts it), and with no internet: the page loads nothing but the app.
 
 **Models and keys**, in **settings** (bottom left)
 - Vendors and their key variables: OpenAI `OPENAI_API_KEY`, OpenRouter `OPENROUTER_API_KEY`, Anthropic
@@ -117,7 +117,9 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   `<observation>` it printed; `FinalAnswer` last), and opening a ✗ says why. The form warns as you type but still
   saves it, so a draft can be saved; from the next message, agents in its namespace and those under it are shown
   it as it is, so a new one starts in the namespace of the chat on screen, not root. The code isn't run, so an
-  observation isn't checked against it.
+  observation isn't checked against it. In its YAML editors Tab indents, Esc leaves the editor (a second closes
+  the panel), and Ctrl+Enter or Cmd+Enter saves. While the app isn't answering, the panel shows the Library as it
+  last read it, and says so.
 - Saving refuses what would make every run there fail: a decomposition holding `{{` or `{%` (which the engine reads
   as a Jinja template) whose template doesn't parse, names anything but what the engine fills in (`task`, `vars`,
   `funcs`, `coroutines` and the run settings' `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`),
