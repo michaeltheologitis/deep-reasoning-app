@@ -1589,8 +1589,12 @@ async def test_a_tool_no_namespace_grants_never_runs_so_a_broken_one_fails_runs_
             again = await run_events(api, await send(api, chat, "Hi."))
     outcomes = [events[-1]["outcome"] for events in (ungranted, granted, again)]
     assert outcomes == ["answered", "failed", "answered"]
-    assert "broken" in granted[-1]["detail"]
-    assert "raised RuntimeError: no index" in granted[-1]["detail"]
+    assert granted[-1]["detail"] == (
+        "Tool broken doesn't build, so no chat can run while a namespace grants it:"
+        " build in broken.py raised RuntimeError: no index\nIt is granted in"
+        " uses_broken: take it out of their tools in the Library panel's Namespaces tab"
+        " (Edit YAML)."
+    )
 
 
 SPAWNED_PLAN = {

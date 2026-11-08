@@ -24,13 +24,21 @@ from typing import Any, NoReturn, TextIO
 import structlog
 import yaml
 from deep_reasoner.core import configure_structlog_fixture
+from deep_reasoner.namespaces import NamespaceRegistry
+from deep_reasoner.tools import ToolBuildError
 from deep_reasoner.v2.agent import _parts
-from deep_reasoner.v2.cli import V2Config, build_reasoner, close_run
+from deep_reasoner.v2.cli import (
+    V2Config,
+    build_namespace_registry,
+    build_reasoner,
+    close_run,
+)
 from deep_reasoner.v2.decompositions import as_cli_act
 from deep_reasoner.v2.messages import NoCodeBlock, code
 from genai_prices import Usage, calc_price
 
 from deep_reasoning.app_tools import CLAUDE_CODE
+from deep_reasoning.library import granted_in, in_chain_order
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
     FINAL_ANSWER,
@@ -112,6 +120,49 @@ def for_claude(message: dict[str, str]) -> dict[str, str]:
 def detail_of(error: BaseException) -> str:
     """An exception as deep_reasoner words agent.end's detail."""
     return f"{type(error).__name__}: {error}"
+
+
+def build_failure(error: ToolBuildError, config: V2Config) -> str:
+    """Why a run couldn't start, as tools its *config* declares don't build, in words:
+    for each, what went wrong, which namespaces grant it, and how to take it out."""
+    granting = partial(granted_by, granting_registry(config))
+    paragraphs = []
+    for failure in error.failures:
+        tool, detail = failure.tool, failure.detail
+        # The run's copy of the tool's file is in its run folder: name the file alone.
+        file = config.tools.get(tool, {}).get("factory_from")
+        if file:
+            folder = Path(file).parent
+            for shown in (str(folder), os.path.relpath(folder)):
+                detail = detail.replace(shown + os.sep, "")
+        namespaces = granting(tool)
+        where = (
+            f"It is granted in {', '.join(namespaces)}: take it out of their tools"
+            if namespaces
+            else "Take it out of the tools of each namespace that grants it"
+        )
+        paragraphs.append(
+            f"Tool {tool} doesn't build, so no chat can run while a namespace grants it:"
+            f" {detail}\n{where} in the Library panel's Namespaces tab (Edit YAML)."
+        )
+    return "\n\n".join(paragraphs)
+
+
+def granting_registry(config: V2Config) -> NamespaceRegistry | None:
+    """*config*'s namespaces, to name those that grant a tool that doesn't build; None
+    when they can't be read, so the failure is still worded, without them."""
+    try:
+        return build_namespace_registry(config)
+    except Exception:
+        log.exception("worker.granting_namespaces_unknown")
+        return None
+
+
+def granted_by(registry: NamespaceRegistry | None, tool: str) -> list[str]:
+    """The namespaces of *registry* that grant *tool* themselves; none without one."""
+    if registry is None:
+        return []
+    return granted_in(registry, in_chain_order(registry), tool)
 
 
 @dataclass
@@ -352,9 +403,13 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     recorder = Recorder(out, on_root_start=stop_if_asked)
     configure_structlog_fixture(console=False, extra_processors=[recorder])
     threading.Thread(target=read_commands, args=(stop,), daemon=True).start()
+    # A tool that doesn't build while the run builds the config's tools, at its start,
+    # stops every run; one that doesn't later is that run's own failure.
+    starting = True
     try:
         config = V2Config.model_validate(spec["config"])
         reasoner, alias = build_reasoner(config, run_dir=folder)
+        starting = False
         earlier = spec["earlier"]
         if reasoner.backbone_type == CLAUDE_CODE:
             earlier = [for_claude(message) for message in earlier]
@@ -366,7 +421,9 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     except Exception as error:
         log.exception("worker.run_failed")
         outcome = "stopped" if stop_asked.is_set() else "failed"
-        recorder.emit("turn.end", outcome=outcome, answer=None, detail=detail_of(error))
+        tools_failed = starting and isinstance(error, ToolBuildError)
+        detail = build_failure(error, config) if tools_failed else detail_of(error)
+        recorder.emit("turn.end", outcome=outcome, answer=None, detail=detail)
         finish(reasoner)
     if reasoner.stopped:
         recorder.emit("turn.end", outcome="stopped", answer=None, detail=None)

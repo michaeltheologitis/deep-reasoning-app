@@ -20,8 +20,9 @@ transactions; the locks are here, as the panel may still edit root, a namespace'
 reasoner, and which namespaces grant the app's own tools. It writes only in a run whose
 chat's namespace grants it, so a sub-agent spawned into such a namespace from another chat
 can't, and never a key. It guards the tool, not the file: a cell can open the file itself.
-A tool it writes is built first, as a run builds it, from a file in the run's tools folder.
-Each change is logged as library.change, which the worker records as a run event.
+A tool it writes, or a custom tool a namespace it writes grants afresh, is built first as
+another chat's run would build it: in a process of its own (tool_check.py), from an empty
+folder. Each change is logged as library.change, which the worker records as a run event.
 """
 
 import ast
@@ -30,9 +31,7 @@ import json
 import keyword
 import os
 import re
-import shutil
 import sqlite3
-import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
@@ -44,9 +43,9 @@ from typing import Any
 import structlog
 from deep_reasoner.namespaces import ROOT, NamespaceConfig, NamespaceRegistry
 from deep_reasoner.primitives import RESERVED_NAMES, Func
-from deep_reasoner.tools import ToolBuildError
-from deep_reasoner.v2.cli import V2Config, make_tool
+from deep_reasoner.v2.cli import V2Config
 
+from deep_reasoning import tool_check
 from deep_reasoning.library import (
     APP_TOOLS,
     BUILDERS,
@@ -58,11 +57,17 @@ from deep_reasoning.library import (
     LibraryError,
     add_decomposition,
     add_namespace,
+    authored,
     change_namespace,
+    check_fields,
+    check_name,
+    check_namespace,
+    check_place,
     config_and_registry,
     count,
     distrust,
     dump,
+    library_tools,
     loaded,
     namespace_rows,
     parsed_python,
@@ -87,12 +92,14 @@ from deep_reasoning.pages import (
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
     PAGE_FIELDS,
+    SPEC,
     chat_turns,
     raised_error,
     secrets_of,
     total_cost,
     withheld,
 )
+from deep_reasoning.tool_check import check_tools
 
 log = structlog.get_logger()
 
@@ -139,11 +146,19 @@ TOOL_TOO_LONG = (
     " characters."
 )
 CHECKS = "checks"
-# Any other REPL is a sandbox, and building a tool runs its code in the worker, outside it.
+CHANGED_MEANWHILE = (
+    "The tools this grants changed while they were being built; try again."
+)
+# What wasn't done when a tool doesn't build: written, or granted.
+WRITTEN = "wasn't written"
+GRANTED = (
+    "wasn't granted (granted, it would stop every chat; fix it with write_tool first)"
+)
+# Any other REPL is a sandbox, and building a tool runs its code outside it.
 LOCAL_REPL = "local"
 NOT_LOCAL = (
-    "write_tool works only in a chat whose namespace runs the local REPL: building the"
-    " tool to check it runs its code outside any sandbox."
+    "Writing a tool, or granting a custom tool, works only in a chat whose namespace runs"
+    " the local REPL: building the tool to check it runs its code outside any sandbox."
 )
 TITLE = f"A page's title should be text of 1 to {MAX_TITLE_CHARS} characters."
 NOT_MARKDOWN = "text takes Markdown, as text (a str)."
@@ -926,14 +941,9 @@ def check_tool(
     check_no_key([*texts, *texts_in(settings), *literals], key_names)
 
 
-def check_tool_locks(
-    config: V2Config, registry: NamespaceRegistry, chat_namespace: str, name: str
-) -> None:
-    """Raise if the tool may not write tool *name* in a chat in *chat_namespace*: the
-    chat's REPL is a sandbox, root grants the tool, or the engine builds it from its
-    block alone, which the tool couldn't write back."""
-    if registry.resolve(chat_namespace).repl.type != LOCAL_REPL:
-        raise LibraryError(NOT_LOCAL)
+def check_tool_locks(config: V2Config, registry: NamespaceRegistry, name: str) -> None:
+    """Raise if the tool may not write tool *name*: root grants it, or the engine builds
+    it from its block alone, which the tool couldn't write back."""
     if name in registry.config(ROOT).tools:
         raise LibraryError(f"root grants {name}: replacing it is {USERS_CHOICE}")
     block = config.tools.get(name)
@@ -1019,10 +1029,45 @@ def logged(done: str, before: str | None, after: str, **change: str) -> Event:
     return {"done": done, **change}
 
 
+def granted_afresh(
+    connection: sqlite3.Connection,
+    registry: NamespaceRegistry,
+    namespace: NamespaceConfig,
+) -> dict[str, tuple[str, str]]:
+    """The custom tools *namespace* grants that no namespace of the Library, *registry*,
+    grants yet, so no run builds yet, each as its stored YAML and source."""
+    granted = {tool for each in registry.names for tool in registry.config(each).tools}
+    afresh = set(namespace.tools) - granted
+    return {
+        name: (text, source)
+        for name, text, source in library_tools(connection)
+        if name in afresh and source is not None
+    }
+
+
+def check_builds(
+    tools: dict[str, tuple[dict[str, Any], str]], tools_dir: Path, done: str
+) -> None:
+    """Raise unless each of *tools*, by name its block and Python source, builds as a run
+    of this run's config, in its folder beside *tools_dir*, would build it, in this
+    worker's environment. *done* says what wasn't done when one doesn't."""
+    if not tools:
+        return
+    config = tool_check.config_of(tools_dir.parent / SPEC)
+    verdicts = check_tools(tools, config, os.environ, tools_dir / CHECKS)
+    failed = [
+        f"Tool {name} doesn't build, so it {done}: {why}"
+        for name, why in verdicts.items()
+        if why is not None
+    ]
+    if failed:
+        raise LibraryError("\n".join(failed))
+
+
 def build_library(client: Any, params: dict[str, Any]) -> Func:
     """The library tool, over the app file *library* its block in the run's config names,
     for a run of a chat in *namespace*, whose worker holds keys in *key_names*; it builds
-    a tool it writes with the run's *client*, in the run's *tools_dir*."""
+    the tools it checks in the run's *tools_dir*."""
     library, chat_namespace = params["library"], params["namespace"]
     key_names, tools_dir = params["key_names"], Path(params["tools_dir"])
 
@@ -1040,18 +1085,62 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         if not granted:
             raise LibraryError(NOT_THIS_CHAT)
 
+    def check_local(registry: NamespaceRegistry) -> None:
+        """Raise unless this run's chat runs the local REPL: a build runs a tool's code
+        outside any sandbox."""
+        if registry.resolve(chat_namespace).repl.type != LOCAL_REPL:
+            raise LibraryError(NOT_LOCAL)
+
     def may_write(connection: sqlite3.Connection) -> None:
         check_grant(config_and_registry(connection)[1])
 
-    def may_change(connection: sqlite3.Connection, namespace: NamespaceConfig) -> None:
+    def may_grant(
+        built: dict[str, tuple[str, str]],
+        connection: sqlite3.Connection,
+        namespace: NamespaceConfig,
+    ) -> None:
+        """Raise unless the tool may write *namespace*, as the Library stands under the
+        write lock, and the custom tools it grants afresh are those *built*."""
         config, registry = config_and_registry(connection)
         check_grant(registry)
         check_locks(config, registry, namespace)
+        if built:
+            check_local(registry)
+        if granted_afresh(connection, registry, namespace) != built:
+            raise LibraryError(CHANGED_MEANWHILE)
 
     def may_write_tool(connection: sqlite3.Connection, name: str) -> None:
         config, registry = config_and_registry(connection)
         check_grant(registry)
-        check_tool_locks(config, registry, chat_namespace, name)
+        check_local(registry)
+        check_tool_locks(config, registry, name)
+
+    def built_grants(name: str, text: str, adding: bool) -> dict[str, tuple[str, str]]:
+        """The custom tools namespace *name*, as the YAML *text* would make it, grants
+        afresh, as stored, each built, after what the write would refuse cheaply, so a
+        write refused for that runs no tool. With none, the write makes every check, under
+        its lock; the build holds no lock, so the write checks the tools again under it."""
+        if adding:
+            check_name(name)
+        namespace, _ = authored(name, text)
+        with app_file(library, "ro") as connection, reading(connection):
+            config, registry = config_and_registry(connection)
+            afresh = granted_afresh(connection, registry, namespace)
+            if not afresh:
+                return afresh
+            check_grant(registry)
+            check_locks(config, registry, namespace)
+            check_local(registry)
+            if adding:
+                check_place(connection, name)
+            else:
+                check_namespace(connection, name)
+            check_fields(connection, namespace)
+        built = {
+            tool: (loaded(text), source) for tool, (text, source) in afresh.items()
+        }
+        check_builds(built, tools_dir, GRANTED)
+        return afresh
 
     def write_decomposition(namespace: str, yaml: str) -> dict[str, Any]:
         """Add the decomposition *yaml* to *namespace*, or replace the one of its name."""
@@ -1077,8 +1166,11 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def add(name: str, yaml: str) -> dict[str, Any]:
         """Add namespace *name* with the fields *yaml* sets."""
         check_writable(name, yaml, key_names)
+        built = built_grants(name, yaml, adding=True)
         with app_file(library, "rw") as connection:
-            stored = add_namespace(connection, name, yaml, allowed=may_change)
+            stored = add_namespace(
+                connection, name, yaml, allowed=partial(may_grant, built)
+            )
         return logged(
             "added", None, stored, what="namespace", namespace=name, name=name
         )
@@ -1086,35 +1178,14 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def change(name: str, yaml: str) -> dict[str, Any]:
         """Give namespace *name* the fields *yaml* sets in place of its own."""
         check_writable(name, yaml, key_names)
+        built = built_grants(name, yaml, adding=False)
         with app_file(library, "rw") as connection:
             before, stored = change_namespace(
-                connection, name, yaml, allowed=may_change
+                connection, name, yaml, allowed=partial(may_grant, built)
             )
         return logged(
             "changed", before, stored, what="namespace", namespace=name, name=name
         )
-
-    def check_builds(name: str, block: dict[str, Any], source: str) -> None:
-        """Raise unless the engine builds tool *name* from *source*, as a run would."""
-        checks = tools_dir / CHECKS
-        checks.mkdir(parents=True, exist_ok=True)
-        # A folder of its own each time: the engine keeps each file it imported, by path.
-        folder = Path(tempfile.mkdtemp(dir=checks))
-        file = folder / tool_file(name)
-        file.write_text(source, encoding="utf-8")
-        try:
-            make_tool(
-                name,
-                block | {"factory_from": str(file)},
-                client=client,
-                config_path=None,
-            )
-        except ToolBuildError as error:
-            raise LibraryError(
-                f"Tool {name} doesn't build, so it wasn't written: {error.detail}"
-            ) from error
-        finally:
-            shutil.rmtree(folder, ignore_errors=True)
 
     def write_tool(
         name: str, source: str, factory: str, settings: dict[str, Any] | None = None
@@ -1131,7 +1202,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             "factory_from": tool_file(name),
             **(settings or {}),
         }
-        check_builds(name, block, source)
+        check_builds({name: (block, source)}, tools_dir, WRITTEN)
         with app_file(library, "rw") as connection:
             found = store_tool(
                 connection,
