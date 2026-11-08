@@ -77,6 +77,7 @@ from deep_reasoning.runs import (
     chat_turns,
     delete_orphans,
     end_unfinished,
+    forget_spec,
     read_turn,
 )
 from deep_reasoning.settings import (
@@ -183,6 +184,7 @@ def create_app(library, home):
             delete_orphans(connection)
             for run in end_unfinished(connection):
                 log.warning("Ended a run the app stopped under", run=run)
+                forget_spec(data, run)
         yield
         await runs.close()
 

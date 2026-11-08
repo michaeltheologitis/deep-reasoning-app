@@ -19,7 +19,6 @@ from pydantic import ValidationError
 from deep_reasoning.app_tools import claude_code_tools
 from deep_reasoning.library import (
     APP_TOOLS,
-    BUILDERS,
     CLAUDE_CODE,
     CONTENT,
     ENTRY_NAMESPACE,
@@ -36,14 +35,16 @@ from deep_reasoning.library import (
     UPSERT_TOOL,
     LibraryError,
     accepted,
-    check_decomposition_name,
     check_name,
+    check_saved,
     check_size,
     check_tool_block,
+    check_tool_name,
     check_written,
     config_of,
     decomposition_problems,
     dump,
+    expanded_size,
     granted,
     granted_in,
     handed_to,
@@ -57,7 +58,6 @@ from deep_reasoning.library import (
     run_config_and_registry,
     running_code,
     shown,
-    taken,
     template_names,
     template_problems,
     texts_in,
@@ -146,16 +146,8 @@ def tool_row(name, block, config_dir, folder):
         raise LibraryError(
             f'Tool "{name}" has the name of one of the app\'s own tools; rename yours.'
         )
-    factory = block.get("factory", name)
     factory_from = block.get("factory_from")
-    the_builtin = factory_from is None and factory == name and name in BUILDERS
-    if taken(name) and not the_builtin:
-        raise LibraryError(
-            f'Tool "{name}" has a name a built-in, the app or the REPL uses (such as llm,'
-            " history or subagent), or a Python keyword, so it would take that one's"
-            " place in every namespace. Rename it in the config; a block may use a"
-            " built-in's name only to give that built-in its settings."
-        )
+    check_tool_name(name, block)
     check_tool_block(name, block)
     if runs_on_the_chats_model(name, block):
         # The config's model or preset may not exist where the chat runs.
@@ -315,22 +307,6 @@ def about(where):
         raise LibraryError(f"{where}: {error}") from error
 
 
-def expanded_size(data, cap):
-    """How big *data* is with each alias written out in full, as values plus their
-    text's characters, as the engine expands them; the walk stops past *cap*."""
-    size, stack = 0, [data]
-    while stack and size <= cap:
-        value = stack.pop()
-        size += 1
-        if isinstance(value, str | bytes):
-            size += len(value)
-        elif isinstance(value, dict):
-            stack += [*value, *value.values()]
-        elif isinstance(value, list):
-            stack += value
-    return size
-
-
 def reading_folder(path, within=None):
     """The folder an import of the config at *path* reads in, as its real path: the
     config's own, or *within*, a folder holding it; a LibraryError for one that isn't."""
@@ -439,16 +415,17 @@ def check_decompositions(namespaces):
         )
     for name, each in pairs:
         with about(f'Namespace {name}, decomposition "{each.name}"'):
-            check_decomposition_name(each.name)
+            check_saved(each)
             check_size(dump(each.model_dump()), "Its YAML")
 
 
 def namespace_named(name):
     """Namespace *name*, as a refusal names it: quoted when it isn't a plain name, with
-    each character that doesn't show escaped."""
+    each character that isn't printable ASCII escaped, as a look-alike's would pass for
+    another's."""
     if NAMESPACE_NAME.fullmatch(name):
         return f"Namespace {name}"
-    return f'Namespace "{visible(name)}"'
+    return f'Namespace "{ascii(name)[1:-1]}"'
 
 
 def check_new_names(before, changes):

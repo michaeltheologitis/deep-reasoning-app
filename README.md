@@ -128,6 +128,9 @@ deep-reasoning`. A module file in the chat's folder imports too.
   never deleted.
 - Settings has a default folder for new chats; one that isn't on this computer is marked missing, and new chats get
   a scratch folder.
+- Each run keeps its own files in `~/.deep-reasoning`, beside the scratch folders, until its chat is deleted: its
+  worker's log and what the engine writes. The spec the worker ran, which holds the whole Library and the chat so
+  far, is deleted when the run ends.
 
 **The Library**
 - One SQLite file holds the namespaces, worked examples, custom tools and run settings, and your chats with their
@@ -149,7 +152,10 @@ deep-reasoning`. A module file in the chat's folder imports too.
 - Saving refuses what would fail every run there: a template (`{{` or `{%`) the engine can't render, that names
   anything but what it fills in (`task`, `vars`, `funcs`, `coroutines`, the run settings'
   `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`), includes another or reaches into Python
-  internals; over 1,000,000 characters; a name with outer spaces or invisible characters; a namespace named oddly,
+  internals; over 1,000,000 characters; YAML whose aliases (`*name`) stand for far more than it holds; text that
+  reads as a line the app adds at run time (below), in a suffix, a var or a worked example, however spaced, cased
+  or split; a name with outer spaces, invisible characters or a word mixing alphabets (a Cyrillic `а` among Latin
+  letters); a namespace named oddly,
   with a backbone the engine doesn't know, or with a var whose name isn't a Python name, starts with `_`, is a
   keyword or built-in, or is a tool's; and a namespace granting a tool of yours that no namespace granted yet, if it
   doesn't build (built first, up to a minute).
@@ -158,12 +164,14 @@ deep-reasoning`. A module file in the chat's folder imports too.
   namespace menu read the Library again when you open the panel or come back to the window.
 - Each run tells the agents of every namespace but root which namespace they are in, so "hand this to stats" reaching
   `stats` is done there; of one whose REPL isn't the one above it (root: the local one), where their Python runs;
-  and, when it sets `spawn`, where they can hand work. The panel shows that line under its System suffix and marks a
-  listed namespace that is gone; the librarian can't store it in a suffix.
-- A shared Library's rows the engine can't read are left out, so the rest works, and so are worked examples whose
-  template a save would refuse and namespaces whose name could pass for another (`Root`, or one holding anything but
-  printable ASCII, as no saved name does); the panel marks each ✗ with why, to fix or delete. Its templates run
-  sandboxed, reaching no Python internals.
+  and, when it sets `spawn`, where they can hand work. The panel shows that line under its System suffix, "added by
+  the app at run time", and marks a listed namespace that is gone; no save stores text that reads as one.
+- A shared Library's rows the engine can't read are left out, so the rest works, and so is every row a save would
+  refuse: a worked example with a template or name no save takes, or stored under a name its YAML doesn't give; a
+  namespace or tool named as no save names one (`Root`, `historian `, a tool `my-tool`), whose grants runs then
+  ignore; text that reads as a run's own line; YAML whose aliases stand for millions of values. The panel marks each
+  ✗ with why, to fix or delete; a row named as one of the app's own tools is listed under it, and Delete removes only
+  the row. Its templates run sandboxed, reaching no Python internals.
 - Every run builds every tool some namespace grants, whatever its chat's namespace: a granted tool's code runs at the
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never

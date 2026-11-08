@@ -47,11 +47,12 @@ import structlog
 import yaml
 from deep_reasoner.namespaces import ROOT, NamespaceConfig, NamespaceRegistry
 from deep_reasoner.primitives import Func
-from deep_reasoner.v2.cli import V2Config, build_namespace_registry
+from deep_reasoner.v2.cli import V2Config
 
 from deep_reasoning import tool_check
 from deep_reasoning.library import (
     APP_TOOLS,
+    APP_TOOLS_MODULE,
     CLAUDE_CODE,
     HISTORY_DESCRIPTION,
     LIBRARY_DESCRIPTION,
@@ -83,7 +84,6 @@ from deep_reasoning.library import (
     reading,
     refuse_keys,
     run_config_and_registry,
-    run_line_parts,
     running_code,
     same_grants,
     sees,
@@ -120,7 +120,9 @@ from deep_reasoning.runs import (
 )
 from deep_reasoning.tool_check import STOPS_EVERY_CHAT, refuse_unbuilt
 
-log = structlog.get_logger()
+# Named as the module, though the engine loads it by its path under a name of its own:
+# the worker keeps the app's logs, not the agent's, out of cells' output.
+log = structlog.get_logger(APP_TOOLS_MODULE)
 
 Event = dict[str, Any]
 Holder = dict[str, Any]
@@ -150,11 +152,12 @@ NOT_THIS_CHAT = jinja2.Template(
 NOT_TEXT = (
     "The namespace's name should be text, and the YAML text or a dict of plain values."
 )
-# Where a brief list, or history, cut a text short.
-CUT_MARK = re.compile(r"…\(\+[\d,]+ chars\)")
+# Where a brief list, or history, cut a text, list or dict short.
+CUT_MARK = re.compile(r"…\(\+[\d,]+ (?:chars|more items)\)")
 CUT_SHORT = (
-    "What you wrote holds “…(+N chars)”, where a brief list cut a text short: write the"
-    " whole text, from show(name), tools(name) or changes()."
+    "What you wrote holds “…(+N chars)” or “…(+N more items)”, where a text or list was"
+    " cut short: write the whole of it, from show(name, whole=True), tools(name) or"
+    " changes()."
 )
 # An example's cell tags, each on a line of its own, which a cell writes as placeholders,
 # as a reply's last real <repl> is the one that runs.
@@ -191,12 +194,6 @@ READ_ONLY_HERE = jinja2.Template(
     " its instructions, Decompositions for its examples.",
     undefined=jinja2.StrictUndefined,
 )
-# show(name) lists the lines a run adds after a suffix, which the librarian may copy.
-RUN_TIME_LINE = jinja2.Template(
-    "system_suffix holds “{{ line }}”, which the app adds at run time: leave it out, or"
-    " its agents read it twice.",
-    undefined=jinja2.StrictUndefined,
-)
 NOT_LOCAL = (
     "Writing a tool, or granting a custom tool, works only in a chat whose namespace runs"
     " the local REPL: building the tool to check it runs its code outside any sandbox."
@@ -228,10 +225,19 @@ MAX_VALUE_CHARS = 2_000
 # And library.show() and tools() each text in their brief lists past this: a Library may
 # hold hundreds of namespaces and examples, and show(name) or tools(name) gives one whole.
 BRIEF_CHARS = 200
+# And show(name) each text past this, unless asked for it whole: a namespace's own YAML
+# and worked examples fit, and a shared file's may hold a million characters each.
+SHOWN_CHARS = 20_000
 # And each list or dict nested deeper than this: no run of the app's nests one past a
 # few levels, and a file from someone else may nest one thousands deep.
 MAX_VALUE_DEPTH = 20
 NESTED_TOO_DEEP = "…(nested too deep)"
+# And all a value holds past this many characters: no run of the app's returns one near
+# it, and a shared file's aliases can make millions of short texts.
+MAX_TOTAL_CHARS = 1_000_000
+# What is said in a list, or under CUT_KEY in a dict, of the items left out past it.
+MORE = "…(+{:,} more items)"
+CUT_KEY = "…"
 # errors and find list at most this many rows, then one saying how many more.
 MAX_FOUND = 50
 # What find shows on each side of a match.
@@ -444,18 +450,41 @@ def agent_row(row: Holder) -> dict[str, Any]:
     }
 
 
-def cut(value: Any, depth: int = 0, limit: int = MAX_VALUE_CHARS) -> Any:
+def cut(value: Any, limit: int = MAX_VALUE_CHARS) -> Any:
     """*value*, copied, with each text past *limit* characters cut there, saying how much
-    is left out, and each list or dict past MAX_VALUE_DEPTH levels marked in its place."""
-    if isinstance(value, str) and len(value) > limit:
-        return f"{value[:limit]}…(+{len(value) - limit:,} chars)"
-    if not isinstance(value, dict | list):
-        return value
-    if depth == MAX_VALUE_DEPTH:
-        return NESTED_TOO_DEEP
-    if isinstance(value, dict):
-        return {name: cut(each, depth + 1, limit) for name, each in value.items()}
-    return [cut(each, depth + 1, limit) for each in value]
+    is left out, each list or dict past MAX_VALUE_DEPTH levels marked in its place, and,
+    once MAX_TOTAL_CHARS characters are copied, the rest of each list or dict left out,
+    saying how much: aliases in a shared file's YAML can make millions of short texts."""
+    left = MAX_TOTAL_CHARS
+
+    def copied(each: Any, depth: int) -> Any:
+        nonlocal left
+        left -= 1
+        if isinstance(each, str):
+            text = each if len(each) <= limit else cut_text(each, limit)
+            left -= len(text)
+            return text
+        if not isinstance(each, dict | list):
+            return each
+        if depth == MAX_VALUE_DEPTH:
+            return NESTED_TOO_DEEP
+        items = list(each.items() if isinstance(each, dict) else enumerate(each))
+        kept = []
+        for key, item in items:
+            if left <= 0:
+                break
+            left -= len(key) if isinstance(key, str) else 0
+            kept.append((key, copied(item, depth + 1)))
+        more = len(items) - len(kept)
+        if isinstance(each, list):
+            return [item for _, item in kept] + ([MORE.format(more)] if more else [])
+        return dict(kept) | ({CUT_KEY: MORE.format(more)} if more else {})
+
+    return copied(value, 0)
+
+
+def cut_text(text: str, limit: int) -> str:
+    return f"{text[:limit]}…(+{len(text) - limit:,} chars)"
 
 
 def error_of(output: Any) -> str | None:
@@ -1150,33 +1179,6 @@ def check_locks(
         check_inherited(config, registry, name, above)
 
 
-def check_no_run_lines(
-    config: V2Config, registry: NamespaceRegistry, namespace: NamespaceConfig
-) -> None:
-    """Raise if *namespace*'s system_suffix holds a line a run adds after a suffix, as
-    show(name) lists them, before the write or after it, that its stored one doesn't."""
-    name, suffix = namespace.name, namespace.system_suffix or ""
-    stored = ""
-    if name in registry.names:
-        stored = registry.config(name).system_suffix or ""
-    for lines in [*run_line_parts(registry).values(), *lines_after(config, namespace)]:
-        for line in lines:
-            if line in suffix and line not in stored:
-                raise LibraryError(RUN_TIME_LINE.render(line=line))
-
-
-def lines_after(config: V2Config, namespace: NamespaceConfig) -> list[list[str]]:
-    """The lines run_line_parts() gives each namespace of *config*, a run's, once
-    *namespace* is written into it; none when the engine can't resolve it so, as the
-    write is then refused for why."""
-    namespaces = config.namespaces | {namespace.name: namespace}
-    written = config.model_copy(update={"namespaces": namespaces})
-    try:
-        return [*run_line_parts(build_namespace_registry(written)).values()]
-    except ValueError:
-        return []
-
-
 def check_inherited(
     config: V2Config, registry: NamespaceRegistry, name: str, above: str
 ) -> None:
@@ -1224,9 +1226,10 @@ def field_changes(before: str, after: str) -> tuple[dict[str, Any], list[str]]:
 
 
 def in_brief(row: dict[str, Any], registry: NamespaceRegistry) -> dict[str, Any]:
-    """A namespace as show() lists it, each text cut short: what it sets itself, the
-    tools its agents get, and each of its own decompositions with its problem count."""
-    brief = {
+    """A namespace as show() lists it, before its texts are cut short: what it sets
+    itself, the tools its agents get, and each of its own decompositions with its
+    problem count."""
+    return {
         "name": row["name"],
         "depth": row["depth"],
         "sets": fields_of(row["yaml"]),
@@ -1236,10 +1239,9 @@ def in_brief(row: dict[str, Any], registry: NamespaceRegistry) -> dict[str, Any]
             for each in row["decompositions"]
         ],
     }
-    return cut(brief, limit=BRIEF_CHARS)
 
 
-def whole(
+def in_full(
     row: dict[str, Any],
     read: dict[str, Any],
     run: V2Config,
@@ -1401,11 +1403,11 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     editors = params.get("editors", [])
     pick = PICK_AN_EDITOR.render(editors=editors)
 
-    def show(name: str | None = None) -> Any:
-        """Every namespace in brief, or namespace *name* whole: its fields as the panel
-        shows them, and the decompositions its agents are shown, as a run resolves them.
-        Not the panel's Delete refusals: an agent that can't delete took them as reasons
-        not to edit."""
+    def show(name: str | None = None, whole: bool = False) -> Any:
+        """Every namespace in brief, or namespace *name* in full: its fields as the panel
+        shows them, and the decompositions its agents are shown, as a run resolves them,
+        each text cut past SHOWN_CHARS unless *whole*. Not the panel's Delete refusals:
+        an agent that can't delete took them as reasons not to edit."""
         with app_file(library, "ro") as connection, reading(connection):
             read = read_library(connection)
             config, registry = run_config_and_registry(config_of(read))
@@ -1416,8 +1418,11 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
                 if row["name"] in registry.names
             ]
         if name is None:
-            return [in_brief(row, registry) for row in rows]
-        return whole(named(rows, name, "namespace", "show()"), read, config, registry)
+            return cut([in_brief(row, registry) for row in rows], limit=BRIEF_CHARS)
+        found = in_full(
+            named(rows, name, "namespace", "show()"), read, config, registry
+        )
+        return found if whole else cut(found, limit=SHOWN_CHARS)
 
     def tools(name: str | None = None) -> Any:
         """Every tool in brief, or tool *name* whole, with its source."""
@@ -1459,7 +1464,6 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         config, registry = config_and_registry(connection)
         check_grant(registry)
         check_locks(config, registry, namespace)
-        check_no_run_lines(config, registry, namespace)
         if afresh:
             check_local(registry)
 

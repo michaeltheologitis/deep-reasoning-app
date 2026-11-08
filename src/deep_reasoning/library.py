@@ -19,7 +19,7 @@ import sys
 import unicodedata
 from collections import Counter, defaultdict
 from contextlib import closing, contextmanager
-from functools import lru_cache, partial
+from functools import cache, lru_cache, partial
 from pathlib import Path
 
 import deep_reasoner.llm
@@ -292,6 +292,21 @@ NO_SUB_AGENTS = (
     "Whatever is said above of sub-agents, agents here can't hand work to them: subagent"
     " is refused, so answer without them."
 )
+# Where the panel and show(name) say the lines above come from: the app, never stored.
+ADDED_AT_RUN_TIME = "added by the app at run time"
+# The lines above, as their shapes, in text as plain_words() writes it: a stored text
+# holding one would pass for the app's own line, as which namespace its agents are in,
+# where their Python runs (a sandbox, say) or where they may hand work.
+RUN_LINE_SHAPES = re.compile(
+    r"\byou(?: are|'re) in the \S+ namespace\b"
+    r"|\byour python (?:code )?runs\b"
+    r"|\bsub-?agents (?:may )?run only in\b"
+    r"|\breplaces any line above\b"
+    r"|\bwhatever is said above of sub-?agents\b"
+    r"|\bagents here (?:can't|cannot|can not) hand work\b"
+    r"|\bsubagent is refused\b"
+)
+CURLY_APOSTROPHES = "\u2018\u2019\u02bc"
 # What a namespace that can't make a worked example's hand-off is shown in its place, by
 # kind: "here" when it is the target or under it, so it answers itself; "record" when only
 # the target reads the chat's record, so it can't; else it answers itself if it can.
@@ -443,7 +458,8 @@ yaml, give YAML text or a dict of plain values.
 sets itself), tools (all its agents get, inherited ones included) and decompositions \
 (only those it holds itself: each name, with how many problems it has as a worked \
 example: 0 is ✓). Each text is cut after 200 characters, ending "…(+N chars)". \
-show(name) gives namespace `name` whole: name, depth, yaml (the fields it sets itself, \
+show(name) gives namespace `name` in full, each text cut only after 20,000 characters \
+(show(name, whole=True) cuts none): name, depth, yaml (the fields it sets itself, \
 as change_namespace takes them), fields (each as the engine resolves it, with where it \
 comes from), decompositions (every one its agents are shown, inherited ones included: \
 each with its name and from, the namespace that holds it; those `name` holds itself \
@@ -531,8 +547,9 @@ chat should do goes in root's system_suffix. There is no method for the system p
 or the run settings (max_iter, max_depth, ...): only the user changes them, by importing \
 a config (deep-reasoning import).
 Each write returns what it did, as {done, what, name} (and namespace, but for a tool); \
-a refusal raises ValueError saying why. One that holds "…(+N chars)", where a brief \
-list cut a text short, is refused: write the whole text."""
+a refusal raises ValueError saying why. One that holds "…(+N chars)", where a text \
+was cut short, or "…(+N more items)", where a long list was, is refused: write the \
+whole text."""
 PAGE_DESCRIPTION = """\
 When the user asks to see something (how an earlier answer was worked out, what an \
 agent did, an error) and you found it, show it on a page with `page`: the app opens it \
@@ -610,20 +627,32 @@ MAX_YAML_CHARS = 1_000_000
 # is read only within MAX_ROW_BYTES, as UTF-8 takes at most 4 bytes a character.
 MAX_ROW_BYTES = 4 * MAX_YAML_CHARS
 TOO_LONG_ROW = f"It is longer than the {MAX_YAML_CHARS:,} characters the Library holds."
+# How much YAML may stand for with its aliases written out, as values plus their text's
+# characters (expanded_size()): YAML written out never stands for twice its characters,
+# and aliases may stand for this much more.
+ALIASES_STAND_FOR = 2
+ALIASES_ALLOWANCE = 10_000
 YAML_NOT_TEXT = "Its YAML isn't text."
 GRANT_IGNORED = "Runs ignore its grants until it is fixed or deleted."
+SHADOWS_AN_APP_TOOL = (
+    "It has the name of the app's own {} tool, which runs build in its place: Delete"
+    " removes only this row."
+)
 NAME_NOT_TEXT = "Its name isn't text."
 NOT_A_RUN_SETTING = "The Library never holds it: each chat or run sets it, or the Library's own tables do."
 # What heads the problems of a decomposition left out: one the engine can't read, or
 # can't render, which would fail every run in its namespace and below.
 UNREAD_DECOMPOSITION = "Agents aren't shown it: the engine can't read it."
 UNRENDERED_DECOMPOSITION = "Agents aren't shown it: a run can't render it."
+UNSAVED_DECOMPOSITION = "Agents aren't shown it: no save would store it so."
 # How many stored decompositions' readings are kept, so a read of the Library parses only
 # those that changed; a Library holds a few dozen.
 DECOMPOSITIONS_KEPT = 256
 FIELDS_MAPPING = 'The YAML should be a mapping of fields, like "tools: [llm]".'
 # A var named as one of these hides it from the agent's code, as max: 10 breaks max(numbers).
 BUILTIN_NAMES = frozenset(dir(builtins))
+# Alphabets with letters that pass for one another's, as Cyrillic а for Latin a.
+LOOK_ALIKE_SCRIPTS = {"LATIN", "CYRILLIC", "GREEK", "ARMENIAN"}
 # Characters that don't show: controls and formats, such as a zero-width space.
 INVISIBLE = ("Cc", "Cf")
 # What the engine renders a turn's template against, beside prompt_template_variables.
@@ -984,6 +1013,25 @@ def check_tool_block(name, block):
         )
 
 
+def check_tool_name(name, block):
+    """Raise unless a tool of the Library may be named *name*, as its config *block*
+    makes it: a Python name (tool_file()), as agents call it by its name, and none taken
+    (taken()), but by a built-in's own block, which gives that built-in its settings."""
+    tool_file(name)
+    the_builtin = (
+        block.get("factory_from") is None
+        and block.get("factory", name) == name
+        and name in BUILDERS
+    )
+    if taken(name) and not the_builtin:
+        raise LibraryError(
+            f'Tool "{name}" has a name a built-in, the app or the REPL uses (such as llm,'
+            " history or subagent), or a Python keyword, so it would take that one's"
+            " place in every namespace. Rename it; a block may use a built-in's name"
+            " only to give that built-in its settings."
+        )
+
+
 def tool_block(name, text, source):
     """Tool *name*'s block, from its YAML *text*, if it is one the app stores: with its
     Python *source*, or without for one the engine builds; else a LibraryError saying
@@ -994,6 +1042,7 @@ def tool_block(name, text, source):
     except ValidationError as error:
         raise unreadable(error) from error
     check_tool_block(name, block)
+    check_tool_name(name, block)
     if (source is None) != (block.get("factory_from") is None):
         raise LibraryError(
             "A tool holds Python exactly when its block names a file for it"
@@ -1007,7 +1056,7 @@ def tool_block(name, text, source):
 def read_tools(connection):
     """The Library's own tools that load, as {name: (block, source)}, and those left out,
     as {name: why}. A row under an app tool's name, as a shared file may hold, is left
-    out too: the app's own takes its place."""
+    out too: the app's own takes its place, and keeps its grants."""
     query = (
         f"SELECT name, {fitting('yaml')}, {fitting('source')} FROM tools ORDER BY rowid"
     )
@@ -1017,7 +1066,7 @@ def read_tools(connection):
             warn_left_out("tools", name, NAME_NOT_TEXT)
             continue
         if name in APP_TOOLS:
-            log.warning("library.tool_shadowed", tool=name)
+            left[name] = warn_left_out("tools", name, SHADOWS_AN_APP_TOOL.format(name))
             continue
         try:
             source = None if source_size is None else row_text(source, source_size)
@@ -1041,6 +1090,7 @@ def own_fields(name, text):
         NamespaceConfig.model_validate(fields | {"name": name})
     except ValidationError as error:
         raise LibraryError("\n".join(map(namespace_problem, error.errors()))) from error
+    check_no_run_lines(fields)
     return fields
 
 
@@ -1087,7 +1137,7 @@ def read_decompositions(connection, names):
         if type(namespace) is not str or type(name) is not str:
             warn_left_out("decompositions", (namespace, name), NAME_NOT_TEXT)
             continue
-        decomposition, why = decomposition_read(text, size, names)
+        decomposition, why = decomposition_read(text, size, name, names)
         if why:
             warn_left_out("decompositions", (namespace, name), why)
         row = {"namespace": namespace, "name": name, "yaml": shown_text(text, size)}
@@ -1096,16 +1146,27 @@ def read_decompositions(connection, names):
 
 
 @lru_cache(maxsize=DECOMPOSITIONS_KEPT)
-def decomposition_read(text, size, names):
+def decomposition_read(text, size, name, names):
     """A stored decomposition, read from its row's *text* and *size* (as fitting() reads
-    them), and why it is left out: the decomposition and None when agents can be shown
-    it; None and why, as the panel lists it, when the engine can't read it or can't
-    render one of its turns, whose templates may read only *names*. Kept for the next
-    read of the Library, which most requests and every run make."""
+    them) and the *name* the row is stored under, and why it is left out: the
+    decomposition and None when agents can be shown it; None and why, as the panel lists
+    it, when the engine can't read it, a save wouldn't store it so, or a run can't render
+    one of its turns, whose templates may read only *names*. Kept for the next read of
+    the Library, which most requests and every run make."""
     try:
         decomposition = decomposition_in(row_text(text, size))
     except LibraryError as error:
         return None, f"{UNREAD_DECOMPOSITION}\n{error}"
+    try:
+        check_saved(decomposition)
+        if decomposition.name != name:
+            raise LibraryError(
+                f"It is stored as {name!a}, but its YAML names it"
+                f" {decomposition.name!a}, so the panel would list one and agents be"
+                " shown the other: the app stores each under its own name."
+            )
+    except LibraryError as error:
+        return None, f"{UNSAVED_DECOMPOSITION}\n{error}"
     if problems := template_problems(decomposition, names):
         return None, "\n".join([UNRENDERED_DECOMPOSITION, *problems])
     return decomposition, None
@@ -1144,7 +1205,7 @@ def config_of(read):
     for row in read["decompositions"]:
         if row["decomposition"] is not None:
             decompositions[row["namespace"]].append(row["decomposition"].model_dump())
-    ignored = read["tools_left"].keys() - BROUGHT_BY_A_MODEL
+    ignored = read["tools_left"].keys() - BROUGHT_BY_A_MODEL - APP_TOOLS.keys()
     namespaces = {
         name: without_grants(name, fields, ignored)
         | {"decompositions": decompositions[name]}
@@ -1301,9 +1362,10 @@ def sandbox_line(registry, name):
     return SANDBOX_LINE.render(type=repl, local=LOCAL_REPL)
 
 
-def run_line_parts(registry):
-    """Each line the agents of each namespace are told at run time, by namespace, for
-    those told any."""
+def run_lines(registry):
+    """What the agents of each namespace are told at run time, after its own
+    system_suffix, by namespace, for those told any: which namespace they are in, where
+    their Python runs, and where they can hand work."""
     spawns = spawn_lines(registry)
     parts = {
         name: [
@@ -1313,14 +1375,9 @@ def run_line_parts(registry):
         ]
         for name in registry.names
     }
-    return {name: [*filter(None, each)] for name, each in parts.items() if any(each)}
-
-
-def run_lines(registry):
-    """What the agents of each namespace are told at run time, after its own
-    system_suffix, by namespace, for those told any: which namespace they are in, where
-    their Python runs, and where they can hand work."""
-    return {name: " ".join(parts) for name, parts in run_line_parts(registry).items()}
+    return {
+        name: " ".join(filter(None, each)) for name, each in parts.items() if any(each)
+    }
 
 
 def hand_off_kind(registry, namespace, target):
@@ -1549,6 +1606,16 @@ def check_backbones(registry, names):
             )
 
 
+def held_in(value):
+    """What *value* holds, keys included, when it is a mapping, list, or set or the pairs
+    !!set, !!omap and !!pairs make; None for any other value."""
+    if isinstance(value, dict):
+        return [*value, *value.values()]
+    if isinstance(value, list | tuple | set | frozenset):
+        return list(value)
+    return None
+
+
 def texts_in(data):
     """Every text in parsed YAML *data*, keys included, and bytes read as latin-1, as a
     key written as !!binary is; each mapping or list once, as aliases may share or nest them."""
@@ -1559,11 +1626,41 @@ def texts_in(data):
             yield value
         elif isinstance(value, bytes):
             yield value.decode("latin-1")
-        elif isinstance(value, dict | list) and id(value) not in seen:
+        elif (held := held_in(value)) is not None and id(value) not in seen:
             seen.add(id(value))
-            stack.extend(
-                [*value, *value.values()] if isinstance(value, dict) else value
+            stack.extend(held)
+
+
+def expanded_size(data, cap):
+    """How big parsed YAML *data* is with each alias written out in full, as the engine
+    expands them, as values plus their text's characters; past *cap* for one that holds
+    itself, which never ends. Each mapping or list is measured once, so it takes as long
+    as the text did to parse."""
+    if held_in(data) is None:
+        return scalar_size(data)
+    sizes, stack = {}, [data]
+    while stack:
+        value = stack[-1]
+        held = held_in(value)
+        inner = [each for each in held if held_in(each) is not None]
+        if id(value) not in sizes:
+            # None while what it holds is measured: one of those holding it is a loop.
+            sizes[id(value)] = None
+            if any(sizes.get(id(each), 0) is None for each in inner):
+                return cap + 1
+            stack += [each for each in inner if id(each) not in sizes]
+            continue
+        stack.pop()
+        if sizes[id(value)] is None:
+            sizes[id(value)] = 1 + sum(
+                scalar_size(each) if held_in(each) is None else sizes[id(each)]
+                for each in held
             )
+    return sizes[id(data)]
+
+
+def scalar_size(value):
+    return 1 + len(value) if isinstance(value, str | bytes) else 1
 
 
 def literals(tree):
@@ -1630,6 +1727,7 @@ def loaded(text):
         ) from error
     except RecursionError as error:
         raise LibraryError("The YAML is nested too deeply to read.") from error
+    check_aliases(data, text)
     half = next(filter(None, map(SURROGATE.search, texts_in(data))), None)
     if half:
         raise LibraryError(
@@ -1637,6 +1735,50 @@ def loaded(text):
             " can hold; write the whole character instead."
         )
     return data
+
+
+def check_no_run_lines(data):
+    """Raise if a text in parsed YAML *data* reads as one of the lines a run adds after a
+    namespace's system_suffix (RUN_LINE_SHAPES), however spaced, cased or split: agents
+    would take it for the app's."""
+    for text in texts_in(data):
+        if found := RUN_LINE_SHAPES.search(plain_words(text)):
+            raise LibraryError(
+                f"It holds “{found.group()}”, which reads as a line the app adds after a"
+                " namespace's system_suffix at run time (which namespace its agents are"
+                " in, where their Python runs, where they may hand work), so agents would"
+                " take it for the app's: take it out."
+            )
+
+
+def plain_words(text):
+    """*text* as its words read: in its compatible forms (NFKC, so a non-breaking or
+    full-width space is a space), without the characters that don't show, apostrophes
+    straight, each run of spaces and line breaks one space, case folded."""
+    text = unicodedata.normalize("NFKC", text).translate(unseen_and_curly())
+    return " ".join(text.split()).casefold()
+
+
+@cache
+def unseen_and_curly():
+    """What plain_words() writes each character that doesn't show, but a space, and each
+    curly apostrophe, as: none, and a straight one."""
+    unseen = [char for char in map(chr, range(sys.maxunicode + 1)) if invisible(char)]
+    table = {ord(char): None for char in unseen if not char.isspace()}
+    return table | {ord(char): "'" for char in CURLY_APOSTROPHES}
+
+
+def check_aliases(data, text):
+    """Raise if the YAML *text*, parsed as *data*, stands for much more than it holds once
+    each alias (*name) is written out, as the engine writes them out: a few lines of them
+    can stand for millions of values."""
+    allowed = ALIASES_STAND_FOR * len(text) + ALIASES_ALLOWANCE
+    if expanded_size(data, allowed) > allowed:
+        raise LibraryError(
+            "Its aliases (*name) stand for too much: written out, as the engine reads"
+            f" them, it would hold more than {allowed:,} values and characters, from"
+            f" {len(text):,} characters of YAML. Write it without aliases."
+        )
 
 
 def fields_in(text):
@@ -1664,16 +1806,24 @@ def decomposition_in(text):
 
 
 def parsed(text):
-    """The decomposition the YAML *text* describes, checked by the engine's own model, its
-    name as the panel saves one."""
+    """The decomposition the YAML *text* describes, checked by the engine's own model, as
+    a save takes one (check_saved())."""
     decomposition = decomposition_in(text)
-    check_decomposition_name(decomposition.name)
+    check_saved(decomposition)
     return decomposition
+
+
+def check_saved(decomposition):
+    """Raise unless *decomposition* is one a save takes: named as the panel names one, and
+    holding no line the app adds at run time."""
+    check_decomposition_name(decomposition.name)
+    check_no_run_lines(decomposition.model_dump())
 
 
 def check_decomposition_name(name):
     """Raise unless a decomposition's *name* reads as it looks: not blank, with no outer
-    space or character you can't see."""
+    space, character you can't see, or word mixing alphabets whose letters pass for one
+    another's."""
     if not name.strip():
         raise LibraryError(BLANK_NAME)
     if name != name.strip():
@@ -1687,6 +1837,23 @@ def check_decomposition_name(name):
             f"The name holds a character you can't see ({hidden}); take it out, so it"
             " reads as it looks."
         )
+    for word in re.findall(r"\w+", name):
+        scripts = Counter(map(script_of, filter(str.isalpha, word)))
+        if len(scripts.keys() & LOOK_ALIKE_SCRIPTS) > 1:
+            main = scripts.most_common(1)[0][0]
+            odd = next(
+                each for each in word if each.isalpha() and script_of(each) != main
+            )
+            raise LibraryError(
+                f"The name mixes alphabets in the word {word!a} (U+{ord(odd):04X}), so it"
+                " could pass for another; write each word in one alphabet, so it reads as"
+                " it looks."
+            )
+
+
+def script_of(letter):
+    """The alphabet *letter* is of, as its Unicode name begins: LATIN, CYRILLIC, ..."""
+    return unicodedata.name(letter, "").partition(" ")[0]
 
 
 def first_char(text, test):
@@ -2038,6 +2205,7 @@ def authored(name, text):
         raise LibraryError("\n".join(problems)) from error
     if problems:
         raise LibraryError("\n".join(problems))
+    check_no_run_lines(fields)
     # As typed, comments and all, but for the one text an untouched root is kept as.
     return namespace, own_yaml(text)
 
@@ -2158,8 +2326,10 @@ def check_written(connection, name, adding):
     takes a var's place. A namespace elsewhere is not its to answer for. The panel's
     saves and an import each call it, so a check added here reaches both."""
     _, registry = accepted(connection)
-    if name not in registry.names:
-        raise LibraryError(read_namespaces(connection)[1][name])
+    # Root's too, which the engine supplies bare when the file's is left out.
+    left = read_namespaces(connection)[1]
+    if name in left:
+        raise LibraryError(left[name])
     check_fields(connection, registry.config(name), adding)
     below = [each for each in registry.names if name in registry.chain(each)]
     check_backbones(registry, below)
@@ -2186,31 +2356,44 @@ def check_name(name):
     child, none of them root by another spelling, as root is every namespace's parent."""
     if not name:
         raise LibraryError(NAME_IT)
+    if odd := first_char(name, not_plain):
+        raise LibraryError(
+            f"The name holds a character a namespace's name can't ({odd}), so it could"
+            f" pass for another namespace in the menu. {NAME_SHAPE}"
+        )
     if not NAMESPACE_NAME.fullmatch(name):
         raise LibraryError(NAME_SHAPE)
-    if ROOT in name.lower().split("."):
+    if reads_as_root(name):
         raise LibraryError(
             f'"{name}" reads as root, which every namespace goes under already: name it'
             ' something else, like "research".'
         )
 
 
+def not_plain(char):
+    return not (char.isascii() and char.isprintable())
+
+
+def reads_as_root(name):
+    return ROOT in [part.strip().lower() for part in name.split(".")]
+
+
 def check_stored_name(name):
-    """Raise unless a stored namespace's *name* holds only what a saved one may hold,
-    printable ASCII, and, unless it is root, doesn't read as root, so none passes for
-    another in the menu, written out so the panel shows what it holds. The save's
-    stricter rules (check_name()) are left to saving, so an older Library's names stay."""
-    if odd := first_char(
-        name, lambda char: not (char.isascii() and char.isprintable())
-    ):
-        why = f"holds characters a saved name can't ({odd})"
-    elif name != ROOT and name.strip().lower() == ROOT:
-        why = "reads as root"
+    """Raise unless a stored namespace's *name*, root's aside, is one a save takes
+    (check_name()), written out so the panel shows what it holds: one that isn't could
+    pass for another in the menu, as "historian " for historian."""
+    if name == ROOT:
+        return
+    passes = "so it could pass for another namespace in the menu"
+    if odd := first_char(name, not_plain):
+        why = f"holds characters a saved name can't ({odd}), {passes}"
+    elif reads_as_root(name):
+        why = f"reads as root, {passes}"
+    elif not NAMESPACE_NAME.fullmatch(name):
+        why = f"isn't one a save takes: {NAME_SHAPE[0].lower()}{NAME_SHAPE[1:-1]}"
     else:
         return
-    raise LibraryError(
-        f"Its name, {name!a}, {why}, so it could pass for another namespace in the menu."
-    )
+    raise LibraryError(f"Its name, {name!a}, {why}.")
 
 
 def check_place(connection, name):
@@ -2375,8 +2558,9 @@ def delete_tool(connection, name):
 
 def tool_refusal(name, granting, stored):
     """Why tool *name* can't be deleted, as the namespaces *granting* grant it and the
-    Library holds a row for it or not (*stored*); None when it can."""
-    if granting:
+    Library holds a row for it or not (*stored*); None when it can. A row under an app
+    tool's name, as a shared file may hold, holds no grant: the app's tool keeps them."""
+    if granting and name not in APP_TOOLS:
         return (
             f"{name} is granted in {', '.join(granting)}: take it out of their tools"
             " first."
@@ -2566,7 +2750,8 @@ def namespace_fields(registry, name, run, targets, lines):
             suffixes.append(located(text, level, name))
         if level in lines:
             item = located(lines[level], level, name)
-            suffixes.append(item | {"source": f"added at run time, {item['source']}"})
+            whose = "" if item["here"] else f", {item['source']}"
+            suffixes.append(item | {"source": f"{ADDED_AT_RUN_TIME}{whose}"})
     fields = [
         {"label": "REPL", "items": [repl_item]},
         {"label": "Backbone", "items": [backbone(resolved, run)]},
