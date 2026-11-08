@@ -4478,9 +4478,11 @@ async def test_a_granted_tool_left_out_is_ignored_so_runs_and_writes_go_on(
     assert name not in by_name(after["tools"])
     drafts = by_name(after["namespaces"])["drafts"]
     assert drafts["yaml"] == dump({"tools": [name]})
-    assert drafts["warnings"] == [
-        f"It grants {name}, which the Library lacks, so runs ignore that grant."
-    ]
+    missing = (
+        f'Tool "{name}" isn\'t in the Library, so runs would ignore a grant of it: add'
+        " the tool first, or take it out of tools."
+    )
+    assert drafts["warnings"] == [missing]
     assert again[-1]["outcome"] == "answered"
 
 
