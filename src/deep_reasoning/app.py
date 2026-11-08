@@ -41,6 +41,7 @@ from deep_reasoning.folders import (
     working_folder,
 )
 from deep_reasoning.library import (
+    ROOT,
     ChangedMeanwhile,
     LibraryError,
     add_decomposition,
@@ -243,7 +244,7 @@ def create_app(library, home):
             edit_decomposition(connection, namespace, name, was, yaml)
             return library_panel(connection)
 
-    # Shown no YAML (was null), as one too long to show, it is deleted while it is so.
+    # was is null for a decomposition too long to show.
     @app.delete("/api/decompositions")
     def remove_decomposition(
         namespace: Annotated[str, Body()],
@@ -261,9 +262,10 @@ def create_app(library, home):
             add_namespace(connection, name, yaml)
             return library_panel(connection)
 
+    # was is null for a namespace too long to show, which the save replaces while it is so.
     @app.put("/api/namespaces/{name:path}")
     def put_namespace(
-        name: str, yaml: Annotated[str, Body()], was: Annotated[str, Body()]
+        name: str, yaml: Annotated[str, Body()], was: Annotated[str | None, Body()]
     ):
         with closing(open_library(library)) as connection:
             change_namespace(connection, name, yaml, was=was)
@@ -454,8 +456,9 @@ def create_app(library, home):
         chosen = shown(chat, starting_points())
         namespace, model = chosen["namespace"], chosen["model"]
         with closing(open_library(library)) as connection:
-            readable, left_out = read_namespaces(connection)
-            if namespace not in readable:
+            readable, left_out, _ = read_namespaces(connection)
+            # The engine supplies a bare root when the file's is left out or missing.
+            if namespace != ROOT and namespace not in readable:
                 gone = (
                     "is one the engine can't read (the Library panel says why)"
                     if namespace in left_out

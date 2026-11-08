@@ -21,7 +21,7 @@ from deep_reasoning.library import (
     ENTRY_NAMESPACE,
     HISTORIAN,
     LIBRARIAN,
-    NOT_IMPORTED,
+    NOT_RUN_SETTINGS,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
@@ -33,15 +33,12 @@ from deep_reasoning.library import (
     decomposition_problems,
     dump,
     granted,
-    library_tools,
     literals,
     namespace_problem,
     parsed_python,
     problem,
-    read_decompositions,
-    read_namespaces,
+    read_library,
     shown,
-    stored_settings,
     suffix_problem,
     taken,
     template_names,
@@ -261,19 +258,17 @@ def library_state(connection):
     fields; each decomposition as the engine reads it, by (namespace, name), None for one
     left out; and each tool's block and source. A row the engine can't read is left out
     with a warning, as the Library's readers leave it out."""
+    read = read_library(connection)
     return {
-        "settings": stored_settings(connection),
-        "namespaces": read_namespaces(connection)[0],
+        "settings": read["settings"],
+        "namespaces": read["namespaces"],
         "decompositions": {
             (row["namespace"], row["name"]): (
                 row["decomposition"].model_dump() if row["decomposition"] else None
             )
-            for row in read_decompositions(connection)
+            for row in read["decompositions"]
         },
-        "tools": {
-            name: (yaml.safe_load(text), source)
-            for name, text, source in library_tools(connection)
-        },
+        "tools": read["tools"],
     }
 
 
@@ -373,7 +368,7 @@ def import_config(connection, path, secrets=(), environment=None):
     given)."""
     config = read_config(path)
     registry = build_namespace_registry(config)
-    unread = NOT_IMPORTED | set(config.model_extra or {})
+    unread = NOT_RUN_SETTINGS | set(config.model_extra or {})
     settings = config.model_dump(exclude_unset=True, exclude=unread)
     check_not_the_apps([*registry.names, settings.get(ENTRY_NAMESPACE)])
     tools = {
@@ -555,7 +550,7 @@ def left_out(config):
             f"Left out: the top-level decompositions {', '.join(openings)}, which open a"
             " run of `dr --main-decomposition`; a chat has none."
         )
-    unread = sorted((config.model_fields_set & NOT_IMPORTED) - CONTENT)
+    unread = sorted((config.model_fields_set & NOT_RUN_SETTINGS) - CONTENT)
     if unread:
         lines.append(
             f"Left out, as the app sets them for each chat and run: {', '.join(unread)}."

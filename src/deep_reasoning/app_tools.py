@@ -48,7 +48,6 @@ from deep_reasoner.v2.cli import V2Config
 from deep_reasoning import tool_check
 from deep_reasoning.library import (
     APP_TOOLS,
-    BUILDERS,
     CLAUDE_CODE,
     HISTORY_DESCRIPTION,
     LIBRARY_DESCRIPTION,
@@ -65,7 +64,9 @@ from deep_reasoning.library import (
     check_name,
     check_namespace,
     check_place,
+    check_tool_block,
     config_and_registry,
+    config_of,
     count,
     distrust,
     dump,
@@ -79,8 +80,10 @@ from deep_reasoning.library import (
     namespace_yaml,
     parsed,
     parsed_python,
+    read_library,
     reading,
     refuse_keys,
+    run_config_and_registry,
     running_code,
     store_tool,
     taken,
@@ -162,12 +165,6 @@ MAX_NESTING = 20
 # A run hands the factory every key of the tool's block but these.
 OWN_KEYS = ("factory", "factory_from")
 SETS_OWN_KEYS = "settings may not hold factory or factory_from: write_tool sets them."
-# The source's own function builds the tool, but a block naming one of these would read as
-# the engine's: claude_code as Claude Code, which runs on the user's subscription.
-BUILT_IN_FACTORY = (
-    "factory may not be the name of one of the engine's own factories"
-    f" ({', '.join(BUILDERS)}): name your source's function otherwise."
-)
 TOOL_TOO_LONG = (
     f"The source, and the settings as YAML, may each be at most {MAX_YAML_CHARS:,}"
     " characters."
@@ -1005,8 +1002,7 @@ def check_tool(
             f'"{name}" is taken: it is a Python keyword, a built-in or app tool, or a name'
             f" the REPL binds itself ({', '.join(TAKEN_NAMES)}). Pick another."
         )
-    if factory in BUILDERS:
-        raise LibraryError(BUILT_IN_FACTORY)
+    check_tool_block(name, {"factory": factory, "factory_from": tool_file(name)})
     if max(len(source), len(dump(settings))) > MAX_YAML_CHARS:
         raise LibraryError(TOOL_TOO_LONG)
     check_whole([source, *texts_in(settings)])
@@ -1142,8 +1138,9 @@ def in_brief(row: dict[str, Any], registry: NamespaceRegistry) -> dict[str, Any]
 def tool_entries(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     """Every tool, as the panel's Tools tab lists them, with its settings and a custom
     tool's Python source."""
-    config, registry = config_and_registry(connection)
-    sources = {name: source for name, _, source in library_tools(connection)}
+    read = read_library(connection)
+    config, registry = run_config_and_registry(config_of(read))
+    sources = {name: source for name, (_, source) in read["tools"].items()}
     rows = tool_rows(config, registry, in_chain_order(registry), sources)
     return [
         {
@@ -1234,14 +1231,14 @@ def granted_afresh(
     connection: sqlite3.Connection,
     registry: NamespaceRegistry,
     namespace: NamespaceConfig,
-) -> dict[str, tuple[str, str]]:
+) -> dict[str, tuple[dict[str, Any], str]]:
     """The custom tools *namespace* grants that no namespace of the Library, *registry*,
-    grants yet, so no run builds yet, each as its stored YAML and source."""
+    grants yet, so no run builds yet, each as its stored block and source."""
     granted = {tool for each in registry.names for tool in registry.config(each).tools}
     afresh = set(namespace.tools) - granted
     return {
-        name: (text, source)
-        for name, text, source in library_tools(connection)
+        name: (block, source)
+        for name, (block, source) in library_tools(connection).items()
         if name in afresh and source is not None
     }
 
@@ -1268,11 +1265,12 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def show(name: str | None = None) -> Any:
         """Every namespace in brief, or namespace *name* as the Library panel shows it."""
         with app_file(library, "ro") as connection, reading(connection):
-            config, registry = config_and_registry(connection)
+            read = read_library(connection)
+            config, registry = run_config_and_registry(config_of(read))
             # Not those the engine can't read, as a shared file may hold: no agent runs there.
             rows = [
                 row
-                for row in namespace_rows(connection, config, registry)
+                for row in namespace_rows(read, config, registry)
                 if row["name"] in registry.names
             ]
         if name is None:
@@ -1356,10 +1354,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             else:
                 check_namespace(connection, name)
             check_fields(connection, namespace)
-        built = {
-            tool: (loaded(text), source) for tool, (text, source) in afresh.items()
-        }
-        check_builds(built, tools_dir, GRANTED)
+        check_builds(afresh, tools_dir, GRANTED)
         return afresh
 
     def write_decomposition(namespace: str, yaml: Any) -> dict[str, Any]:
@@ -1439,16 +1434,15 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         }
         check_builds({name: (block, source)}, tools_dir, WRITTEN)
         with app_file(library, "rw") as connection:
-            found = store_tool(
+            before = store_tool(
                 connection,
                 name,
                 block,
                 source,
                 allowed=lambda locked: may_write_tool(locked, name),
             )
-        before = None if found is None else tool_text(name, *found)
         after = tool_text(name, dump(block), source)
-        done = "added" if found is None else "replaced"
+        done = "added" if before is None else "replaced"
         return logged(done, before, after, what="tool", name=name)
 
     tool = SimpleNamespace(

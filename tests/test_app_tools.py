@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import sqlite3
 from contextlib import closing
@@ -6,13 +7,13 @@ from itertools import count
 from pathlib import Path
 
 import pytest
+import structlog
 import yaml
 from fake_model import RESEARCH_CHANGED, SPLIT_COUNT, WORD_COUNT, WORD_COUNT_DOC
 from structlog.testing import capture_logs
 
 from deep_reasoning.app_tools import (
     BRIEF_CHARS,
-    BUILT_IN_FACTORY,
     CHANGED_MEANWHILE,
     CUT_SHORT,
     EMPTY,
@@ -46,12 +47,15 @@ from deep_reasoning.library import (
     HISTORY_DESCRIPTION,
     LIBRARIAN,
     LIBRARIANS_EXAMPLES,
+    TOO_LONG_ROW,
     UPSERT_TOOL,
+    YAML_NOT_TEXT,
     LibraryError,
     add_namespace,
     change_namespace,
     delete_namespace,
     dump,
+    left_out_note,
     open_library,
     parsed,
     writing,
@@ -1329,7 +1333,7 @@ HOLDS_ITSELF.append(HOLDS_ITSELF)
         ),
         (
             ("counter", RAISING.replace("build", "claude_code"), "claude_code"),
-            BUILT_IN_FACTORY,
+            'names factory "claude_code", one of the engine\'s own',
         ),
     ],
     ids=[
@@ -1367,6 +1371,60 @@ def test_a_tool_the_engine_builds_from_its_block_alone_is_never_replaced(coder):
     with pytest.raises(LibraryError, match=re.escape(refusal)):
         library_tool(coder).write_tool("coder", WORD_COUNT, "build")
     assert stored_tools(coder) == before
+
+
+@pytest.fixture
+def info_logs():
+    """structlog at info, as the worker logs, so a test sees each library.change."""
+    config = structlog.get_config()
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO)
+    )
+    yield
+    structlog.configure(**config)
+
+
+LONG_SUFFIX = "system_suffix: " + "A" * MAX_YAML_CHARS
+
+
+@pytest.mark.parametrize(
+    ("table", "row", "write", "why"),
+    [
+        (
+            "decompositions",
+            ("drafts", "count the tickets", b"name: count the tickets\n"),
+            lambda tool: tool.write_decomposition("drafts", EXAMPLE),
+            YAML_NOT_TEXT,
+        ),
+        (
+            "namespaces",
+            ("drafts", LONG_SUFFIX),
+            lambda tool: tool.change_namespace("drafts", RESEARCH_CHANGED),
+            TOO_LONG_ROW,
+        ),
+        (
+            "tools",
+            ("counter", "- not a mapping\n", None),
+            lambda tool: tool.write_tool("counter", WORD_COUNT, "build"),
+            (
+                "The engine can't read it (tools.counter: Input should be a valid"
+                " dictionary)."
+            ),
+        ),
+    ],
+    ids=["a-decomposition-not-text", "a-namespace-too-long", "a-tool-not-a-mapping"],
+)
+def test_a_change_over_a_row_left_out_logs_why_as_its_before_never_the_row(
+    fresh, info_logs, table, row, write, why
+):
+    marks = ", ".join("?" * len(row))
+    with closing(open_library(fresh)) as connection, writing(connection):
+        connection.execute(f"INSERT OR REPLACE INTO {table} VALUES ({marks})", row)
+    with capture_logs() as logs:
+        done = write(library_tool(fresh))
+    [change] = [entry for entry in logs if entry["event"] == "library.change"]
+    assert done["done"] in ("replaced", "changed")
+    assert change["before"] == left_out_note(why)
 
 
 def test_a_tool_root_grants_is_never_replaced(fresh):

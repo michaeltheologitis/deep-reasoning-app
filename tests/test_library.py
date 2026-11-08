@@ -43,7 +43,9 @@ from deep_reasoning.library import (
     LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
+    MAX_ROW_BYTES,
     MAX_YAML_CHARS,
+    NAME_NOT_TEXT,
     NO_DESCRIPTION,
     PAGE_DESCRIPTION,
     SHAPES,
@@ -65,6 +67,7 @@ from deep_reasoning.library import (
     dump,
     edit_decomposition,
     engine_config,
+    fitting,
     hand_off,
     handed_to,
     has_namespace,
@@ -76,6 +79,7 @@ from deep_reasoning.library import (
     sandbox_templates,
     store_tool,
     stored_config,
+    tool_text,
     turn_problems,
     writing,
 )
@@ -650,7 +654,7 @@ def test_a_tool_stored_over_another_gives_back_the_row_it_replaced(library):
         added = store_tool(connection, "mine", block, first)
         replaced = store_tool(connection, "mine", block | {"sep": ","}, second)
     assert added is None
-    assert tuple(replaced) == (dump(block), first)
+    assert replaced == tool_text("mine", dump(block), first)
 
 
 def test_the_panel_lists_a_tool_whose_source_is_too_deep_to_parse(library):
@@ -1155,6 +1159,14 @@ def test_a_namespace_under_one_left_out_goes_too_and_roots_stay_under_a_bare_roo
     assert set(config.namespaces) == {HISTORIAN, LIBRARIAN}
 
 
+def refusals_of(connection, name):
+    """The panel's refusal for namespace *name*'s Delete, and the delete's own."""
+    [row] = [each for each in panel(connection)["namespaces"] if each["name"] == name]
+    with pytest.raises(LibraryError) as refused:
+        delete_namespace(connection, name, 0)
+    return row["refusal"], str(refused.value)
+
+
 def test_a_left_out_namespaces_delete_waits_for_its_children_and_the_spawns_naming_it(
     library,
 ):
@@ -1162,22 +1174,48 @@ def test_a_left_out_namespaces_delete_waits_for_its_children_and_the_spawns_nami
         connection.execute(UPSERT_NAMESPACE, ("research", "tools: 5\n"))
         connection.execute(UPSERT_NAMESPACE, ("research.papers", ""))
         connection.execute(UPSERT_NAMESPACE, ("drafts", "spawn: [research]\n"))
-    refusals = []
     with closing(open_library(library)) as connection:
-        for child in ("research.papers", None):
-            [row] = [
-                each
-                for each in panel(connection)["namespaces"]
-                if each["name"] == "research"
-            ]
-            with pytest.raises(LibraryError) as refused:
-                delete_namespace(connection, "research", 0)
-            refusals.append((row["refusal"], str(refused.value)))
-            if child:
-                delete_namespace(connection, child, 0)
+        with_its_child = refusals_of(connection, "research")
+        delete_namespace(connection, "research.papers", 0)
+        once_it_went = refusals_of(connection, "research")
     children = "Delete its namespaces first: research.papers."
     spawners = "First take research out of the spawn of drafts: they may spawn into it."
-    assert refusals == [(children, children), (spawners, spawners)]
+    assert with_its_child == (children, children)
+    assert once_it_went == (spawners, spawners)
+
+
+def test_a_row_whose_name_isnt_text_is_left_out_and_listed_nowhere(library):
+    unnamed = b"\xff"
+    rows = {
+        "settings": (unnamed, "1\n"),
+        "namespaces": (unnamed, ""),
+        "decompositions": (ROOT, unnamed, NO_THINK),
+        "tools": (unnamed, "factory: llm\n", None),
+    }
+    with closing(open_library(library)) as connection, writing(connection):
+        for table, row in rows.items():
+            marks = ", ".join("?" * len(row))
+            connection.execute(f"INSERT INTO {table} VALUES ({marks})", row)
+    with capture_logs() as logs, closing(open_library(library)) as connection:
+        shown = json.dumps(panel(connection))
+    left_out = [
+        entry["table"] for entry in logs if entry["event"] == "library.row_left_out"
+    ]
+    assert sorted(set(left_out)) == sorted(rows)
+    assert {entry["why"] for entry in logs if "why" in entry} == {NAME_NOT_TEXT}
+    assert "\\u00ff" not in shown and "\\xff" not in shown
+
+
+def test_the_librarys_own_llm_left_out_is_listed_once_and_runs_keep_the_models(
+    library, tmp_path
+):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_TOOL, ("llm", "- not a mapping\n", None))
+    with closing(open_library(library)) as connection:
+        tools = [tool for tool in panel(connection)["tools"] if tool["name"] == "llm"]
+    [llm] = tools
+    assert (llm["stored"], llm["badge"], len(llm["problems"])) == (True, "built-in", 1)
+    assert "llm" in run_config(library, tmp_path).namespaces[ROOT].tools
 
 
 def test_a_namespace_saved_under_one_left_out_is_refused_saying_why(library):
@@ -1189,14 +1227,29 @@ def test_a_namespace_saved_under_one_left_out_is_refused_saying_why(library):
     assert str(refused.value) == 'The namespace it goes under, "research", is left out.'
 
 
-def test_a_tools_source_is_read_up_to_the_length_a_save_holds_it_to(library):
+def test_a_tools_source_is_read_up_to_the_characters_a_save_holds_it_to(library):
     block = dump({"factory": "build", "factory_from": "tally.py"})
-    at_the_limit = "#" * MAX_YAML_CHARS
+    # Two bytes each in UTF-8, as a limit in bytes would count them.
+    at_the_limit = "é" * MAX_YAML_CHARS
     with closing(open_library(library)) as connection, writing(connection):
         connection.execute(UPSERT_TOOL, ("at", block, at_the_limit))
-        connection.execute(UPSERT_TOOL, ("past", block, f"{at_the_limit}#"))
+        connection.execute(UPSERT_TOOL, ("past", block, f"{at_the_limit}é"))
     with closing(open_library(library)) as connection:
-        assert [name for name, _, _ in library_tools(connection)] == ["at"]
+        assert list(library_tools(connection)) == ["at"]
+
+
+def test_a_row_past_the_limit_is_never_loaded_though_a_nul_hides_its_length_from_sql(
+    library,
+):
+    block = dump({"factory": "build", "factory_from": "tally.py"})
+    hidden = "x\0" + "#" * MAX_ROW_BYTES
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_TOOL, ("hidden", block, hidden))
+    with closing(open_library(library)) as connection:
+        assert connection.execute("SELECT length(source) FROM tools").fetchone() == (1,)
+        read = connection.execute(f"SELECT {fitting('source')} FROM tools").fetchone()
+        assert read == (None, len(hidden))
+        assert list(library_tools(connection)) == []
 
 
 def names_in(library, namespace):

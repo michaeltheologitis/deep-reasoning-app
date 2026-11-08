@@ -94,9 +94,8 @@ let applied = 0;
 
 const dot = () => element("span", { class: "lib-dot", "aria-hidden": "true" }, "·");
 const namespaceNamed = (name) => library.namespaces.find((namespace) => namespace.name === name);
-// one the engine reads: a shared file's may hold one it can't, listed with why (problems) to fix or delete
-const readable = (namespace) => !namespace.problems.length;
-const usable = (name) => Boolean(namespaceNamed(name) && readable(namespaceNamed(name)));
+// one a chat may run in: a shared file's may hold one the engine can't read, listed with why (problems) to fix or delete
+const usable = (name) => Boolean(namespaceNamed(name)?.usable);
 const problemList = (problems) => problems.length > 0 && element("div", { class: "lib-problems lib-warning" }, problems.map((text) => element("p", {}, text)));
 const decompositionKey = (namespace, name) => `d:${namespace}:${name}`;
 const namespaceKey = (name) => `n:${name}`;
@@ -230,13 +229,14 @@ async function submit(form, e) {
 async function showNewer(form) {
   await load();
   const now = form.stored();
-  if (now == null) {
+  // undefined once it is gone; null for one too long to show
+  if (now === undefined) {
     editForms.delete(form.key);
     form.gone?.(form);
     return;
   }
   form.was = now;
-  form.newer.replaceChildren(element("p", { class: "lib-note" }, "Stored now, which Save replaces with yours:"), element("pre", { class: "code lib-pre" }, now || "(blank: it sets nothing)"));
+  form.newer.replaceChildren(element("p", { class: "lib-note" }, "Stored now, which Save replaces with yours:"), element("pre", { class: "code lib-pre" }, now === null ? "(too long to show)" : now || "(blank: it sets nothing)"));
 }
 
 function say(where, text) {
@@ -338,7 +338,11 @@ const saveNamespace = (name) => async (text, form) => {
 function editFormFor(key, stored, build) {
   if (!editForms.has(key)) editForms.set(key, Object.assign(yamlForm({ id: `lib-edit-${++editFormCount}`, text: stored, ...build() }), { key }));
   const form = editForms.get(key);
-  if (form.el.hidden) form.editor.defaultValue = form.was = stored;
+  // one too long to show (null) opens on a blank draft, which Save puts in its place
+  if (form.el.hidden) {
+    form.editor.defaultValue = stored ?? "";
+    form.was = stored;
+  }
   return form;
 }
 
@@ -394,7 +398,7 @@ function moveToAdd(draft, namespace, name) {
 // Each read: a closed edit form whose row went is dropped, and an open one hands its draft on; one saving is its save's to settle.
 function pruneForms() {
   for (const [key, form] of editForms) {
-    if (form.saving || form.stored() != null) continue;
+    if (form.saving || form.stored() !== undefined) continue;
     editForms.delete(key);
     if (!form.el.hidden) form.gone?.(form);
   }
@@ -481,12 +485,10 @@ async function deleteNamespace(name) {
 function namespaceActions(namespace) {
   const { name } = namespace;
   const form = editForm(name);
-  // one too long to show has no YAML to edit
-  const edit = namespace.yaml == null ? [] : form.toggle;
   const actions =
     name === ROOT
-      ? element("div", { class: "lib-actions" }, edit)
-      : deletable(namespaceKey(name), edit, {
+      ? element("div", { class: "lib-actions" }, form.toggle)
+      : deletable(namespaceKey(name), form.toggle, {
           question: deleteQuestion(namespace),
           refusal: () => namespace.refusal,
           remove: () => deleteNamespace(name),
@@ -694,7 +696,7 @@ function decompositionsField(name) {
 function renderNamespaces() {
   const tree = library.namespaces.map((namespace) => {
     const star = namespace.name === library.default_namespace && element("span", { class: "lib-star" }, "★ new chats start here");
-    const head = [element("span", { class: "lib-name" }, namespace.name), star, !readable(namespace) && checkMark(namespace.problems)];
+    const head = [element("span", { class: "lib-name" }, namespace.name), star, namespace.problems.length > 0 && checkMark(namespace.problems)];
     const content = () => [problemList(namespace.problems), namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
     return element("div", { style: `--depth: ${namespace.depth}` }, disclosure(namespaceKey(namespace.name), head, content));
   });
@@ -827,7 +829,7 @@ function useLibrary(found) {
   library = found;
   fileName.textContent = ` · ${library.file}`;
   const picked = usable(picker.value) ? picker.value : startingNamespace();
-  picker.replaceChildren(...library.namespaces.filter(readable).map(({ name }) => element("option", { value: name }, name)));
+  picker.replaceChildren(...library.namespaces.filter((namespace) => namespace.usable).map(({ name }) => element("option", { value: name }, name)));
   picker.value = picked;
   pruneForms();
 }
