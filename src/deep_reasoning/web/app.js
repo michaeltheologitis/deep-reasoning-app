@@ -937,9 +937,10 @@ function useList(listed) {
   for (const chat of gone) lose(chat);
 }
 
-// A hint is about what the chat runs on: once that changes, as when settings gave it a model, the hint goes.
+// A hint is about what the chat runs on: once that changes, as when settings gave it a model or its provider came back, the
+// hint goes.
 function adopt(chat, listed) {
-  const picks = (each) => JSON.stringify([each.namespace, each.model, each.folder]);
+  const picks = (each) => JSON.stringify([each.namespace, each.model, each.provider_missing, each.folder]);
   if (chat === state.current && picks(chat) !== picks(listed)) state.problem = null;
   // a run this page follows is its own to end
   const { live, ...rest } = listed;
