@@ -361,10 +361,25 @@ SHAPES = {
 # How a namespace that sets nothing is kept by an import, or a Library made before
 # FRESH_ROOT; the panel saves one as blank text, so a root saved blank is never upgraded.
 EMPTY_NAMESPACE = "{}\n"
+# The settings V2Config reads; the panel may delete any other, as an import may bring junk.
+ENGINE_SETTINGS = V2Config.model_fields.keys()
+UNREAD_SETTING = "set in the Library; the engine doesn't read it"
 
 
 class LibraryError(ValueError):
     """Something the Library refused, in words for the person who asked."""
+
+
+class ChangedMeanwhile(LibraryError):
+    """A save or delete refused because what it was opened on changed since."""
+
+
+def changed_meanwhile(what):
+    return ChangedMeanwhile(
+        f"{what} was changed after you opened it (by the librarian, another tab or an"
+        " import), so nothing was saved: saving would undo that change. Look at it as"
+        " it is now, then save again."
+    )
 
 
 class BlockDumper(yaml.SafeDumper):
@@ -913,17 +928,64 @@ def add_decomposition(connection, namespace, text, replace=False, allowed=None):
             allowed(connection)
         # Under the lock, so a namespace deleted meanwhile leaves no decomposition behind.
         check_namespace(connection, namespace)
-        found = connection.execute(
-            "SELECT yaml FROM decompositions WHERE namespace = ? AND name = ?",
-            (namespace, name),
-        ).fetchone()
+        found = stored_decomposition(connection, namespace, name)
         if found is not None and not replace:
-            raise LibraryError(
-                f'{namespace} already has "{name}"; rename it, or pick another namespace.'
-            )
+            raise already_has(namespace, name)
         connection.execute(UPSERT_DECOMPOSITION, tuple(stored.values()))
     problems = example_problems(decomposition)
-    return stored | {"problems": problems}, None if found is None else found[0]
+    return stored | {"problems": problems}, found
+
+
+def stored_decomposition(connection, namespace, name):
+    """The YAML of *namespace*'s decomposition *name*, None when it has none."""
+    found = connection.execute(
+        "SELECT yaml FROM decompositions WHERE namespace = ? AND name = ?",
+        (namespace, name),
+    ).fetchone()
+    return None if found is None else found[0]
+
+
+def already_has(namespace, name):
+    return LibraryError(
+        f'{namespace} already has "{name}"; rename it, pick another namespace, or Edit'
+        " that one."
+    )
+
+
+def unchanged_decomposition(connection, namespace, name, was):
+    """Raise unless *namespace*'s decomposition *name* is still stored as *was*, the
+    YAML the person was shown."""
+    if stored_decomposition(connection, namespace, name) != was:
+        raise changed_meanwhile(f'"{name}" in {namespace}')
+
+
+def edit_decomposition(connection, namespace, name, was, text):
+    """Put the decomposition written as YAML *text* in the place of *namespace*'s
+    decomposition *name*, which the person opened as *was*; it may take another name
+    that *namespace* doesn't hold. Raises LibraryError saying why not, and
+    ChangedMeanwhile if *name* is no longer stored as *was*."""
+    decomposition = parsed(text)
+    with writing(connection):
+        unchanged_decomposition(connection, namespace, name, was)
+        taken = stored_decomposition(connection, namespace, decomposition.name)
+        if decomposition.name != name and taken is not None:
+            raise already_has(namespace, decomposition.name)
+        # In its place, so the decompositions stay in the order they were added.
+        connection.execute(
+            "UPDATE decompositions SET name = ?, yaml = ? WHERE namespace = ? AND name = ?",
+            (decomposition.name, text, namespace, name),
+        )
+
+
+def delete_decomposition(connection, namespace, name, was):
+    """Delete *namespace*'s decomposition *name*, which the person was shown as *was*;
+    ChangedMeanwhile if it is no longer stored so."""
+    with writing(connection):
+        unchanged_decomposition(connection, namespace, name, was)
+        connection.execute(
+            "DELETE FROM decompositions WHERE namespace = ? AND name = ?",
+            (namespace, name),
+        )
 
 
 def namespace_problem(error):
@@ -956,7 +1018,13 @@ def authored(name, text):
     if problems:
         raise LibraryError("\n".join(problems))
     # As typed, comments and all, but for the one text an untouched root is kept as.
-    return namespace, "" if text == EMPTY_NAMESPACE else text
+    return namespace, own_yaml(text)
+
+
+def own_yaml(text):
+    """A namespace's stored YAML *text* as the panel shows and saves it: blank for one
+    that sets nothing."""
+    return "" if text == EMPTY_NAMESPACE else text
 
 
 def accepted(connection):
@@ -1011,15 +1079,18 @@ def add_namespace(connection, name, text, allowed=None):
     return stored
 
 
-def change_namespace(connection, name, text, allowed=None):
+def change_namespace(connection, name, text, allowed=None, was=None):
     """Give namespace *name* the fields its YAML *text* gives in place of its own, keeping
     its decompositions, or raise LibraryError saying why not; *allowed* as add_namespace
-    takes it. The YAML it replaced, and the YAML stored."""
+    takes it. Given *was*, the YAML the person opened it on, ChangedMeanwhile unless it
+    is still stored so. The YAML it replaced, and the YAML stored."""
     namespace, stored = authored(name, text)
     with writing(connection):
         if allowed is not None:
             allowed(connection, namespace)
         before = check_namespace(connection, name)
+        if was is not None and own_yaml(before) != was:
+            raise changed_meanwhile(f"Namespace {name}")
         write_namespace(connection, namespace, stored)
     return before, stored
 
@@ -1040,6 +1111,46 @@ def store_tool(connection, name, block, source, allowed=None):
     return found
 
 
+def own_fields(connection):
+    """Each namespace's own fields, as its stored YAML sets them."""
+    rows = connection.execute("SELECT name, yaml FROM namespaces ORDER BY rowid")
+    return {name: yaml.safe_load(text) or {} for name, text in rows}
+
+
+def delete_tool(connection, name):
+    """Delete the Library's tool *name*, or raise LibraryError saying why not: a
+    namespace grants it."""
+    with writing(connection):
+        found = connection.execute("SELECT 1 FROM tools WHERE name = ?", (name,))
+        if found.fetchone() is None:
+            raise LibraryError(f'The Library holds no tool "{name}" to delete.')
+        granting = [
+            each
+            for each, fields in own_fields(connection).items()
+            if name in granted({each: fields})
+        ]
+        if granting:
+            raise LibraryError(
+                f"{name} is granted in {', '.join(granting)}: take it out of their tools"
+                " first."
+            )
+        connection.execute("DELETE FROM tools WHERE name = ?", (name,))
+
+
+def delete_setting(connection, key):
+    """Delete run setting *key*, or raise LibraryError saying why not: the engine reads it."""
+    if key in ENGINE_SETTINGS:
+        raise LibraryError(
+            f"{key} is a run setting the engine reads, so it stays; only one it doesn't"
+            " read can be deleted."
+        )
+    with writing(connection):
+        found = connection.execute("SELECT 1 FROM settings WHERE key = ?", (key,))
+        if found.fetchone() is None:
+            raise LibraryError(f'The Library holds no run setting "{key}".')
+        connection.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+
 def delete_namespace(connection, name, decompositions):
     """Delete namespace *name* and its decompositions, as many as the caller was told it
     has, or raise LibraryError saying why not; if new chats started there, they start in root."""
@@ -1047,8 +1158,7 @@ def delete_namespace(connection, name, decompositions):
         raise LibraryError("root can't be deleted: every namespace inherits from it.")
     with writing(connection):
         check_namespace(connection, name)
-        rows = connection.execute("SELECT name, yaml FROM namespaces")
-        namespaces = {each: yaml.safe_load(text) or {} for each, text in rows}
+        namespaces = own_fields(connection)
         children = [each for each in namespaces if each.startswith(f"{name}.")]
         if children:
             raise LibraryError(f"Delete its namespaces first: {', '.join(children)}.")
@@ -1186,9 +1296,11 @@ def run_settings(connection):
     defaults = V2Config().model_dump(mode="json")
     rows = []
     for key in dict.fromkeys([*SHOWN_SETTINGS, *stored]):
+        unread = key not in ENGINE_SETTINGS
         source = "set in the Library" if key in stored else "the engine's default"
         value = shown(stored.get(key, defaults.get(key)))
-        rows.append({"label": key, "items": [{"value": value, "source": source}]})
+        item = {"value": value, "source": UNREAD_SETTING if unread else source}
+        rows.append({"label": key, "items": [item], "removable": unread})
     return rows
 
 
@@ -1235,6 +1347,9 @@ def tool_rows(config, registry, names, sources):
             ],
             "description": block.get("description") or description,
             "config": dump({name: block}).rstrip() if block else None,
+            # Deletable: the Library holds it, not the engine or the app.
+            "stored": name in sources,
+            "source": sources.get(name),
         }
         rows.append(row)
     return rows
@@ -1277,7 +1392,7 @@ def namespace_rows(connection, config, registry):
         decompositions[namespace].append({"name": name, "yaml": text})
     # What each one's Edit YAML opens on: blank for a namespace that sets nothing.
     rows = connection.execute("SELECT name, yaml FROM namespaces")
-    own = {name: "" if text == EMPTY_NAMESPACE else text for name, text in rows}
+    own = {name: own_yaml(text) for name, text in rows}
     return [
         {
             "name": name,

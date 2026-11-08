@@ -84,6 +84,7 @@
 .lib-file-pick:has(:focus-visible) { outline: 1px solid var(--accent); outline-offset: 1px; }
 .lib-file-pick input { position: absolute; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; }
 .lib-problems { display: flex; flex-direction: column; gap: 2px; color: var(--err); }
+.lib-newer:empty { display: none; }
 .lib-problems p { margin: 0; overflow-wrap: anywhere; }
 /* a decomposition's turn problems: they mark it ✗ but never stop Add */
 .lib-warning { color: var(--warn); }

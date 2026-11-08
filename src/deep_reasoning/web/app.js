@@ -595,6 +595,9 @@ async function useFolder(e, picker) {
   if (isOpenFrom(picker.button)) closePopover(true);
 }
 
+// The namespace the chat on screen runs in, for the Library panel; null with none on screen.
+const chatNamespace = () => state.current?.namespace ?? null;
+
 // One side panel at a time: opening one asks the others to close.
 function closeOtherPanels(panel) {
   for (const other of document.querySelectorAll(".library:not([hidden])")) {
@@ -891,7 +894,7 @@ async function start() {
   else newChat();
 }
 
-export { LIBRARY_CHANGED, PANEL_CLOSE, PANEL_OPEN, caret, closeOtherPanels, element, folderPicker, libraryChanged, request, settingsChanged };
+export { LIBRARY_CHANGED, PANEL_CLOSE, PANEL_OPEN, caret, chatNamespace, closeOtherPanels, element, folderPicker, libraryChanged, request, settingsChanged };
 
 wire();
 start();

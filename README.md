@@ -37,7 +37,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   (`errors`), finds any text you name (`find`), and cuts each text past 2,000 characters, so a huge output can't
   swamp the model (`full` reads one step whole). A namespace with a `spawn` list hands off only if it lists
   `historian`. If you delete `historian` or take `history` out of it, delete root's five hand-off examples in the
-  panel too: they send questions where nothing can read the history. If you take `page` out of it, delete `show it
+  panel too (open each in the Decompositions tab and Delete it): they send questions where nothing can read the
+  history. If you take `page` out of it, delete `show it
   on a page` and `find where it really went wrong` from root and historian.
 - An older Library keeps what it has: one made since `history` came reads it at root, with a worked example there,
   and needs nothing. For the historian, run `reset`, which deletes the Library and every chat, or add `historian` in
@@ -86,11 +87,19 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   `library.sqlite-wal` beside it. The file stays in SQLite's WAL mode, so open a copy from a folder you can write to.
 - What a run prints travels with the file. The app withholds any provider's key from it, but can't know other
   secrets a cell reads from your shell.
-- The **decompositions** panel (top right) adds decompositions as YAML, and adds, edits and deletes namespaces.
-  It marks each decomposition ✓ or ✗ by whether its turns make a worked example like `deep_reasoner`'s own (the
-  task; each assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last),
-  and opening a ✗ says why. The add form warns as you type but still adds it, so a draft can be saved. The code
-  isn't run, so an observation isn't checked against it.
+- The **decompositions** panel (top right) adds, edits (renaming too) and deletes decompositions, root's included,
+  as YAML, and adds, edits and deletes namespaces. It marks each decomposition ✓ or ✗ by whether its turns make a
+  worked example like `deep_reasoner`'s own (the task; each assistant turn's `<think>` and one `<repl>`, then the
+  `<observation>` it printed; `FinalAnswer` last), and opening a ✗ says why. The form warns as you type but still
+  saves it, so a draft can be saved; from the next message, agents in its namespace and those under it are shown
+  it as it is, so a new one starts in the namespace of the chat on screen, not root. The code isn't run, so an
+  observation isn't checked against it.
+- A save or delete in the panel is refused if what you opened was changed meanwhile (by the librarian, another tab
+  or an import): your draft stays, beside what is stored now, and saving again replaces it. The panel reads the
+  Library again whenever you open it or come back to its window.
+- The Tools tab shows each tool, with the Python of the Library's own, and deletes one of the Library's that no
+  namespace grants. Run settings can't be changed in the panel, but one the engine doesn't read, as an import may
+  bring, can be deleted.
 - In a chat in the `librarian` namespace, picked under the message box, the agent can add or edit a decomposition in
   a namespace you name, add a namespace or change one's own fields (its system suffix, vars, tools and spawn), and
   write a new tool of its own in Python (or replace one) that it then grants to a namespace, with the app's own

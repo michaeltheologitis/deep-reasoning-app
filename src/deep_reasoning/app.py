@@ -41,13 +41,18 @@ from deep_reasoning.folders import (
     working_folder,
 )
 from deep_reasoning.library import (
+    ChangedMeanwhile,
     LibraryError,
     add_decomposition,
     add_namespace,
     change_namespace,
     check_namespace,
     default_namespace,
+    delete_decomposition,
     delete_namespace,
+    delete_setting,
+    delete_tool,
+    edit_decomposition,
     engine_config,
     has_namespace,
     open_library,
@@ -175,6 +180,11 @@ def create_app(library, home):
     async def refused(request, error):
         return JSONResponse({"detail": str(error)}, status_code=HTTPStatus.BAD_REQUEST)
 
+    # So the page knows to read the Library again and show what is stored now.
+    @app.exception_handler(ChangedMeanwhile)
+    async def conflict(request, error):
+        return JSONResponse({"detail": str(error)}, status_code=HTTPStatus.CONFLICT)
+
     @app.exception_handler(sqlite3.OperationalError)
     async def unusable(request, error):
         name = error.sqlite_errorname
@@ -221,8 +231,32 @@ def create_app(library, home):
             stored, _ = add_decomposition(connection, namespace, yaml)
             return stored
 
-    # Each answers with the whole Library: a namespace's fields reach every namespace under it.
-    # An imported namespace's name may hold a /, hence :path.
+    # The rest answer with the whole Library: a namespace's fields reach every namespace
+    # under it. An edit or delete carries the YAML it was opened on (was), and is refused
+    # with 409 if that changed meanwhile. A decomposition's namespace and name are in the
+    # body, as either may hold a /.
+    @app.put("/api/decompositions")
+    def put_decomposition(
+        namespace: Annotated[str, Body()],
+        name: Annotated[str, Body()],
+        was: Annotated[str, Body()],
+        yaml: Annotated[str, Body()],
+    ):
+        with closing(open_library(library)) as connection:
+            edit_decomposition(connection, namespace, name, was, yaml)
+            return library_panel(connection)
+
+    @app.delete("/api/decompositions")
+    def remove_decomposition(
+        namespace: Annotated[str, Body()],
+        name: Annotated[str, Body()],
+        was: Annotated[str, Body()],
+    ):
+        with closing(open_library(library)) as connection:
+            delete_decomposition(connection, namespace, name, was)
+            return library_panel(connection)
+
+    # An imported namespace's, tool's or setting's name may hold a /, hence :path.
     @app.post("/api/namespaces", status_code=HTTPStatus.CREATED)
     def post_namespace(name: Annotated[str, Body()], yaml: Annotated[str, Body()]):
         with closing(open_library(library)) as connection:
@@ -230,15 +264,29 @@ def create_app(library, home):
             return library_panel(connection)
 
     @app.put("/api/namespaces/{name:path}")
-    def put_namespace(name: str, yaml: Annotated[str, Body(embed=True)]):
+    def put_namespace(
+        name: str, yaml: Annotated[str, Body()], was: Annotated[str, Body()]
+    ):
         with closing(open_library(library)) as connection:
-            change_namespace(connection, name, yaml)
+            change_namespace(connection, name, yaml, was=was)
             return library_panel(connection)
 
     @app.delete("/api/namespaces/{name:path}")
     def remove_namespace(name: str, decompositions: Annotated[int, Query(ge=0)]):
         with closing(open_library(library)) as connection:
             delete_namespace(connection, name, decompositions)
+            return library_panel(connection)
+
+    @app.delete("/api/tools/{name:path}")
+    def remove_tool(name: str):
+        with closing(open_library(library)) as connection:
+            delete_tool(connection, name)
+            return library_panel(connection)
+
+    @app.delete("/api/run-settings/{key:path}")
+    def remove_setting(key: str):
+        with closing(open_library(library)) as connection:
+            delete_setting(connection, key)
             return library_panel(connection)
 
     def known_provider(name: str):

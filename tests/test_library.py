@@ -37,17 +37,23 @@ from deep_reasoning.library import (
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
     PAGE_DESCRIPTION,
+    UNREAD_SETTING,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
     UPSERT_TOOL,
+    ChangedMeanwhile,
     LibraryError,
     add_decomposition,
     add_namespace,
     change_namespace,
     default_namespace,
+    delete_decomposition,
     delete_namespace,
+    delete_setting,
+    delete_tool,
     dump,
+    edit_decomposition,
     engine_config,
     hand_off,
     import_config,
@@ -929,3 +935,161 @@ def test_a_shared_files_decompositions_under_a_root_it_lacks_are_still_checked(l
         *SEEDED_ROWS,
         ("no think", ["Turn 2 (assistant) has no <think>…</think>."]),
     ]
+
+
+def names_in(library, namespace):
+    with closing(open_library(library)) as connection:
+        rows = connection.execute(
+            "SELECT name FROM decompositions WHERE namespace = ? ORDER BY rowid",
+            (namespace,),
+        )
+        return [name for (name,) in rows]
+
+
+def panel_of(library):
+    with closing(open_library(library)) as connection:
+        return panel(connection)
+
+
+def test_a_decomposition_is_edited_in_its_place_and_may_take_a_new_name(imported):
+    [first, *rest] = ROUTER_DECOMPOSITIONS
+    renamed = NO_THINK.replace("no think", "route it")
+    stored = dict(names_and_yaml(imported, "router"))[first]
+    change(imported, edit_decomposition, "router", first, stored, renamed)
+    assert names_in(imported, "router") == ["route it", *rest]
+    [router] = [
+        each for each in panel_of(imported)["namespaces"] if each["name"] == "router"
+    ]
+    assert router["decompositions"][0] == {
+        "name": "route it",
+        "yaml": renamed,
+        "problems": ["Turn 2 (assistant) has no <think>…</think>."],
+    }
+
+
+def names_and_yaml(library, namespace):
+    with closing(open_library(library)) as connection:
+        return connection.execute(
+            "SELECT name, yaml FROM decompositions WHERE namespace = ? ORDER BY rowid",
+            (namespace,),
+        ).fetchall()
+
+
+def test_roots_decompositions_are_edited_and_deleted_by_the_user(library):
+    [(name, text), *rest] = names_and_yaml(library, ROOT)
+    edited = text.replace("content:", "content:  ", 1)
+    change(library, edit_decomposition, ROOT, name, text, edited)
+    change(library, delete_decomposition, ROOT, name, edited)
+    assert names_and_yaml(library, ROOT) == rest
+
+
+def test_an_edit_may_not_take_the_name_of_another_decomposition_there(imported):
+    [first, second, _] = names_and_yaml(imported, "router")
+    before = dumped(imported)
+    with pytest.raises(LibraryError, match=f'router already has "{second[0]}"'):
+        change(
+            imported,
+            edit_decomposition,
+            "router",
+            first[0],
+            first[1],
+            second[1],
+        )
+    assert dumped(imported) == before
+
+
+@pytest.mark.parametrize(
+    "act",
+    [
+        lambda connection, name, was: edit_decomposition(
+            connection, "router", name, was, ADDED
+        ),
+        lambda connection, name, was: delete_decomposition(
+            connection, "router", name, was
+        ),
+    ],
+    ids=["edit", "delete"],
+)
+def test_an_edit_or_delete_of_a_decomposition_changed_or_deleted_meanwhile_is_refused(
+    imported, act
+):
+    [(name, text), *_] = names_and_yaml(imported, "router")
+    change(imported, add_decomposition, "router", text + "# changed\n", True)
+    before = dumped(imported)
+    with pytest.raises(ChangedMeanwhile, match=f'"{name}" in router was changed'):
+        change(imported, act, name, text)
+    with pytest.raises(ChangedMeanwhile):
+        change(imported, act, "not there", text)
+    assert dumped(imported) == before
+
+
+def test_a_namespace_saved_over_a_change_made_meanwhile_is_refused(imported):
+    change(imported, add_namespace, "research", RESEARCH)
+    change(imported, change_namespace, "research", "vars: {topic: nlp}\n")
+    before = dumped(imported)
+    with pytest.raises(ChangedMeanwhile, match="Namespace research was changed"):
+        change(imported, change_namespace, "research", "", None, RESEARCH)
+    assert dumped(imported) == before
+    change(imported, change_namespace, "research", "", None, "vars: {topic: nlp}\n")
+    # One that sets nothing opens blank, as the panel shows it.
+    change(imported, change_namespace, "research", "tools: [llm]\n", None, "")
+
+
+TOOL_SOURCE = "def build(client, params):\n    return None\n"
+
+
+def test_a_tool_is_deleted_only_once_no_namespace_grants_it(library):
+    with closing(open_library(library)) as connection:
+        block = {"factory": "build", "factory_from": "tally.py"}
+        store_tool(connection, "tally", block, TOOL_SOURCE)
+        add_namespace(connection, "counting", "tools: [tally]\n")
+        add_namespace(connection, "counting.more", "tools: [tally]\n")
+    before = dumped(library)
+    with pytest.raises(
+        LibraryError, match=re.escape("tally is granted in counting, counting.more:")
+    ):
+        change(library, delete_tool, "tally")
+    assert dumped(library) == before
+    [tally] = [each for each in panel_of(library)["tools"] if each["name"] == "tally"]
+    assert (tally["stored"], tally["source"]) == (True, TOOL_SOURCE)
+    change(library, delete_namespace, "counting.more", 0)
+    change(library, change_namespace, "counting", "")
+    change(library, delete_tool, "tally")
+    assert "tally" not in [each["name"] for each in panel_of(library)["tools"]]
+
+
+@pytest.mark.parametrize(
+    ("name", "refusal"),
+    [
+        ("llm", 'The Library holds no tool "llm" to delete.'),
+        ("history", 'The Library holds no tool "history" to delete.'),
+    ],
+)
+def test_a_tool_the_library_holds_no_row_for_is_not_deleted(library, name, refusal):
+    [shown] = [each for each in panel_of(library)["tools"] if each["name"] == name]
+    assert (shown["stored"], shown["source"]) == (False, None)
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        change(library, delete_tool, name)
+
+
+def test_a_run_setting_the_engine_doesnt_read_is_deleted_and_one_it_reads_stays(
+    library,
+):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_SETTING, ("catalog_path", dump("credits.yaml")))
+    rows = {each["label"]: each for each in panel_of(library)["run_settings"]}
+    assert rows["catalog_path"] == {
+        "label": "catalog_path",
+        "items": [{"value": "credits.yaml", "source": UNREAD_SETTING}],
+        "removable": True,
+    }
+    assert not rows["max_iter"]["removable"]
+    before = dumped(library)
+    with pytest.raises(LibraryError, match="system_prompt is a run setting the engine"):
+        change(library, delete_setting, "system_prompt")
+    assert dumped(library) == before
+    change(library, delete_setting, "catalog_path")
+    labels = [each["label"] for each in panel_of(library)["run_settings"]]
+    assert "catalog_path" not in labels
+    with pytest.raises(LibraryError, match='no run setting "catalog_path"'):
+        change(library, delete_setting, "catalog_path")
