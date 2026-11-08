@@ -61,6 +61,14 @@ WEB_SCHEMES = ("http", "https")
 # servers document.
 NO_KEY = "EMPTY"
 LIST_TIMEOUT_S = 10.0
+# What a provider's whole list holds beside its chat models: speech, images, video,
+# embeddings, moderation, realtime and live audio, and completions-only models.
+NOT_CHAT = re.compile(
+    r"(?:^|[-_./:])(?:tts|transcribe|realtime|audio|speech|whisper|image|imagen|dall-e"
+    r"|embed|embedding|embeddings|moderation|veo|sora|live|babbage|davinci|aqa"
+    r"|computer-use)(?=$|[-_./:\d])",
+    re.IGNORECASE,
+)
 SET, SHELL, NONE = "set", "shell", "none"
 
 
@@ -337,6 +345,11 @@ def providers(library: Path) -> list[Provider]:
     return [*VENDORS, *servers(library)]
 
 
+def key_names(library: Path) -> list[str]:
+    """Each provider's key variable: what a run's worker may get, and withholds."""
+    return [each.key_env for each in providers(library)]
+
+
 def find_provider(library: Path, name: str) -> Provider | None:
     return next((each for each in providers(library) if each.name == name), None)
 
@@ -484,10 +497,14 @@ def run_key(home: Path, provider: Provider) -> str:
     raise SettingsError(f"{provider.name} has no key: add one in settings.")
 
 
+def is_chat_model(name: str) -> bool:
+    return NOT_CHAT.search(name) is None
+
+
 async def list_models(provider: Provider, key: str | None) -> dict[str, Any]:
-    """The provider's models from its own GET {base_url}/models, or why there are none, and
-    the ones the menu shows before anything is typed: a vendor's current tiers, even with
-    no list, or a custom server's whole list."""
+    """The provider's chat models from its own GET {base_url}/models, or why there are
+    none, and the ones the menu shows before anything is typed: a vendor's current tiers,
+    even with no list, or a custom server's whole list."""
     url = f"{provider.base_url.rstrip('/')}/models"
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     listing = {"provider": provider.name, "models": [], "problem": None}
@@ -495,7 +512,8 @@ async def list_models(provider: Provider, key: str | None) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=LIST_TIMEOUT_S) as client:
             response = await client.get(url, headers=headers)
         response.raise_for_status()
-        listing["models"] = sorted({each["id"] for each in response.json()["data"]})
+        names = {each["id"] for each in response.json()["data"]}
+        listing["models"] = sorted(filter(is_chat_model, names))
     except httpx.HTTPStatusError as error:
         status = f"{error.response.status_code} {error.response.reason_phrase}".strip()
         listing["problem"] = f"No list: {url} answered {status}."

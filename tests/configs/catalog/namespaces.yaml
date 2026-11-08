@@ -1,0 +1,49 @@
+# Restricting sub-agents with a SPAWN allow-list — the anti-privilege-escalation seam.
+#
+# An `orchestrator` fans work out to two specialists:
+#   * `librarian`      — trusted; holds the course catalog and can reason over it.
+#   * `web_researcher` — UNTRUSTED; it reads arbitrary web text, so its context may be
+#                        poisoned by prompt injection.
+#
+# The danger is escalation: a hijacked `web_researcher` trying to `subagent(...,
+# namespace="librarian")` to make the trusted, data-holding agent act for it. Each
+# namespace's `spawn:` list bounds which namespaces it may delegate into, so the policy is
+# authored once, in config, not left to the model:
+#   * orchestrator may spawn both specialists,
+#   * web_researcher may spawn only a powerless `scratch` namespace — never `librarian`,
+#   * librarian and scratch are leaves (`spawn: []`) — they delegate to nothing.
+_compose:
+  - client.yaml
+
+model: "qwen/qwen3.6-27b"
+entry_namespace: orchestrator
+
+system_prompt: |
+  You solve a request by writing Python in a REPL and observing the results. Reason in
+  <think>…</think>, then emit exactly one <repl>…</repl> block; finish with
+  FinalAnswer(value) inside a <repl> block. Delegate a sub-task with
+  subagent(task, namespace="…").
+
+namespaces:
+  root:
+    tools: [llm]                                   # shared by every namespace (DRY)
+
+  orchestrator:
+    spawn: [librarian, web_researcher]             # may delegate to these two only
+
+  librarian:                                       # trusted, holds the catalog
+    spawn: []                                      # a leaf — delegates to nothing
+    vars:
+      catalog:
+        CS101: {title: "Intro to Programming", credits: 3}
+        CS201: {title: "Data Structures",      credits: 4}
+        CS450: {title: "Machine Learning",     credits: 4}
+
+  librarian.archive:                               # a deeper namespace under librarian;
+    vars: {archive: {}}                            # sets no `spawn` → inherits librarian's []
+
+  web_researcher:                                  # untrusted, reads web text
+    spawn: [scratch]                               # may ONLY reach the powerless scratch ns
+
+  scratch:                                         # pure reasoning, no data, no escalation
+    spawn: []

@@ -12,21 +12,26 @@ check's deleted after. It returns a verdict per tool: None when it builds, else 
 not, in words, naming its file only by its name.
 
 Each check runs `python -P -m deep_reasoning.tool_check` from an empty folder, so the
-tools see no chat's files or modules, in a process group of its own that is ended
-after, so nothing a tool starts outlives it, and is stopped past BUILD_TIMEOUT_S. The
-parent names the file the verdicts go to before any tool's code runs; the child notes
-each tool's name in it before building it and its verdict after, and ends itself
-whatever happens, so a thread a tool left can't hold it up. A tool that ends or hangs
-the check is the one blamed, and the tools after it are checked again without it.
+tools see no chat's files or modules, in a process group of its own, and is stopped past
+BUILD_TIMEOUT_S. The parent names the file the verdicts go to before any tool's code
+runs; the child notes each tool's name in it before building it and its verdict after,
+and ends itself whatever happens, so a thread a tool left can't hold it up. The parent
+then kills its group before reaping it, so a process a tool started goes too, however
+the check ended (a tool's os._exit or crash included). The tools' files are in a folder
+of their own, apart from the notes, so a tool that writes a file of that name beside its
+own, or in its working folder, changes no verdict (one that seeks the notes out could
+forge one: it is the user's own code, unsandboxed in every run anyway). A tool that ends
+or hangs the check is the one blamed, and the tools after it are checked again without
+it.
 """
 
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
@@ -38,13 +43,18 @@ from deep_reasoner.tools import ToolBuildError
 from deep_reasoner.v2 import LLM
 from deep_reasoner.v2.cli import V2Config, make_tool
 
-from deep_reasoning.library import dump, tool_file
+from deep_reasoning.library import LibraryError, dump, tool_file
+from deep_reasoning.runs import kill_group
 
 YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 # A factory that takes longer is refused: every run would wait on it.
 BUILD_TIMEOUT_S = 60
 # What a check that ended without a verdict shows of what it printed.
 SHOWN_OUTPUT_CHARS = 2_000
+# The check's folder holds the tools' files in a folder of their own.
+TOOLS = "tools"
+# How often the caller looks whether the check has ended.
+POLL_S = 0.05
 Tools = Mapping[str, tuple[dict[str, Any], str]]
 
 
@@ -74,10 +84,12 @@ def checked_once(
     early blames the tool it was building, or every one when it built none."""
     work.mkdir(parents=True, exist_ok=True)
     folder = Path(tempfile.mkdtemp(dir=work))
+    files = folder / TOOLS
+    files.mkdir()
     try:
         blocks = {}
         for name, (block, source) in tools.items():
-            file = folder / tool_file(name)
+            file = files / tool_file(name)
             file.write_text(source, encoding="utf-8")
             blocks[name] = block | {"factory_from": str(file)}
         notes, printed, timed_out = run(blocks, config, env, folder)
@@ -98,7 +110,7 @@ def checked_once(
     if not verdicts:
         verdicts = dict.fromkeys(tools, why)
     # Each tool's file by its name alone: the folder it was built in is gone.
-    shown = f"{folder}{os.sep}"
+    shown = f"{files}{os.sep}"
     return {
         name: None if why is None else why.replace(shown, "")
         for name, why in verdicts.items()
@@ -115,30 +127,74 @@ def run(
     its own that is ended after: what it noted, what it printed, and whether it ran out
     of time."""
     empty, printed, notes = folder / "cwd", folder / "printed.txt", folder / "notes"
+    request = folder / "request.yaml"
     empty.mkdir()
     notes.touch()
-    asked = {"tools": blocks, "config": config, "notes": str(notes)}
-    timed_out = False
-    with printed.open("w") as output:
+    request.write_text(dump({"tools": blocks, "config": config, "notes": str(notes)}))
+    with printed.open("w") as output, request.open() as asked:
         check = subprocess.Popen(
             [sys.executable, "-P", "-m", __name__],
-            stdin=subprocess.PIPE,
+            stdin=asked,
             stdout=output,
             stderr=output,
             cwd=empty,
             env=dict(env),
             start_new_session=True,
-            text=True,
         )
         try:
-            check.communicate(dump(asked), BUILD_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            timed_out = True
+            timed_out = not ended(check, time.monotonic() + BUILD_TIMEOUT_S)
         finally:
-            with suppress(ProcessLookupError):
-                os.killpg(check.pid, signal.SIGKILL)
+            # Whether it ended or not, and however (a tool may end it with os._exit, or
+            # crash it), what a tool started goes too: unreaped, its pid and its group's
+            # are no one else's.
+            kill_group(check.pid)
             check.wait()
     return read_notes(notes), printed.read_text(errors="replace"), timed_out
+
+
+if hasattr(os, "waitid"):
+
+    def exited(check: subprocess.Popen) -> bool:
+        """Whether the process *check* has ended, seen without reaping it."""
+        flags = os.WEXITED | os.WNOHANG | os.WNOWAIT
+        return os.waitid(os.P_PID, check.pid, flags) is not None
+
+else:
+
+    def exited(check: subprocess.Popen) -> bool:
+        """Whether the process *check* has ended. Without os.waitid (macOS), this reaps
+        it, so its group is killed straight after, as close as it can be."""
+        return check.poll() is not None
+
+
+def ended(check: subprocess.Popen, deadline: float) -> bool:
+    """Whether the process *check* ended before *deadline* (time.monotonic())."""
+    while time.monotonic() < deadline:
+        if exited(check):
+            return True
+        time.sleep(POLL_S)
+    return False
+
+
+def refuse_unbuilt(
+    tools: Tools,
+    config: dict[str, Any],
+    env: Mapping[str, str],
+    work: Path,
+    done: str | None = None,
+    note: str | None = None,
+) -> None:
+    """Raise LibraryError, in words, naming each of *tools* that doesn't build, as
+    check_tools finds: *done* says what wasn't done, and *note* follows them."""
+    verdicts = check_tools(tools, config, env, work)
+    so = f", so it {done}" if done else ""
+    failed = [
+        f"Tool {name} doesn't build{so}: {why}"
+        for name in tools
+        if (why := verdicts[name]) is not None
+    ]
+    if failed:
+        raise LibraryError("\n".join([*failed, *([note] if note else [])]))
 
 
 def read_notes(notes: Path) -> list[dict[str, Any]]:

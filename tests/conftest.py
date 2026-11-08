@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 from fake_model import SERVER_KEY, SERVER_NAME
 
-from deep_reasoning.library import import_config, open_library
+from deep_reasoning.importing import import_config
+from deep_reasoning.library import open_library
 from deep_reasoning.settings import VENDORS, add_server, remember_pick
 
 # Copies of deep_reasoner 0.3.0's docs/configs, in their layout, so _compose paths still resolve.

@@ -26,10 +26,8 @@ folder. Each change is logged as library.change, which the worker records as a r
 and changes() reads this chat's back, so the agent can write a before back.
 """
 
-import ast
 import copy
 import json
-import keyword
 import os
 import re
 import sqlite3
@@ -45,18 +43,19 @@ import jinja2
 import structlog
 import yaml
 from deep_reasoner.namespaces import ROOT, NamespaceConfig, NamespaceRegistry
-from deep_reasoner.primitives import RESERVED_NAMES, Func
+from deep_reasoner.primitives import Func
 from deep_reasoner.v2.cli import V2Config
 
 from deep_reasoning import tool_check
 from deep_reasoning.library import (
     APP_TOOLS,
-    BUILDERS,
+    CLAUDE_CODE,
     HISTORY_DESCRIPTION,
     LIBRARY_DESCRIPTION,
     LIBRARY_TOOL,
     MAX_YAML_CHARS,
     PAGE_DESCRIPTION,
+    TAKEN_NAMES,
     LibraryError,
     add_decomposition,
     add_namespace,
@@ -73,6 +72,7 @@ from deep_reasoning.library import (
     fields_of,
     in_chain_order,
     library_tools,
+    literals,
     loaded,
     merged,
     namespace_rows,
@@ -80,9 +80,12 @@ from deep_reasoning.library import (
     parsed,
     parsed_python,
     reading,
+    refuse_keys,
     running_code,
     sees,
     store_tool,
+    taken,
+    texts_in,
     tool_file,
     tool_rows,
     tool_text,
@@ -110,7 +113,7 @@ from deep_reasoning.runs import (
     total_cost,
     withheld,
 )
-from deep_reasoning.tool_check import check_tools
+from deep_reasoning.tool_check import refuse_unbuilt
 
 log = structlog.get_logger()
 
@@ -149,6 +152,9 @@ CUT_SHORT = (
     " whole text, from show(name), tools(name) or changes()."
 )
 TOO_LONG = f"The YAML may be at most {MAX_YAML_CHARS:,} characters."
+# An example's cell tags, each on a line of its own, which a cell writes as placeholders,
+# as a reply's last real <repl> is the one that runs.
+REAL_TAGS = {"[repl]": "<repl>", "[/repl]": "</repl>"}
 HOLDS_A_KEY = (
     "What you wrote holds a provider's key, and the Library file is shared, so keys never"
     " go in it. Take the key out."
@@ -156,8 +162,6 @@ HOLDS_A_KEY = (
 # reasoner: claude_code would bill the user's subscription.
 LOCKED_FIELDS = ("repl", "reasoner")
 USERS_CHOICE = "the user's choice, in the Library panel's Namespaces tab (Edit YAML)."
-# A tool of this factory, or a reasoner of this type, runs on the user's subscription.
-CLAUDE_CODE = "claude_code"
 NOT_A_TOOL = (
     "name, source and factory should be text, and settings a dict of plain values (text,"
     " numbers, True, False, None, and lists and dicts of them keyed by text, each one"
@@ -169,7 +173,6 @@ MAX_NESTING = 20
 # A run hands the factory every key of the tool's block but these.
 OWN_KEYS = ("factory", "factory_from")
 SETS_OWN_KEYS = "settings may not hold factory or factory_from: write_tool sets them."
-TAKEN_NAMES = (*BUILDERS, *APP_TOOLS, *sorted(RESERVED_NAMES))
 TOOL_TOO_LONG = (
     f"The source, and the settings as YAML, may each be at most {MAX_YAML_CHARS:,}"
     " characters."
@@ -252,10 +255,15 @@ class Tree:
         default_factory=lambda: {"node": None, "drive": None, "costs": [], "steps": []}
     )
     rows: list[Holder] = field(default_factory=list)
+    model: Any = None
     nodes: dict[Any, tuple[Holder, Any]] = field(default_factory=dict)
     cells: dict[Any, dict[str, Any]] = field(default_factory=dict)
     # The drives each cell started, by the cell's id(), for a page's copy of it.
     started: dict[int, list[Holder]] = field(default_factory=dict)
+
+
+def start_turn(tree: Tree, event: Event) -> None:
+    tree.model = event.get("model")
 
 
 def start_agent(tree: Tree, event: Event) -> None:
@@ -315,8 +323,14 @@ def end_cell(tree: Tree, event: Event) -> None:
 
 
 def add_usage(tree: Tree, event: Event) -> None:
-    """A call's cost counts for its agent and every agent above it."""
+    """A call's cost counts for its agent and every agent above it; a sub-agent's own
+    call names the model it asked for on its row, when that isn't the run's."""
     node, seen = event.get("node"), set()
+    row = holder_of(tree, node)
+    model = event.get("model")
+    own = event.get("own") is True and row is not None and row is not tree.root
+    if own and isinstance(model, str) and model != tree.model:
+        row["model"] = model
     # Each once: a file from someone else may name a node its own ancestor.
     while node in tree.nodes and node not in seen:
         seen.add(node)
@@ -346,6 +360,7 @@ def end_turn(tree: Tree, event: Event) -> None:
 
 
 FOLDS = {
+    "turn.start": start_turn,
     "agent.start": start_agent,
     "think": think,
     "cell.start": start_cell,
@@ -898,26 +913,38 @@ def build_page(client: Any, params: dict[str, Any]) -> Func:
     return Func(SimpleNamespace(new=new), description=PAGE_DESCRIPTION)
 
 
-def texts_in(data: Any) -> Iterator[str]:
-    """Every text in parsed YAML *data*, keys included; each mapping or list once, as
-    aliases may share or nest them."""
-    stack, seen = [data], set()
-    while stack:
-        value = stack.pop()
-        if isinstance(value, str):
-            yield value
-        elif isinstance(value, dict | list) and id(value) not in seen:
-            seen.add(id(value))
-            stack.extend(
-                [*value, *value.values()] if isinstance(value, dict) else value
-            )
-
-
 def check_no_key(texts: list[str], key_names: list[str]) -> None:
     """Raise if any of *texts* holds the value of a key variable in *key_names*."""
-    secrets = secrets_of(os.environ, key_names)
-    if any(secret in text for secret in secrets for text in texts):
-        raise LibraryError(HOLDS_A_KEY)
+    refuse_keys(texts, secrets_of(os.environ, key_names), HOLDS_A_KEY)
+
+
+def with_real_tags(text: str) -> str:
+    """The decomposition written as YAML *text* with each line of an assistant turn that
+    is a placeholder tag alone, [repl] or [/repl], written as the real one; *text* as it
+    is when it has none, or doesn't read as a decomposition, which the store refuses."""
+    try:
+        decomposition = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return text
+    messages = (
+        decomposition.get("messages") if isinstance(decomposition, dict) else None
+    )
+    changed = False
+    for turn in messages if isinstance(messages, list) else []:
+        if not isinstance(turn, dict) or turn.get("role") != "assistant":
+            continue
+        content = turn.get("content")
+        if isinstance(content, str):
+            lines = content.splitlines(keepends=True)
+            turn["content"] = "".join(map(tag_written, lines))
+            changed = changed or turn["content"] != content
+    return dump(decomposition) if changed else text
+
+
+def tag_written(line: str) -> str:
+    """*line*, written as the real tag when it is a placeholder tag alone, its indent kept."""
+    tag = line.strip()
+    return line.replace(tag, REAL_TAGS[tag]) if tag in REAL_TAGS else line
 
 
 def yaml_text(value: Any) -> str:
@@ -998,7 +1025,7 @@ def check_tool(
     if settings and any(key in settings for key in OWN_KEYS):
         raise LibraryError(SETS_OWN_KEYS)
     tool_file(name)
-    if keyword.iskeyword(name) or name in TAKEN_NAMES:
+    if taken(name):
         raise LibraryError(
             f'"{name}" is taken: it is a Python keyword, a built-in or app tool, or a name'
             f" the REPL binds itself ({', '.join(TAKEN_NAMES)}). Pick another."
@@ -1006,14 +1033,10 @@ def check_tool(
     if max(len(source), len(dump(settings))) > MAX_YAML_CHARS:
         raise LibraryError(TOOL_TOO_LONG)
     check_whole([source, *texts_in(settings)])
-    module = parsed_python(source)
-    # Its literals too, as an escape can spell a key the raw text doesn't hold.
-    literals = [
-        node.value if type(node.value) is str else node.value.decode("latin-1")
-        for node in ast.walk(module)
-        if isinstance(node, ast.Constant) and type(node.value) in (str, bytes)
-    ]
-    check_no_key([*texts, *texts_in(settings), *literals], key_names)
+    # texts holds the source itself.
+    check_no_key(
+        [*texts, *texts_in(settings), *literals(parsed_python(source))], key_names
+    )
 
 
 def check_tool_locks(config: V2Config, registry: NamespaceRegistry, name: str) -> None:
@@ -1255,14 +1278,7 @@ def check_builds(
     if not tools:
         return
     config = tool_check.config_of(tools_dir.parent / SPEC)
-    verdicts = check_tools(tools, config, os.environ, tools_dir / CHECKS)
-    failed = [
-        f"Tool {name} doesn't build, so it {done}: {why}"
-        for name, why in verdicts.items()
-        if why is not None
-    ]
-    if failed:
-        raise LibraryError("\n".join(failed))
+    refuse_unbuilt(tools, config, os.environ, tools_dir / CHECKS, done)
 
 
 def build_library(client: Any, params: dict[str, Any]) -> Func:
@@ -1369,10 +1385,9 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def write_decomposition(namespace: str, yaml: Any) -> dict[str, Any]:
         """Add the decomposition *yaml* to *namespace*, or replace the one of its name."""
         text = yaml_text(yaml)
-        # The engine runs a reply's last <repl> block, so a cell writes [repl] instead;
-        # a text with a real tag was read back, not typed, so its [repl] is the example's.
+        # A text with a real tag was read back, not typed, so its [repl] is the example's.
         if "<repl>" not in text:
-            text = text.replace("[repl]", "<repl>").replace("[/repl]", "</repl>")
+            text = with_real_tags(text)
         check_writable(namespace, text, key_names)
         with app_file(library, "rw") as connection:
             stored, before = add_decomposition(

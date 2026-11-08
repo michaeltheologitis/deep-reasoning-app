@@ -1,0 +1,15 @@
+{"seq": 1, "t": 1794136961.9027295, "kind": "turn.start", "run": "20261108-112241-875694", "chat": "recorded", "prompt": "Ask a smaller model.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261108-112241-875694"}
+{"seq": 2, "t": 1794136962.9196026, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Ask a smaller model.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794136963.0310335, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1340, "tokens_out": 8, "cost": 0.001348}
+{"seq": 4, "t": 1794136963.0313058, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Count on fewer weights.', model='fake-small'))"}
+{"seq": 5, "t": 1794136963.0349114, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Count on fewer weights.", "namespace": "root", "drive": 1}
+{"seq": 6, "t": 1794136963.1056323, "kind": "usage", "node": 2, "model": "fake-small", "own": true, "tokens_in": 1340, "tokens_out": 4, "cost": 0.001344}
+{"seq": 7, "t": 1794136963.1058946, "kind": "cell.start", "node": 2, "cell": 2, "code": "FinalAnswer(3)"}
+{"seq": 8, "t": 1794136963.1074448, "kind": "cell.end", "node": 2, "cell": 2, "code": "FinalAnswer(3)", "output": "FinalAnswer: 3", "status": "done"}
+{"seq": 9, "t": 1794136963.1076367, "kind": "agent.end", "node": 2, "status": "done", "result": "3", "detail": null}
+{"seq": 10, "t": 1794136963.1093907, "kind": "cell.end", "node": 1, "cell": 1, "code": "print(subagent('Count on fewer weights.', model='fake-small'))", "output": "3", "status": "done"}
+{"seq": 11, "t": 1794136963.1170113, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1350, "tokens_out": 4, "cost": 0.001354}
+{"seq": 12, "t": 1794136963.117146, "kind": "cell.start", "node": 1, "cell": 3, "code": "FinalAnswer('asked')"}
+{"seq": 13, "t": 1794136963.1176217, "kind": "cell.end", "node": 1, "cell": 3, "code": "FinalAnswer('asked')", "output": "FinalAnswer: 'asked'", "status": "done"}
+{"seq": 14, "t": 1794136963.1177506, "kind": "agent.end", "node": 1, "status": "done", "result": "asked", "detail": null}
+{"seq": 15, "t": 1794136963.117889, "kind": "turn.end", "outcome": "answered", "answer": "asked", "detail": null, "unfinished_calls": 0, "cost": 0.004046, "seconds": 1.2151594161987305}

@@ -1,6 +1,7 @@
 import errno
 import fcntl
 import io
+import json
 import os
 import queue
 import re
@@ -24,6 +25,7 @@ from deep_reasoning import cli
 from deep_reasoning.chats import create_chat
 from deep_reasoning.folders import data_folder
 from deep_reasoning.library import ADDED_IN, open_library
+from deep_reasoning.settings import VENDORS
 
 WAIT_SECONDS = 0.5
 KEY_IN_A_FRAME = "sk-held-in-a-frame"
@@ -179,6 +181,81 @@ def test_a_failed_import_exits_with_a_plain_error(tmp_path):
     missing = tmp_path / "missing.yaml"
     with pytest.raises(SystemExit, match="Could not import .*the Library is unchanged"):
         cli.main(["import", str(missing), "--library", str(tmp_path / "lib.sqlite")])
+
+
+def test_import_says_what_it_changed(tmp_path, capsys, waitlist):
+    library = tmp_path / "lib.sqlite"
+    cli.main(["import", str(waitlist), "--library", str(library)])
+    said = capsys.readouterr().out.splitlines()
+    header = said.index(f"Imported {waitlist} into the Library at {library}.")
+    assert "  root: tools [llm] → [waitlist]; the rest of root kept" in said[header:]
+
+
+def test_importing_a_config_again_says_it_changed_nothing(tmp_path, capsys):
+    config = tmp_path / "steps.yaml"
+    config.write_text("max_iter: 4\n")
+    library = tmp_path / "lib.sqlite"
+    for _ in range(2):
+        cli.main(["import", str(config), "--library", str(library)])
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        f"Imported {config}: the Library at {library} already held all of it."
+    )
+
+
+READS_THE_ENVIRONMENT = """\
+import json, os
+from pathlib import Path
+from deep_reasoner.primitives import Func
+
+PROXY = os.environ["HTTPS_PROXY"]
+
+def build(client, params):
+    Path(params["out"]).write_text(json.dumps(sorted(os.environ)))
+    return Func(lambda: PROXY)
+"""
+
+
+def test_import_builds_its_tools_with_the_runs_environment_but_no_key(
+    tmp_path, monkeypatch
+):
+    keys = [
+        *(vendor.key_env for vendor in VENDORS),
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ]
+    for name in keys:
+        monkeypatch.setenv(name, KEY_IN_A_FRAME)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    monkeypatch.setenv("CATALOG_DB", "catalog.sqlite")
+    (tmp_path / "tools.py").write_text(READS_THE_ENVIRONMENT)
+    out = tmp_path / "environment.json"
+    config = tmp_path / "proxied.yaml"
+    config.write_text(
+        f"tools:\n  fetch: {{factory: build, factory_from: tools.py, out: {out}}}\n"
+        "namespaces:\n  helper: {tools: [fetch]}\n"
+    )
+    cli.main(["import", str(config), "--library", str(tmp_path / "lib.sqlite")])
+    seen = set(json.loads(out.read_text()))
+    assert {"HTTPS_PROXY", "CATALOG_DB", "PATH"} <= seen
+    assert not seen & set(keys)
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["settings", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+)
+def test_import_refuses_a_key_saved_in_settings_or_set_in_the_shell(
+    tmp_path, app_home, monkeypatch, where
+):
+    if where == "settings":
+        app_home.mkdir()
+        (app_home / ".env").write_text(f"OPENROUTER_API_KEY={KEY_IN_A_FRAME}\n")
+    else:
+        monkeypatch.setenv(where, KEY_IN_A_FRAME)
+    config = tmp_path / "keyed.yaml"
+    config.write_text(f"namespaces:\n  helper: {{vars: {{key: {KEY_IN_A_FRAME}}}}}\n")
+    with pytest.raises(SystemExit, match="Namespace helper holds a key"):
+        cli.main(["import", str(config), "--library", str(tmp_path / "lib.sqlite")])
 
 
 @pytest.mark.parametrize("command", [[], ["import", "CONFIG"]])

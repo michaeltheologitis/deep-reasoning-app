@@ -22,10 +22,18 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 **Chats**
 - Chats on the left: new, rename, delete. Saved in the Library file (below) with every message's run, they come back
   after a restart. Deleting a chat wipes its messages from the file.
-- Each message is a run, shown live as a tree of sub-agents you open level by level. Esc stops it.
-- Each run shows its time, sub-agent count, cost (N/A when the model's price isn't known) and model.
+- Each message is a run, shown live as a tree of sub-agents you open level by level, waiting for the model until its
+  first answer; the nodes you open stay open after a reload. A sub-agent on another model than the chat's shows it on
+  its row. Esc stops a run, saying so at once, though a cell busy in C (a long `time.sleep`) holds it up a few seconds.
+- Each run shows its time, sub-agent count, cost and model. A call is priced from the price list of the vendor whose
+  address it went to (OpenAI, OpenRouter, Anthropic, Google), or by the server's own figure where it sends one, as
+  OpenRouter does; so a vendor's model name on a server of your own costs N/A, as does a run whose only calls never
+  finished (its server failed them, or you stopped it during its first), never $0.
+- A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
+  its own words after.
 - An answer that holds Markdown (headings, lists, tables, code, links, bold) shows as Markdown; any other shows
-  exactly as written, so `List<String>`, `__init__` or `2*3*4` stay as they are. Raw HTML always shows as text, an
+  exactly as written, so `List<String>`, `__init__` or `2*3*4` stay as they are; bold works where it sits against
+  the letters, as Chinese, Japanese, Korean or Thai often do. Raw HTML always shows as text, an
   image as a link to it (never loaded), and every link opens in a new tab. A run that ran out of turns says so in
   place of an answer, and a long prompt or answer shows its first lines with a **show all** toggle.
 - Follow-ups see the chat's earlier messages and answers as the conversation's own turns, and can ask how one was
@@ -69,7 +77,9 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   `DEEP_REASONING_ANTHROPIC_KEY`, Google Gemini `GEMINI_API_KEY`.
 - Custom servers: any OpenAI-compatible URL (vLLM, Ollama, …), with an optional key.
 - The model menu shows the current models of each vendor you have a key for, and all of a custom server's; typing
-  searches the vendor's full list, and any model name is accepted.
+  searches the vendor's full list, but for its speech, image, embedding and other models no chat runs on, and any
+  model name is accepted. A name a provider lists exactly comes first, so Enter picks it. Under the message box the
+  model shows with the provider that serves it.
 - Keys come from settings or your shell. Settings keeps them in `~/.deep-reasoning/.env`, readable only by you, and
   never shows them again. A saved key wins over the shell's.
 - A custom server's key goes only to the address you saved the server with; a server of the same name at another
@@ -92,7 +102,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   `library.sqlite-wal` beside it. The file stays in SQLite's WAL mode, so open a copy from a folder you can write to.
 - What a run prints travels with the file. The app withholds any provider's key from it, but can't know other
   secrets a cell reads from your shell.
-- The **decompositions** panel (top right) adds, edits (renaming too) and deletes decompositions, root's included,
+- The **library** panel (top right) adds, edits (renaming too) and deletes decompositions, root's included,
   as YAML, and adds, edits and deletes namespaces. It marks each decomposition ✓ or ✗ by whether its turns make a
   worked example like `deep_reasoner`'s own (the task; each assistant turn's `<think>` and one `<repl>`, then the
   `<observation>` it printed; `FinalAnswer` last), and opening a ✗ says why. The form warns as you type but still
@@ -100,17 +110,25 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   it as it is, so a new one starts in the namespace of the chat on screen, not root. The code isn't run, so an
   observation isn't checked against it.
 - Saving refuses what would make every run there fail: a decomposition holding `{{` or `{%` (which the engine reads
-  as a Jinja template) whose template doesn't parse or names anything but what the engine fills in (`task`, `vars`,
+  as a Jinja template) whose template doesn't parse, names anything but what the engine fills in (`task`, `vars`,
   `funcs`, `coroutines` and the run settings' `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`),
+  includes another template (`{% include %}`, `extends`, `import`, `from`) or reaches into Python internals (an
+  attribute or key starting with `_`, or one such as `mro`),
   one over 1,000,000 characters, or one whose name starts or ends with a space or holds a character you can't see;
-  in a namespace or one under it, a `reasoner` type the engine doesn't know; and a var that isn't a Python name, is
-  a keyword or one of Python's built-ins (`max`, `type`, …), or has the name of a tool its namespace sees. A
+  in a namespace or one under it, a `reasoner` type the engine doesn't know; a `system_suffix` whose template fails
+  as a decomposition's would; and a var that isn't a Python name, starts with `_`, is a keyword or one of Python's
+  built-ins (`max`, `type`, …), or has the name of a tool its namespace sees. A
   template is checked, never run, so whether `vars.x` holds what it reads isn't. A stored decomposition that fails
-  the check, as a shared Library may hold, is marked ✗ with why.
+  the check, as a shared Library may hold, is marked ✗ with why. Runs render templates sandboxed, so a shared
+  Library's templates reach no Python internals: a worked example that tries fails the run, naming it, and a system prompt or
+  suffix that tries is shown to the model as written.
 - A save or delete in the panel is refused if what you opened was changed meanwhile (by the librarian, another tab
-  or an import): your draft stays, beside what is stored now, and saving again replaces it. The panel reads the
-  Library again whenever you open it or come back to its window.
-- The Tools tab shows each tool, with the Python of the Library's own, and deletes one of the Library's that no
+  or an import): your draft stays, beside what is stored now, and saving again replaces it. One deleted meanwhile
+  says so, and its row goes. A delete the panel can tell would be refused (a tool a namespace grants, a namespace
+  with namespaces under it or that another's `spawn` names) says why at once, without asking first. The panel reads
+  the Library again whenever you open it or come back to its window.
+- The Tools tab shows each tool, with what agents are told it does (for one of the Library's own, as far as its
+  Python says without running it) and the Python of the Library's own, and deletes one of the Library's that no
   namespace grants. Run settings can't be changed in the panel, but one the engine doesn't read, as an import may
   bring, can be deleted.
 - In a chat in the `librarian` namespace, picked under the message box, the agent can add or edit a decomposition in
@@ -120,10 +138,10 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   or one whole), the tools with their Python, and what this chat changed; a change touches only the fields it names,
   and says what changed. Changing a text such as a system suffix, it starts from the one stored and keeps every line
   you didn't ask it to remove, saying what it removed; a new namespace's own suffix holds only what it adds to its
-  parent's; and it leaves `spawn` unset unless you ask, then keeping `historian` and `librarian` in it. A new Library's `librarian`
-  knows what it is for, has worked examples of reading the Library, of writing a worked example and of undoing a
-  change, and may hand questions about earlier messages to the historian but not delegate to itself (its `spawn`,
-  which you may widen in the panel). A tool it writes, or a tool of yours it grants that no
+  parent's; and it leaves `spawn` unset unless you ask, then keeping `historian` and `librarian` in it. A new
+  Library's `librarian` knows what it is for, has worked examples of reading the Library, of writing a worked example
+  and of undoing a change, and may hand questions about earlier messages to the historian but not delegate to itself
+  (its `spawn`, which you may widen in the panel). A tool it writes, or a tool of yours it grants that no
   namespace granted yet, is built first to check it, as another chat would build it (in a process of its own, from an
   empty folder), and one that doesn't build there is refused: granted, it would stop every chat. That works only in a chat
   whose namespace runs the local REPL. A tool it writes can't take a built-in's or the app's name or replace a tool
@@ -145,9 +163,14 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   the Library` and `add a namespace with a worked example`, and `librarian` a new Library's `read the Library`.
 - Each Library change the agent makes shows in the chat, under its answer and where it was made in the tree, and opens
   onto its YAML (or a tool's block and Python) before and after; ask the librarian to undo it, and it writes the
-  before back from the record. The decompositions panel and the
+  before back from the record. The library panel and the
   namespace menu under the message box show the change at once.
-- `uv run deep-reasoning import CONFIG.yaml` brings in a `deep_reasoner` config, replacing items with the same name.
+- `uv run deep-reasoning import CONFIG.yaml` brings a `deep_reasoner` config's namespaces, decompositions, tools and
+  run settings into the Library (each chat keeps its own model), replacing items of the same name and the root fields
+  it sets, and prints what it changed and what it left out. It refuses, changing nothing, a file that isn't a config,
+  the app's `historian` and `librarian` namespaces or one under them, a tool named as a built-in, a key anywhere in
+  it, a `system_suffix` the panel would refuse, and a tool a namespace grants that doesn't build: it builds each such tool once to check it, from its own file
+  alone and without your keys, so a file or module beside the config isn't carried in. Import only configs you trust.
 - `uv run deep-reasoning reset` starts afresh: it deletes the Library file (`--library PATH` for another), with its
   chats and settings, and its run and scratch folders, after listing them and asking you to type `delete`
   (`--yes` skips the question). Your keys in `.env` and the folders you picked stay. It deletes only a Library file:
@@ -157,7 +180,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   file, let go when the app stops, even in a crash; on a file system without locks it says so and runs without. A
   `--library` in a folder that isn't there is refused rather than made.
 - The Tools tab lists the app's own tools beside the built-in ones, and every tool in the Library; a tool of yours can't
-  be named `history`, `library` or `page`.
+  be named `history`, `library` or `page`, nor as a built-in.
 - Every run builds every tool some namespace grants, whatever namespace its chat is in (only which agents can call a
   tool is per namespace): once any namespace grants a tool, its code runs at the start of every message in every
   chat, and a granted tool that stops building stops every chat until you take it out of the namespaces' tools in

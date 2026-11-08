@@ -12,7 +12,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from fastapi import Path as InPath
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, StringConstraints
@@ -76,9 +76,9 @@ from deep_reasoning.settings import (
     default_folder,
     find_provider,
     forget_key,
+    key_names,
     model_lists,
     provider_list,
-    providers,
     remember_pick,
     remove_server,
     run_key,
@@ -473,15 +473,13 @@ def create_app(library, home):
         client = {"base_url": provider.base_url, "api_key_env": provider.key_env}
         keys = {provider.key_env: key}
         # Any provider's key in the shell reaches the worker, so is withheld too.
-        key_names = [each.key_env for each in providers(library)]
+        names = key_names(library)
 
         def config_for(run_folder):
             # A run's folder is named by its id.
             run = run_folder.name
             tools = run_folder / "tools"
-            config = engine_config(
-                library, namespace, tools, chat["id"], run, key_names
-            )
+            config = engine_config(library, namespace, tools, chat["id"], run, names)
             return config | {"model": model["name"], "client": client}
 
         run = runs.start(
@@ -492,7 +490,7 @@ def create_app(library, home):
             provider.name,
             keys,
             folder,
-            key_names,
+            names,
         )
         choose(library, chat["id"], namespace, provider.name, model["name"])
         if not earlier:
@@ -530,14 +528,14 @@ def create_app(library, home):
             raise HTTPException(HTTPStatus.NOT_FOUND, NO_PAGE)
         return Response(text, media_type="application/json")
 
-    # The tab a page's link opens: page.js reads the page from the API and draws it.
+    # The tab a page's link opens: page.js reads the page from the API and draws it, or,
+    # for one that isn't there, says so in the app's look.
     @app.get("/pages/{page}")
     def page_tab(page: str):
         with closing(open_library(library)) as connection:
             found = page_exists(connection, page)
-        if not found:
-            return PlainTextResponse(NO_PAGE, status_code=HTTPStatus.NOT_FOUND)
-        return FileResponse(WEB / "page.html", headers=POLICY)
+        status = HTTPStatus.OK if found else HTTPStatus.NOT_FOUND
+        return FileResponse(WEB / "page.html", status_code=status, headers=POLICY)
 
     # A mount at / answers every path, so API routes must be added above it.
     app.mount("/", Web(directory=WEB, html=True))
