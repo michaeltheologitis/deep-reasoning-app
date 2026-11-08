@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import re
+import select
 import signal
 import sys
 import threading
@@ -51,6 +52,9 @@ from deep_reasoning.runs import (
 log = structlog.get_logger()
 
 CLOSE_RUN_WATCHDOG_S = 2.0
+STDIN_READ_SIZE = 4096
+# Held while the server's commands are read: by the stdin thread, or as the root starts.
+TAKING_COMMANDS = threading.Lock()
 REPL_BLOCK = re.compile(r"<repl>.*?(?:</repl>|$)", re.DOTALL)
 THINK_TAG = re.compile(r"</?think>")
 OBSERVATION = re.compile(r"\A<observation>\n?(.*?)\n?</observation>\Z", re.DOTALL)
@@ -386,13 +390,46 @@ def end_group() -> NoReturn:
     os.killpg(0, signal.SIGKILL)
 
 
-def read_commands(stop: Callable[[], None]) -> None:
-    """Stdin, on its own thread. At EOF the server is gone, so nothing would read the
-    events: the worker ends its whole process group."""
-    for line in sys.stdin:
-        if line.strip() == "stop":
+def read_commands(stdin: int, stop: Callable[[], None]) -> NoReturn:
+    """The server's commands on *stdin*, on a thread of their own, as they come. It is
+    what ends the worker when the server goes, so a command that fails is logged and it
+    reads on."""
+    while True:
+        try:
+            select.select([stdin], [], [])
+        except OSError:
+            log.exception("worker.stdin_unreadable")
+            end_group()
+        try:
+            take_commands(stdin, stop)
+        except Exception:
+            log.exception("worker.command_failed")
+
+
+def take_commands(stdin: int, stop: Callable[[], None]) -> bool:
+    """Act on the command the server has sent on *stdin*, if it has, without waiting:
+    there is one, `stop`, sent at most once and whole. Whether it stopped."""
+    with TAKING_COMMANDS:
+        stopping = b"stop" in sent_so_far(stdin).split()
+        if stopping:
             stop()
-    end_group()
+    return stopping
+
+
+def sent_so_far(stdin: int) -> bytes:
+    """What the server has sent on *stdin* and no one has read, without waiting. At EOF
+    the server is gone, so nothing would read the events, and so when stdin can't be
+    read: the worker ends its whole process group."""
+    try:
+        if not select.select([stdin], [], [], 0)[0]:
+            return b""
+        sent = os.read(stdin, STDIN_READ_SIZE)
+    except OSError:
+        log.exception("worker.stdin_unreadable")
+        end_group()
+    if not sent:
+        end_group()
+    return sent
 
 
 def exit_after(seconds: float) -> None:
@@ -430,6 +467,7 @@ def counting_calls(recorder: Recorder) -> None:
 async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     stop_asked = threading.Event()
     reasoner = None
+    stdin = sys.stdin.fileno()
 
     def stop() -> None:
         stop_asked.set()
@@ -438,15 +476,16 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
 
     def stop_if_asked() -> None:
         # A stop does nothing before the root's first drive, so one asked earlier is
-        # repeated here, when the root's drive has begun.
-        if stop_asked.is_set():
+        # repeated here, when the root's drive has begun; one the stdin thread hasn't
+        # read yet is taken here, before the root's first call.
+        if not take_commands(stdin, stop) and stop_asked.is_set():
             reasoner.stop()
 
     base_url = spec["config"]["client"]["base_url"]
     recorder = Recorder(out, on_root_start=stop_if_asked, base_url=base_url)
     configure_structlog_fixture(console=False, extra_processors=[recorder])
     counting_calls(recorder)
-    threading.Thread(target=read_commands, args=(stop,), daemon=True).start()
+    threading.Thread(target=read_commands, args=(stdin, stop), daemon=True).start()
     # A tool that doesn't build while the run builds the config's tools, at its start,
     # stops every run; one that doesn't later is that run's own failure.
     starting = True

@@ -1,6 +1,9 @@
 import asyncio
 import io
 import json
+import signal
+import subprocess
+import sys
 
 import pytest
 from deep_reasoner.tools import ToolBuildError
@@ -21,6 +24,22 @@ from deep_reasoning.worker import (
 ROOT, CHILD = 1, 2
 OPENAI_URL = "https://api.openai.com/v1"
 OWN_SERVER_URL = "http://127.0.0.1:8000/v1"
+EXIT_S = 30
+# Non-blocking: a read that would wait for a command raises, ending the group, so the
+# test fails rather than hangs.
+TAKE_A_STOP_TWICE = """\
+import os
+from deep_reasoning.worker import take_commands
+read, write = os.pipe()
+os.write(write, b"stop\\n")
+os.set_blocking(read, False)
+print([take_commands(read, lambda: print("stopped")) for _ in range(2)])
+"""
+READ_COMMANDS_FROM_A_FOLDER = """\
+import os, sys
+from deep_reasoning.worker import read_commands
+read_commands(os.open(sys.argv[1], os.O_RDONLY), lambda: print("stopped"))
+"""
 TASK_GROUP = """\
 import asyncio, concurrent.futures
 async def boom():
@@ -291,6 +310,30 @@ def test_the_roots_start_is_reported():
     recorder(None, "debug", agent_start(ROOT, None))
     recorder(None, "debug", agent_start(CHILD, ROOT))
     assert started == [True]
+
+
+def in_a_worker(code, *args):
+    """*code* run in a process group of its own, as the worker is: ending its group
+    ends it alone."""
+    return subprocess.run(
+        [sys.executable, "-c", code, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        start_new_session=True,
+        timeout=EXIT_S,
+    )
+
+
+def test_a_stop_already_sent_is_taken_once_without_waiting_for_more():
+    taken = in_a_worker(TAKE_A_STOP_TWICE)
+    assert (taken.returncode, taken.stdout) == (0, "stopped\n[True, False]\n")
+
+
+def test_a_stdin_that_cant_be_read_ends_the_worker_as_its_end_does(tmp_path):
+    reading = in_a_worker(READ_COMMANDS_FROM_A_FOLDER, str(tmp_path))
+    assert reading.returncode == -signal.SIGKILL, reading.stderr
+    assert "stopped" not in reading.stdout
 
 
 @pytest.mark.parametrize(
