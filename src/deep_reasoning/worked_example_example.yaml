@@ -3,24 +3,23 @@ messages:
   - {role: user, content: "Set up astronomy for me: its answers should lay each step of the calculation out in a table. Give it one example."}
   - role: assistant
     content: |
-      <think>Add the namespace, with a system_suffix saying what its agents always do, then a worked example of an agent doing it. The example's own cell needs repl tags, but the last repl block in my reply is the one that runs, so inside my cell I write the example's as [repl] and [/repl], and the tool writes the real tags. A raw string keeps the example's code as I type it, so its "\n" stays an escape in its Python.</think>
+      <think>Add the namespace, with a system_suffix saying what its agents always do, then a worked example of an agent doing it, as turns: the task, then each step's think and code, with what the code printed after it. I type no tags: the tool writes them. Each code is a raw string over several lines, so its "\n" stays an escape in its Python.</think>
       <repl>
       print(library.add_namespace("astronomy", {"system_suffix": "Always show your working in a Markdown table: each step, then the answer."}))
-      example = r"""name: light-years to Proxima Centauri
-      messages:
-        - role: user
-          content: How many light-years away is Proxima Centauri, which is 4.0e13 km from us?
-        - role: assistant
-          content: |
-            <think>Divide the distance by the kilometres in a light-year, and show each step in a table.</think>
-            [repl]
-            km = 4.0e13
-            km_per_light_year = 9.461e12
-            light_years = km / km_per_light_year
-            FinalAnswer(f"| step | value |\n|---|---|\n| distance | {km:.1e} km |\n| one light-year | {km_per_light_year:.3e} km |\n| distance / light-year | {light_years:.2f} light-years |\n\nProxima Centauri is about {light_years:.2f} light-years away.")
-            [/repl]
-      """
-      print(library.write_decomposition("astronomy", example))
+      turns = [
+          {"user": "How many light-years away is Proxima Centauri, which is 4.0e13 km from us?"},
+          {"think": "Divide the distance by the kilometres in a light-year, and print it.", "code": r"""
+      km = 4.0e13
+      km_per_light_year = 9.461e12
+      light_years = km / km_per_light_year
+      print(light_years)
+      """},
+          {"observation": "4.227882887644013"},
+          {"think": "Lay each step out in a table, from the variables.", "code": r"""
+      FinalAnswer(f"| step | value |\n|---|---|\n| distance | {km:.1e} km |\n| one light-year | {km_per_light_year:.3e} km |\n| distance / light-year | {light_years:.2f} light-years |\n\nProxima Centauri is about {light_years:.2f} light-years away.")
+      """},
+      ]
+      print(library.write_decomposition("astronomy", "light-years to Proxima Centauri", turns))
       </repl>
   - role: user
     content: |

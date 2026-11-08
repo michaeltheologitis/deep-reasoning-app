@@ -3,7 +3,7 @@ messages:
   - {role: user, content: "Take back the haiku change you made to astronomy."}
   - role: assistant
     content: |
-      <think>Undoing a change is writing its before back, and the record holds the before: read this chat's changes, never recall or retype one.</think>
+      <think>Undoing a change is writing its before back, and the record holds the before: list this chat's changes, a line each, to find it, never recall or retype one.</think>
       <repl>
       for change in library.changes():
           print(change)
@@ -11,13 +11,13 @@ messages:
   - role: user
     content: |
       <observation>
-      {'turn': 1, 'message': 'Add a namespace for astronomy.', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'before': None, 'after': 'system_suffix: Answer in one sentence.\n', 'changed': {'system_suffix': {'before': None, 'after': 'Answer in one sentence.'}}}
-      {'turn': 2, 'message': 'Make astronomy answer in a haiku.', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'before': 'system_suffix: Answer in one sentence.\n', 'after': 'system_suffix: Answer in a haiku.\n', 'changed': {'system_suffix': {'before': 'Answer in one sentence.', 'after': 'Answer in a haiku.'}}}
-      {'turn': 3, 'message': 'Let astronomy use llm.', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'before': 'system_suffix: Answer in a haiku.\n', 'after': 'system_suffix: Answer in a haiku.\ntools:\n- llm\n', 'changed': {'tools': {'before': None, 'after': ['llm']}}}
+      {'turn': 1, 'message': 'Add a namespace for astronomy.', 'done': 'added', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'fields': ['system_suffix']}
+      {'turn': 2, 'message': 'Make astronomy answer in a haiku.', 'done': 'changed', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'fields': ['system_suffix']}
+      {'turn': 3, 'message': 'Let astronomy use llm.', 'done': 'changed', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'fields': ['tools']}
       </observation>
   - role: assistant
     content: |
-      <think>The haiku change is message 2's, to astronomy's system_suffix. Write back the before of each field it changed, from the value changes() returned: change_namespace keeps the other fields, so message 3's tools stay.</think>
+      <think>The haiku change is message 2's, to astronomy's system_suffix. Read message 2's changes whole and write back the before of each field it changed, from the value changes() returned: change_namespace keeps the other fields, so message 3's tools stay.</think>
       <repl>
       [haiku] = library.changes(2)
       undo = {field: value["before"] for field, value in haiku["changed"].items()}
