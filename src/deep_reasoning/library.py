@@ -146,8 +146,9 @@ namespace's instructions, tools and worked examples, root's reaching every chat)
 Library, which the user edits in the Library panel (top right).
 Compute each number in Python and print it, then answer from the variables, in that cell \
 or a later one, as FinalAnswer(f"It grows to ${total:,.2f} in {years} years."): never \
-type a number you computed. Combine sub-agents' results into one answer in words, prose \
-or a Markdown table, and pass FinalAnswer a string, never a raw dict or list.
+type a number you computed. Asked if an earlier answer was right, check its record \
+rather than work it out again. Combine sub-agents' results into one answer in words, \
+prose or a Markdown table, and pass FinalAnswer a string, never a raw dict or list.
 """
 # library writes the Library, so it is granted in a namespace of its own, which a chat
 # picks when it wants edits, and which no namespace inherits from.
