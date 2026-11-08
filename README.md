@@ -125,8 +125,12 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 - `uv run deep-reasoning import CONFIG.yaml` brings in a `deep_reasoner` config, replacing items with the same name.
 - `uv run deep-reasoning reset` starts afresh: it deletes the Library file (`--library PATH` for another), with its
   chats and settings, and its run and scratch folders, after listing them and asking you to type `delete`
-  (`--yes` skips the question). Your keys in `.env` and the folders you picked stay. Stop the app first. It
-  deletes only a Library file: a folder, a symlink or any other file is refused and left as it is.
+  (`--yes` skips the question). Your keys in `.env` and the folders you picked stay. It deletes only a Library file:
+  a folder, a symlink or any other file is refused and left as it is.
+- One app at a time serves a Library: a second `deep-reasoning` on the same file (by any path) refuses to start, and
+  `import` and `reset` refuse while it runs, so stop it first. The lock is the empty `library.sqlite.lock` beside the
+  file, let go when the app stops, even in a crash; on a file system without locks it says so and runs without. A
+  `--library` in a folder that isn't there is refused rather than made.
 - The Tools tab lists the app's own tools beside the built-in ones, and every tool in the Library; a tool of yours can't
   be named `history`, `library` or `page`.
 - Every run builds every tool some namespace grants, whatever namespace its chat is in (only which agents can call a
