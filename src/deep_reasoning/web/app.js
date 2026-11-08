@@ -55,7 +55,9 @@ const RUN_FROM_OTHER_TAB = "this chat has a run going, started in another tab; i
 // the width at which the chat list is a drawer, as style.css has it
 const PHONE = matchMedia("(max-width: 720px)");
 const SCRATCH_NAME = "scratch";
+const SCRATCH_PICK = "Use a scratch folder";
 const FOLDER_NAME_CHARS = 24;
+const FOLDER_MISSING = ", which is missing: pick another before the next message";
 const POPOVER_MARGIN_PX = 8;
 const NOT_ANSWERING = "the app isn't answering; is deep-reasoning still running?";
 const RECONNECTING = "Lost the connection to the run; reconnecting…";
@@ -408,13 +410,15 @@ async function choose(chat, change) {
   report(null);
 }
 
-// A chat with no folder of its own works in a scratch folder, which goes when the chat does.
+// A chat with no folder of its own works in a scratch folder, which goes when the chat does. One whose folder is gone
+// is marked, as settings marks a default folder, since its next message would be refused there.
 function renderFolder(chat) {
   const name = chat.folder ? chat.folder.split("/").at(-1) || "/" : SCRATCH_NAME;
   const where = chat.folder ?? `scratch folder ${chat.scratch_folder}/, deleted with the chat`;
-  const full = `This chat's working folder, from its next message: ${where}`;
+  const full = `This chat's working folder, from its next message: ${where}${chat.folder_missing ? FOLDER_MISSING : ""}`;
   const button = byId("folder");
   byId("folder-name").textContent = clip(name, FOLDER_NAME_CHARS);
+  byId("folder-missing").textContent = chat.folder_missing ? " missing" : "";
   button.title = full;
   button.setAttribute("aria-label", full);
 }
@@ -428,7 +432,7 @@ function pickFolder() {
     note: "Its Python runs there and reads and writes files there, from the next message. A folder you choose is never deleted.",
     pick: async (folder) => {
       try {
-        ({ folder: chat.folder } = await request("PATCH", `api/chats/${chat.id}`, { folder }));
+        ({ folder: chat.folder, folder_missing: chat.folder_missing } = await request("PATCH", `api/chats/${chat.id}`, { folder }));
       } catch (error) {
         if (!lostWith(error, chat)) throw error;
         return;
@@ -651,20 +655,29 @@ function folderPicker(button, host, spec) {
   const problem = element("div", { id: "folder-problem", class: "folder-problem", "aria-live": "polite" });
   const browser = element("div", { class: "folder-browser", role: "group", "aria-label": "Folders", onmousedown: (e) => e.preventDefault() });
   const use = element("button", { type: "submit", class: "lib-action lib-primary" });
-  const picker = { button, spec, field, problem, browser, use, asked: null };
+  // beside "Use this folder", so the scratch folder is a click away whatever the field holds
+  const scratch = element("button", { type: "button", class: "lib-action", onclick: () => useFolder(picker, null) }, SCRATCH_PICK);
+  const picker = { button, spec, field, problem, browser, use, scratch, asked: null };
   // a form may not be a dialog, so the dialog holds it
   const el = element(
     "div",
     { class: "menu-pop folder-pop", role: "dialog", "aria-label": spec.label },
     element(
       "form",
-      { class: "folder-form", method: "dialog", onsubmit: (e) => useFolder(e, picker) },
+      {
+        class: "folder-form",
+        method: "dialog",
+        onsubmit: (e) => {
+          e.preventDefault();
+          useFolder(picker, cleanFolder(picker.field.value) || null);
+        },
+      },
       element("label", { class: "menu-head", for: field.id }, spec.label),
       field,
       problem,
       element("p", { class: "menu-note", id: "folder-pop-note" }, spec.note),
       browser,
-      element("div", { class: "lib-actions" }, use),
+      element("div", { class: "lib-actions" }, use, scratch),
     ),
   );
   field.addEventListener("input", () => {
@@ -680,7 +693,9 @@ const cleanFolder = (path) => path.trim().replace(/(.)\/+$/, "$1");
 // Each keystroke asks again; an answer to an older question is dropped.
 async function fillBrowser(picker) {
   const here = cleanFolder(picker.field.value) || HOME_FOLDER;
-  picker.use.textContent = picker.field.value.trim() ? "Use this folder" : "Use a scratch folder";
+  const typed = picker.field.value.trim() !== "";
+  picker.use.textContent = typed ? "Use this folder" : SCRATCH_PICK;
+  picker.scratch.hidden = !typed;
   picker.asked = here;
   let listing;
   try {
@@ -705,11 +720,10 @@ async function goToFolder(picker, path) {
   if (fromKeyboard) (picker.browser.querySelector(".row") ?? picker.field).focus();
 }
 
-async function useFolder(e, picker) {
-  e.preventDefault();
-  const path = cleanFolder(picker.field.value);
+// path: null for the scratch folder
+async function useFolder(picker, path) {
   try {
-    await picker.spec.pick(path || null);
+    await picker.spec.pick(path);
   } catch (error) {
     // a browser note saying the same gives way to the refusal, so it reads once
     const note = picker.browser.querySelector(".menu-note");

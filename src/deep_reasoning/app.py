@@ -405,7 +405,8 @@ def create_app(library, home):
 
     def shown(chat, starts):
         """A chat as the API gives it: with the id of its run that is going, if one is, its
-        latest run's, and the namespace and model its next message runs on."""
+        latest run's, the namespace and model its next message runs on, and whether the
+        folder it chose is missing, as its next message would be refused there."""
         namespace, model = starts
         if chat["model"] is not None:
             model = {"provider": chat["provider"], "name": chat["model"]}
@@ -418,6 +419,8 @@ def create_app(library, home):
             "namespace": chat["namespace"] or namespace,
             "model": model,
             "folder": shown_folder(chat["folder"]),
+            "folder_missing": chat["folder"] is not None
+            and starting_folder(chat["folder"]) is None,
             "scratch_folder": short_path(scratch_folder(data, chat["id"])),
         }
 

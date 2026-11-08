@@ -3516,6 +3516,18 @@ async def test_a_run_in_a_folder_that_is_gone_is_refused_and_nothing_starts(
     assert fake.calls == [] and not (data / "runs").exists()
 
 
+def test_a_chat_whose_folder_is_gone_is_listed_as_missing_it(client, home):
+    thesis = home / "thesis"
+    thesis.mkdir()
+    chat = client.post("/api/chats").json()
+    picked = client.patch(f"/api/chats/{chat['id']}", json={"folder": str(thesis)})
+    thesis.rmdir()
+    [listed] = client.get("/api/chats").json()
+    assert (chat["folder_missing"], picked.json()["folder_missing"]) == (False, False)
+    assert listed["folder_missing"] is True
+    assert client.get(f"/api/chats/{chat['id']}").json()["folder_missing"] is True
+
+
 @pytest.mark.parametrize(
     ("folder", "problem"),
     [

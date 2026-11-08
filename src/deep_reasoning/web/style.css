@@ -253,6 +253,7 @@ textarea::placeholder { color: var(--dim); }
 /* already cut in app.js, so its name needs no least width, which would leave a gap after a short one such as ~ */
 #folder { flex-shrink: 0; }
 #folder > span:first-child { min-width: 0; }
+#folder-missing { flex: none; white-space: pre; }
 .choice:hover, .choice[aria-expanded="true"] { color: var(--fg); }
 
 /* popovers: the composer's menus open above its box, the settings panel's in place */
