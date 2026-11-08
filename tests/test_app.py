@@ -64,10 +64,12 @@ from deep_reasoning.library import (
     MAX_YAML_CHARS,
     NO_SUB_AGENTS,
     PAGE_DESCRIPTION,
+    PAST_THE_LIMIT,
     ROOT,
     ROOT_SUFFIX,
     SPAWN_LINE,
     TOO_LONG_ROW,
+    TOO_SLOW,
     UNREAD_DECOMPOSITION,
     UNRENDERED_DECOMPOSITION,
     UPSERT_DECOMPOSITION,
@@ -83,7 +85,13 @@ from deep_reasoning.library import (
     writing,
 )
 from deep_reasoning.pages import add_page
-from deep_reasoning.runs import CHANGE_FIELDS, EARLIER_TURNS_NOTE, LOST, save_event
+from deep_reasoning.runs import (
+    CHANGE_FIELDS,
+    EARLIER_TURNS_NOTE,
+    LEFT_OUT,
+    LOST,
+    save_event,
+)
 from deep_reasoning.settings import (
     DEFAULT_FOLDER,
     ENV_FILE,
@@ -486,6 +494,41 @@ def test_a_refused_namespace_change_says_why_and_changes_nothing(
     assert client.get("/api/library").json() == before
 
 
+PRICING = "vars: {rate: 0.2, currency: EUR}\n"
+APPLY_THE_RATE = """\
+name: apply the rate
+messages:
+- {role: user, content: "Apply {{ vars.rate.value }} to 100."}
+- {role: assistant, content: "<think>Multiply.</think>\\n<repl>FinalAnswer(100 * rate)</repl>"}
+"""
+RATE_TAKEN_AWAY = (
+    'Worked example "apply the rate" reads vars.rate, which this takes away from'
+    " pricing, pricing.eu: keep rate in vars, or change the worked example first."
+)
+
+
+def test_a_namespace_save_taking_away_a_var_a_worked_example_reads_is_refused(client):
+    client.post("/api/namespaces", json={"name": "pricing", "yaml": PRICING})
+    client.post("/api/namespaces", json={"name": "pricing.eu", "yaml": ""})
+    added = client.post(
+        "/api/decompositions", json={"namespace": "pricing", "yaml": APPLY_THE_RATE}
+    )
+    assert added.status_code == 201, added.json()
+    before = client.get("/api/library").json()
+    refused = client.put(
+        "/api/namespaces/pricing",
+        json={"yaml": "vars: {currency: EUR}\n", "was": PRICING},
+    )
+    assert refused.status_code == 400
+    assert refused.json()["detail"] == RATE_TAKEN_AWAY
+    assert client.get("/api/library").json() == before
+    kept = client.put(
+        "/api/namespaces/pricing",
+        json={"yaml": "vars: {rate: 0.25}\n", "was": PRICING},
+    )
+    assert kept.status_code == 200, kept.json()
+
+
 @pytest.mark.anyio
 async def test_a_chat_whose_namespace_was_deleted_is_refused_on_its_next_run(
     library_on, connect
@@ -882,6 +925,151 @@ async def test_a_shared_files_worked_example_no_run_renders_is_left_out_so_runs_
     [heading, problem] = by_name(root["decompositions"])["innocent"]["problems"]
     assert heading == UNRENDERED_DECOMPOSITION
     assert problem.startswith("Turn 1 (user), line 1:") and why in problem
+
+
+PAST_THE_LIMIT_WHY = f"SecurityError: {PAST_THE_LIMIT}"
+# Templates the save check passes that fail as a run renders them, each with how the
+# run says why it left the worked example out. Those past the limit are a few times past
+# it, so a run that renders them anyway sends a few megabytes, not gigabytes.
+FAILING_AS_RENDERED = {
+    "an attribute the task lacks": (
+        "{{ task.nope.deeper }}",
+        "UndefinedError: 'str object' has no attribute 'nope'",
+    ),
+    "a division by zero": ("{{ 1/0 }}", "ZeroDivisionError: division by zero"),
+    "a var no namespace sets": (
+        "{{ vars.nothing.here }}",
+        "UndefinedError: 'dict object' has no attribute 'nothing'",
+    ),
+    "an internal through a filter": (
+        "{{ task|attr('__class__')|attr('x') }}",
+        "SecurityError: access to attribute '__class__' of 'str' object is unsafe.",
+    ),
+    "an internal by a key it joins": (
+        "{{ task[('_'~'_class__')].x }}",
+        "SecurityError: access to attribute '__class__' of 'str' object is unsafe.",
+    ),
+    "a macro calling itself": (
+        "{% macro m() %}{{ m() }}{% endmacro %}{{ m() }}",
+        "RecursionError: maximum recursion depth exceeded",
+    ),
+    "a text multiplied past the limit": ("{{ 'ab' * 3000000 }}", PAST_THE_LIMIT_WHY),
+    "loops rendering past the limit": (
+        "{% for i in 'x' * 3000 %}{% for j in 'x' * 3000 %}{{ 'ab' * 500 }}{% endfor %}{% endfor %}",
+        PAST_THE_LIMIT_WHY,
+    ),
+    "loops rendering nothing past its time": (
+        "{% for i in 'x' * 99999 %}{% for j in 'x' * 99999 %}{% endfor %}{% endfor %}",
+        f"TimeoutError: {TOO_SLOW}",
+    ),
+}
+TALLY_PLAN = {"Tally the votes for me.": [repl("FinalAnswer(4)")]}
+SAMPLE_TALLY = "Tally the sample votes."
+
+
+def tallying(template):
+    """A worked example, "tally", whose reply's thought holds *template*, after a task
+    that renders: an example left out is left out whole."""
+    example = {
+        "name": "tally",
+        "messages": [
+            {"role": "user", "content": SAMPLE_TALLY},
+            {"role": "assistant", "content": repl("FinalAnswer(1)", think=template)},
+        ],
+    }
+    return dump(example)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("template", "why"), FAILING_AS_RENDERED.values(), ids=FAILING_AS_RENDERED
+)
+async def test_a_worked_example_that_fails_as_it_renders_is_left_out_saying_why(
+    template, why, library_on, connect
+):
+    with FakeOpenAI(scripted(TALLY_PLAN)) as fake:
+        library = library_on(fake)
+        stored(library, UPSERT_DECOMPOSITION, ROOT, "tally", tallying(template))
+        events = await ask_plainly_to(library, connect, "Tally the votes for me.")
+    assert events[-1]["outcome"] == "answered", events[-1]
+    assert not any(SAMPLE_TALLY in each["content"] for each in fake.calls[0].messages)
+    [root] = kinds(events, "agent.start")
+    [left_out] = kinds(events, LEFT_OUT)
+    assert events.index(left_out) == events.index(root) + 1
+    assert {key: left_out[key] for key in ("node", "name", "namespace")} == {
+        "node": root["node"],
+        "name": "tally",
+        "namespace": ROOT,
+    }
+    assert left_out["why"].startswith(why)
+
+
+@pytest.mark.anyio
+async def test_a_worked_example_that_renders_is_shown_with_no_note(library_on, connect):
+    with FakeOpenAI(scripted(TALLY_PLAN)) as fake:
+        library = library_on(fake)
+        stored(library, UPSERT_DECOMPOSITION, ROOT, "tally", tallying("{{ task }}"))
+        events = await ask_plainly_to(library, connect, "Tally the votes for me.")
+    assert any(SAMPLE_TALLY in each["content"] for each in fake.calls[0].messages)
+    assert kinds(events, LEFT_OUT) == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("template", "why"),
+    [
+        FAILING_AS_RENDERED["a division by zero"],
+        FAILING_AS_RENDERED["loops rendering nothing past its time"],
+    ],
+    ids=["failing", "past-its-time"],
+)
+async def test_a_sub_agent_is_told_which_of_its_own_worked_examples_it_wasnt_shown(
+    template, why, library_on, connect
+):
+    plan = {
+        "Ask stats.": [repl("FinalAnswer(subagent('Tally them.', namespace='stats'))")],
+        "Tally them.": [repl("FinalAnswer(4)")],
+    }
+    with FakeOpenAI(scripted(plan)) as fake:
+        library = library_on(fake)
+        stored(library, UPSERT_NAMESPACE, "stats", "")
+        stored(library, UPSERT_DECOMPOSITION, "stats", "tally", tallying(template))
+        events = await ask_plainly_to(library, connect, "Ask stats.")
+    assert [events[-1]["outcome"], events[-1]["answer"]] == ["answered", "4"]
+    _, stats = kinds(events, "agent.start")
+    [left_out] = kinds(events, LEFT_OUT)
+    assert [left_out["node"], left_out["namespace"]] == [stats["node"], "stats"]
+    assert left_out["why"].startswith(why)
+    [asked_stats] = [call for call in fake.calls if "Tally them." in str(call.messages)]
+    assert not any(SAMPLE_TALLY in each["content"] for each in asked_stats.messages)
+
+
+async def ask_plainly_to(library, connect, prompt):
+    async with connect(library) as api:
+        return await run_events(api, await send(api, await new_chat(api), prompt))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "making",
+    [
+        "{{ ' lorem ipsum' * 100000 }}",
+        "{% for i in 'x' * 99999 %} lorem ipsum{% endfor %}",
+    ],
+    ids=["multiplying", "looping"],
+)
+async def test_a_suffix_rendering_past_the_limit_is_sent_as_written(
+    making, library_on, connect
+):
+    suffix = f"Be brief.{making}"
+    with FakeOpenAI(scripted(PROBE_PLAN)) as fake:
+        library = library_on(fake)
+        root = {"tools": ["llm"], "system_suffix": suffix}
+        stored(library, UPSERT_NAMESPACE, ROOT, dump(root))
+        events = await ask_plainly(library, connect)
+    assert events[-1]["outcome"] == "answered", events[-1]
+    [system] = [each for each in fake.calls[0].messages if suffix in each["content"]]
+    assert " lorem ipsum lorem ipsum" not in system["content"]
 
 
 @pytest.mark.anyio

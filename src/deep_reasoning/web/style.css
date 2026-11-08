@@ -147,8 +147,10 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .more { color: var(--dim); }
 /* a Library change wraps rather than clips: what it changed is the point of it */
 .change .glyph { color: var(--accent); }
-.change .head { white-space: normal; overflow-wrap: anywhere; }
+.change .head, .left-out .head { white-space: normal; overflow-wrap: anywhere; }
 .change .head b { margin-right: 1ch; }
+.left-out .glyph { color: var(--warn); }
+.left-out .line:hover .head { text-decoration: none; }
 .change .note, .changes .line, .yaml-label { color: var(--dim); }
 .yaml-label { margin: 3px 0 -3px 4ch; }
 .code.yaml { max-height: 24em; overflow-y: auto; }

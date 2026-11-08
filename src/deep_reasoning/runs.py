@@ -52,6 +52,10 @@ SPEC = "spec.yaml"
 CHANGE_FIELDS = ("what", "namespace", "name", "before", "after")
 # What a page.open event says of a page the page tool saved.
 PAGE_FIELDS = ("page", "title")
+# The event for a worked example left out of its agent's prompt, as it couldn't be
+# rendered, and what it says of it.
+LEFT_OUT = "example.left_out"
+LEFT_OUT_FIELDS = ("name", "namespace", "why")
 ADD_RUN = "INSERT INTO runs VALUES (?, ?)"
 ADD_EVENT = "INSERT INTO events VALUES (?, ?, ?)"
 FORWARD = "SELECT seq, data FROM events WHERE run = ? ORDER BY seq"

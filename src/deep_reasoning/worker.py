@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Collection, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -30,6 +31,7 @@ import yaml
 from deep_reasoner.core import configure_structlog_fixture
 from deep_reasoner.namespaces import NamespaceRegistry
 from deep_reasoner.tools import ToolBuildError
+from deep_reasoner.v2 import agent
 from deep_reasoner.v2.agent import _parts
 from deep_reasoner.v2.cli import (
     V2Config,
@@ -38,7 +40,7 @@ from deep_reasoner.v2.cli import (
     close_run,
 )
 from deep_reasoner.v2.decompositions import as_cli_act
-from deep_reasoner.v2.messages import NoCodeBlock, code, func
+from deep_reasoner.v2.messages import Decomposition, NoCodeBlock, code, func
 from genai_prices import Usage, calc_price
 from openai.resources.chat.completions import AsyncCompletions
 
@@ -47,6 +49,7 @@ from deep_reasoning.library import granted_in, in_chain_order, sandbox_templates
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
     FINAL_ANSWER,
+    LEFT_OUT,
     PAGE_FIELDS,
     SPEC,
     escaped,
@@ -65,6 +68,12 @@ REPL_BLOCK = re.compile(r"<repl>.*?(?:</repl>|$)", re.DOTALL)
 THINK_TAG = re.compile(r"</?think>")
 OBSERVATION = re.compile(r"\A<observation>\n?(.*?)\n?</observation>\Z", re.DOTALL)
 YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+# The worked examples left out of the agent starting in this context, as it renders
+# them, each as its LEFT_OUT event says it.
+LEFT_OUT_NOW: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
+    "left_out_now", default=()
+)
+WHY_CHARS = 300
 
 
 def source_of(reply: str) -> str | None:
@@ -233,6 +242,8 @@ class Recorder:
         self._calls_going = 0
         self._lock = threading.RLock()
         self._agents: dict[int, _Agent] = {}
+        # The worked examples left out of each agent started, until it says so.
+        self._left_out: dict[int, tuple[dict[str, Any], ...]] = {}
         self._cells = 0
         self._root: int | None = None
         self._ended = False
@@ -261,6 +272,11 @@ class Recorder:
         except Exception:
             log.exception("worker.event_not_recorded", name=name)
         return event_dict
+
+    def left_out(self, node: int, examples: tuple[dict[str, Any], ...]) -> None:
+        """The worked examples left out of agent *node*, for its agent.start to say."""
+        with self._lock:
+            self._left_out[node] = examples
 
     def call_started(self) -> None:
         with self._lock:
@@ -328,6 +344,8 @@ class Recorder:
             namespace=event["namespace"],
             drive=drive,
         )
+        for left_out in self._left_out.pop(node, ()):
+            self.emit(LEFT_OUT, node=node, **left_out)
 
     def _llm_call(self, event: dict[str, Any]) -> None:
         self._calls_going -= 1
@@ -415,6 +433,48 @@ class Recorder:
         """The event is a known agent's own model call or cell, not a tool's inside it."""
         node = event.get("node_id")
         return node == event.get("agent_id") and node in self._agents
+
+
+def why_unrendered(error: Exception) -> str:
+    """What failed as a worked example rendered, on one line: what Jinja or Python
+    raised, unwrapped from the engine's error naming the example."""
+    detail = detail_of(error.__cause__ or error)
+    return detail.split("\n", 1)[0][:WHY_CHARS]
+
+
+def leaving_out_unrendered(recorder: Recorder) -> None:
+    """Leave each worked example that fails to render out of its agent's prompt, all its
+    turns, telling *recorder* which agent, once it started, so the run goes on, where
+    the engine would end it. A stop is no failure to render: it isn't an Exception."""
+    rendered_turns = agent._rendered_turns
+    start = agent.DeepReasonerAgentBase._start
+
+    def rendered_or_none(
+        decomposition: Any, render_ctx: dict[str, Any], namespace: str
+    ) -> list[tuple[str, str]]:
+        try:
+            return rendered_turns(decomposition, render_ctx, namespace)
+        # Logged as the run's event, which the chat shows; a log line would land in the
+        # output of the cell a sub-agent starts in.
+        except Exception as error:  # noqa: BLE001
+            name = Decomposition.coerce(decomposition).name
+            why = why_unrendered(error)
+            left_out = {"name": name, "namespace": namespace, "why": why}
+            LEFT_OUT_NOW.set((*LEFT_OUT_NOW.get(), left_out))
+            return []
+
+    def started(self: agent.DeepReasonerAgentBase) -> None:
+        # Only an agent that started is told: one whose start failed never says so.
+        token = LEFT_OUT_NOW.set(())
+        try:
+            start(self)
+            if left_out := LEFT_OUT_NOW.get():
+                recorder.left_out(self._log_vars["node_id"], left_out)
+        finally:
+            LEFT_OUT_NOW.reset(token)
+
+    agent._rendered_turns = rendered_or_none
+    agent.DeepReasonerAgentBase._start = started
 
 
 def end_group() -> NoReturn:
@@ -532,6 +592,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     configure_structlog_fixture(console=False, extra_processors=[recorder])
     keep_app_logs_out_of_cells()
     counting_calls(recorder)
+    leaving_out_unrendered(recorder)
     threading.Thread(target=read_commands, args=(stdin, stop), daemon=True).start()
     # A tool that doesn't build while the run builds the config's tools, at its start,
     # stops every run; one that doesn't later is that run's own failure.

@@ -161,15 +161,21 @@ imports too.
   the chat on screen. Its code isn't run.
 - Saving refuses what would fail every run there: a template (`{{` or `{%`) the engine can't render, that names
   anything but what it fills in (`task`, `vars`, `funcs`, `coroutines`, the run settings'
-  `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`), includes another or reaches into Python
-  internals; over 1,000,000 characters; YAML whose aliases (`*name`) stand for far more than it holds; a claim
-  shaped like a line the app adds at run time (below) that isn't so there (another namespace, a sandbox it doesn't
-  run in, sub-agents it can't use), in a suffix, a var or a worked example, however spaced, cased or split; a name
-  with outer, doubled or odd spaces, invisible characters or a word mixing Latin letters with Cyrillic or Armenian
-  ones (a Cyrillic `а`); a namespace named oddly, with a backbone the engine doesn't know, or with a var whose name
-  isn't a Python name, starts with `_`, is a keyword or built-in, or is a tool's; a namespace granting a tool marked
-  ✗ or one the Library lacks; and a namespace granting a tool of yours that no namespace granted yet, if it doesn't
-  build (built first, up to a minute).
+  `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`, or put a cell's code, an f-string's braces and
+  all, between `{% raw %}` and `{% endraw %}`), includes another or reaches into Python internals; over 1,000,000
+  characters; YAML whose aliases (`*name`) stand for far more than it holds; a claim shaped like a line the app adds
+  at run time (below) that isn't so there (another namespace, a sandbox it doesn't run in, sub-agents it can't use),
+  in a suffix, a var or a worked example, however spaced, cased or split; a name with outer, doubled or odd spaces,
+  invisible characters or a word mixing Latin letters with Cyrillic or Armenian ones (a Cyrillic `а`); a namespace
+  named oddly, with a backbone the engine doesn't know, or with a var whose name isn't a Python name, starts with
+  `_`, is a keyword or built-in, or is a tool's, or taking away a var a worked example there or below reads
+  (`{{ vars.rate }}`); a namespace granting a tool marked ✗ or one the Library lacks; and a namespace granting a tool
+  of yours that no namespace granted yet, if it doesn't build (built first, up to a minute).
+- A worked example that still fails as a run renders it (`{{ task.votes.total }}`, `{{ 1/0 }}`), or that is still
+  rendering after 3 seconds, is left out of that agent's prompt, whole, and the run goes on: the
+  agent's steps start with a "Left out" line naming the example, its namespace and why. A template may make no text,
+  list or number past 1,000,000 characters, items or digits, nor pad a field (`center`, `ljust`, `%05d`, `{:>5}`)
+  past that; a suffix or system prompt that would, or that fails otherwise, is sent as written.
 - A save or delete is refused if what you opened changed meanwhile (the librarian, another tab or an import): your
   draft stays beside what is stored. Any refusal stays shown, and one of what you wrote keeps Save off, until you change
   what you wrote. A delete the panel knows would be refused says why at once. The panel and the
@@ -232,7 +238,8 @@ imports too.
   it sets, and prints what it changed, what it left out and what that changes in the app. It refuses, changing
   nothing, a file that isn't a config, the app's `historian` and `librarian` or one under them, a tool named as a
   built-in, a key anywhere in it, whatever the panel would refuse, an `entry_namespace` naming no namespace it would
-  have, a `prompt_template_variables` change taking away a variable the Library's worked examples read, `max_iter` or
+  have, a `prompt_template_variables` change or a namespace's `vars` taking away a variable the Library's worked
+  examples read, `max_iter` or
   `max_depth` below 1, and a granted tool that doesn't build (built once, from the config alone, with no key). It
   reads only files in the config's folder and below (`_compose`, `namespaces_dir`, `factory_from`); pass
   `--within FOLDER` when a config composes files from a folder above it, as `deep_reasoner`'s examples do. An import
