@@ -487,11 +487,11 @@ APP = "Deep Reasoning"
 # give a built-in its settings under the built-in's name.
 TAKEN_NAMES = (*BUILDERS, *APP_TOOLS, *sorted(RESERVED_NAMES))
 # A new namespace's name, from the page: plain words, joined by dots for a child.
-NAMESPACE_NAME = re.compile(r"[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*")
+NAMESPACE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z][A-Za-z0-9_-]*)*")
 NAME_IT = 'Name the namespace, like "research"; "research.papers" goes under research.'
 NAME_SHAPE = (
-    "A namespace name is words of letters, digits, _ and -, joined by dots,"
-    ' like "research.papers".'
+    "A namespace name is words of letters, digits, _ and -, each starting with a letter,"
+    ' joined by dots, like "research.papers".'
 )
 # What a namespace's YAML leaves to the panel: its name field, and the Decompositions tab.
 NAMED_ELSEWHERE = {
@@ -1156,7 +1156,13 @@ def parsed(text):
         decomposition = Decomposition.model_validate(data)
     except ValidationError as error:
         raise LibraryError("\n".join(map(problem, error.errors()))) from error
-    name = decomposition.name
+    check_decomposition_name(decomposition.name)
+    return decomposition
+
+
+def check_decomposition_name(name):
+    """Raise unless a decomposition's *name* reads as it looks: not blank, with no outer
+    space or character you can't see."""
     if not name.strip():
         raise LibraryError(BLANK_NAME)
     if name != name.strip():
@@ -1170,7 +1176,6 @@ def parsed(text):
             f"The name holds a character you can't see (U+{ord(hidden[0]):04X}); take it"
             " out, so it reads as it looks."
         )
-    return decomposition
 
 
 def checked_text(text):
@@ -1640,11 +1645,17 @@ def add_namespace(connection, name, text, allowed=None):
 
 
 def check_name(name):
-    """Raise unless *name* names a namespace: plain words, joined by dots for a child."""
+    """Raise unless *name* names a new namespace: plain words, joined by dots for a
+    child, none of them root by another spelling, as root is every namespace's parent."""
     if not name:
         raise LibraryError(NAME_IT)
     if not NAMESPACE_NAME.fullmatch(name):
         raise LibraryError(NAME_SHAPE)
+    if ROOT in name.lower().split("."):
+        raise LibraryError(
+            f'"{name}" reads as root, which every namespace goes under already: name it'
+            ' something else, like "research".'
+        )
 
 
 def check_place(connection, name):

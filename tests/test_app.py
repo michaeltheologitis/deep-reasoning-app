@@ -1486,7 +1486,7 @@ NAMESPACE_REFUSALS = [
     ),
     (
         library_cell("add_namespace", "re search", ""),
-        "A namespace name is words of letters, digits, _ and -, joined by dots",
+        "A namespace name is words of letters, digits, _ and -, each starting with a letter",
     ),
     (
         library_cell("add_namespace", "research.papers", ""),

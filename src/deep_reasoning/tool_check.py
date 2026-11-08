@@ -27,6 +27,7 @@ it.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -183,18 +184,29 @@ def refuse_unbuilt(
     work: Path,
     done: str | None = None,
     note: str | None = None,
+    files: Mapping[str, str | None] | None = None,
 ) -> None:
     """Raise LibraryError, in words, naming each of *tools* that doesn't build, as
-    check_tools finds: *done* says what wasn't done, and *note* follows them."""
+    check_tools finds: *done* says what wasn't done, and *note* follows them. A verdict
+    names a tool's file as *files* names it, where it does, not by its name in the
+    Library."""
     verdicts = check_tools(tools, config, env, work)
     so = f", so it {done}" if done else ""
     failed = [
-        f"Tool {name} doesn't build{so}: {why}"
+        f"Tool {name} doesn't build{so}: {shown_file(why, name, (files or {}).get(name))}"
         for name in tools
         if (why := verdicts[name]) is not None
     ]
     if failed:
         raise LibraryError("\n".join([*failed, *([note] if note else [])]))
+
+
+def shown_file(why: str, name: str, file: str | None) -> str:
+    """The verdict *why* on tool *name*, its file named *file* where given."""
+    if not file:
+        return why
+    stored = re.escape(tool_file(name))
+    return re.sub(rf"(?<![\w./-]){stored}(?![\w])", lambda _: file, why)
 
 
 def read_notes(notes: Path) -> list[dict[str, Any]]:

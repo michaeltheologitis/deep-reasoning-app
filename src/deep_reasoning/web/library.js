@@ -16,9 +16,11 @@ const DECOMPOSITION_KEYS = ["name", "messages"];
 const MESSAGE_KEYS = ["role", "content"];
 const NAMESPACE_KEYS = ["repl", "reasoner", "tools", "vars", "spawn", "system_suffix"];
 // a new namespace's name: plain words, joined by dots for a child
-const NAMESPACE_NAME = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
+const NAMESPACE_NAME = /^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z][A-Za-z0-9_-]*)*$/;
 const INDENT = "  ";
 const CHECK_DELAY_MS = 300;
+// What a namespace's save says while it runs: a tool it grants afresh is built first.
+const BUILDING = "Saving. A custom tool this grants for the first time is built first, to check it, which can take up to a minute.";
 // as the server's limit on a decomposition's YAML; a file of more bytes than 4 a character can't fit
 const MAX_YAML_CHARS = 1_000_000;
 const UTF8_MAX_BYTES = 4;
@@ -117,8 +119,8 @@ panel.append(
 );
 
 // A YAML editor its toggle opens, checked as you type; an edit's form keeps what it opened on (was), and stored() reads what is there now.
-function yamlForm({ id, label, action, text, problems, warnings = () => [], save, stored = null, gone = null, opening = null, before = [], beside = null, after = [], first = null }) {
-  const form = { problems, warnings, save, stored, gone, opening, first, was: text, saving: false, timer: null };
+function yamlForm({ id, label, action, text, problems, warnings = () => [], save, stored = null, gone = null, opening = null, before = [], beside = null, after = [], first = null, pending = null }) {
+  const form = { problems, warnings, save, stored, gone, opening, first, pending, was: text, saving: false, timer: null };
   form.toggle = element("button", { type: "button", class: "lib-action", "aria-expanded": "false", "aria-controls": id, "data-key": id, onclick: () => (form.el.hidden ? openForm(form) : closeForm(form)) }, label);
   form.editor = element(
     "textarea",
@@ -127,6 +129,7 @@ function yamlForm({ id, label, action, text, problems, warnings = () => [], save
   );
   form.problemList = element("div", { id: `${id}-problems`, class: "lib-problems", "aria-live": "polite" });
   form.newer = element("div", { class: "lib-newer" });
+  form.status = element("p", { class: "lib-note", role: "status" });
   form.submit = element("button", { type: "submit", class: "lib-action lib-primary" }, action);
   form.el = element(
     "form",
@@ -137,6 +140,7 @@ function yamlForm({ id, label, action, text, problems, warnings = () => [], save
     after,
     form.problemList,
     form.newer,
+    form.status,
     element("div", { class: "lib-actions" }, form.submit, element("button", { type: "button", class: "lib-action", onclick: () => closeForm(form) }, "Cancel")),
   );
   form.confirmation = element("p", { class: "lib-confirm", role: "status" });
@@ -206,6 +210,7 @@ async function submit(form, e) {
   if (form.saving || check(form).length) return;
   clearSaid();
   form.saving = form.submit.disabled = true;
+  form.status.textContent = form.pending ?? "";
   let saved;
   try {
     saved = await form.save(form.editor.value, form);
@@ -215,6 +220,7 @@ async function submit(form, e) {
     return;
   } finally {
     form.saving = form.submit.disabled = false;
+    form.status.textContent = "";
   }
   closeForm(form);
   render();
@@ -281,6 +287,7 @@ const namespaceForm = yamlForm({
   save: addNamespace,
   before: element("div", { class: "lib-form-line" }, element("label", { for: nameInput.id }, "name"), nameInput),
   first: nameInput,
+  pending: BUILDING,
 });
 
 async function readFile() {
@@ -343,6 +350,7 @@ const editForm = (name) =>
     label: "Edit YAML",
     action: "Save",
     problems: (text) => namespaceProblems(text, name),
+    pending: BUILDING,
     save: saveNamespace(name),
     stored: () => namespaceNamed(name)?.yaml,
   }));
@@ -560,7 +568,8 @@ function messageShapeProblems(message, label) {
 
 function newNamespaceProblem(name) {
   if (!name) return 'Name the namespace, like "research"; "research.papers" goes under research.';
-  if (!NAMESPACE_NAME.test(name)) return 'A namespace name is words of letters, digits, _ and -, joined by dots, like "research.papers".';
+  if (!NAMESPACE_NAME.test(name)) return 'A namespace name is words of letters, digits, _ and -, each starting with a letter, joined by dots, like "research.papers".';
+  if (name.toLowerCase().split(".").includes("root")) return `"${name}" reads as root, which every namespace goes under already: name it something else, like "research".`;
   if (namespaceNamed(name)) return `There is already a namespace "${name}"; open it and use Edit YAML.`;
   const parent = parentOf(name);
   if (!namespaceNamed(parent)) return `Add namespace "${parent}" first: "${name}" goes under it.`;

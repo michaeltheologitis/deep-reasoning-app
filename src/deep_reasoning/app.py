@@ -2,7 +2,9 @@
 
 import asyncio
 import sqlite3
+import tempfile
 from contextlib import asynccontextmanager, closing
+from functools import partial
 from http import HTTPStatus
 from pathlib import Path
 from typing import Annotated
@@ -18,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from deep_reasoning.app_tools import CHANGED_MEANWHILE, granted_afresh
 from deep_reasoning.chats import (
     CHAT_ID,
     choose,
@@ -40,13 +43,17 @@ from deep_reasoning.folders import (
     starting_folder,
     working_folder,
 )
+from deep_reasoning.importing import NOWHERE
 from deep_reasoning.library import (
     ChangedMeanwhile,
     LibraryError,
     add_decomposition,
     add_namespace,
+    authored,
     change_namespace,
+    check_name,
     check_namespace,
+    config_and_registry,
     default_namespace,
     delete_decomposition,
     delete_namespace,
@@ -55,8 +62,10 @@ from deep_reasoning.library import (
     edit_decomposition,
     engine_config,
     has_namespace,
+    loaded,
     open_library,
     panel,
+    reading,
 )
 from deep_reasoning.pages import page_exists, page_text
 from deep_reasoning.runs import (
@@ -77,6 +86,7 @@ from deep_reasoning.settings import (
     find_provider,
     forget_key,
     key_names,
+    keyless_environment,
     model_lists,
     provider_list,
     remember_pick,
@@ -87,6 +97,7 @@ from deep_reasoning.settings import (
     starting_model,
     update_server,
 )
+from deep_reasoning.tool_check import refuse_unbuilt
 
 WEB = Path(__file__).parent / "web"
 # Requests naming any other host are refused, so a web page can't reach the API by DNS rebinding.
@@ -96,6 +107,8 @@ UNWRITABLE = ("SQLITE_READONLY", "SQLITE_FULL", "SQLITE_IOERR", "SQLITE_CANTOPEN
 BUSY = ("SQLITE_BUSY", "SQLITE_LOCKED")
 MODEL_NAME = r"^[^\x00-\x1f\x7f]{1,200}$"
 NO_PAGE = "There is no such page: it may have been deleted with its chat."
+# What wasn't done when a tool the panel grants afresh doesn't build.
+PANEL_GRANTED = "wasn't granted (granted, it would stop every chat)"
 # The app's pages load and send nothing but to the app, whatever an answer holds; inline
 # styles are the custom properties the page sets (--depth, --clamp-lines).
 CONTENT_SECURITY_POLICY = (
@@ -254,18 +267,45 @@ def create_app(library, home):
             return library_panel(connection)
 
     # An imported namespace's, tool's or setting's name may hold a /, hence :path.
+    def built_grants(name, yaml, adding):
+        """The custom tools namespace *name*, as its YAML *yaml* would make it, grants
+        that no namespace grants yet, each built first, as a run builds it but with no
+        key, and refused in words when one doesn't build. The build holds no lock, so
+        the write checks under its own that these are still the ones it grants."""
+        if adding:
+            check_name(name)
+        namespace, _ = authored(name, yaml)
+        with closing(open_library(library)) as connection, reading(connection):
+            _, registry = config_and_registry(connection)
+            afresh = granted_afresh(connection, registry, namespace)
+        built = {tool: (loaded(text), code) for tool, (text, code) in afresh.items()}
+        if built:
+            environment = keyless_environment(library, home)
+            with tempfile.TemporaryDirectory() as work:
+                refuse_unbuilt(built, NOWHERE, environment, Path(work), PANEL_GRANTED)
+        return partial(grants_the_same, afresh)
+
+    def grants_the_same(afresh, connection, namespace):
+        """Raise unless *namespace* grants, as the Library stands under the write lock,
+        the custom tools *afresh* that were built."""
+        _, registry = config_and_registry(connection)
+        if granted_afresh(connection, registry, namespace) != afresh:
+            raise LibraryError(CHANGED_MEANWHILE)
+
     @app.post("/api/namespaces", status_code=HTTPStatus.CREATED)
     def post_namespace(name: Annotated[str, Body()], yaml: Annotated[str, Body()]):
+        allowed = built_grants(name, yaml, adding=True)
         with closing(open_library(library)) as connection:
-            add_namespace(connection, name, yaml)
+            add_namespace(connection, name, yaml, allowed=allowed)
             return library_panel(connection)
 
     @app.put("/api/namespaces/{name:path}")
     def put_namespace(
         name: str, yaml: Annotated[str, Body()], was: Annotated[str, Body()]
     ):
+        allowed = built_grants(name, yaml, adding=False)
         with closing(open_library(library)) as connection:
-            change_namespace(connection, name, yaml, was=was)
+            change_namespace(connection, name, yaml, allowed=allowed, was=was)
             return library_panel(connection)
 
     @app.delete("/api/namespaces/{name:path}")

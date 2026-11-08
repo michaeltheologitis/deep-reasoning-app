@@ -25,7 +25,7 @@ from deep_reasoning import cli
 from deep_reasoning.chats import create_chat
 from deep_reasoning.folders import data_folder
 from deep_reasoning.library import ADDED_IN, open_library
-from deep_reasoning.settings import VENDORS
+from deep_reasoning.settings import NOT_A_KEY, VENDORS
 
 WAIT_SECONDS = 0.5
 KEY_IN_A_FRAME = "sk-held-in-a-frame"
@@ -198,33 +198,37 @@ def test_importing_a_config_again_says_it_changed_nothing(tmp_path, capsys):
     for _ in range(2):
         cli.main(["import", str(config), "--library", str(library)])
     assert capsys.readouterr().out.splitlines()[-1] == (
-        f"Imported {config}: the Library at {library} already held all of it."
+        f"Nothing to import: the Library at {library} already holds all of {config}."
     )
 
 
+# Reads a proxy and a provider's key as it is built, as a tool may in every run.
 READS_THE_ENVIRONMENT = """\
 import json, os
 from pathlib import Path
 from deep_reasoner.primitives import Func
 
 PROXY = os.environ["HTTPS_PROXY"]
+KEY = os.environ["OPENAI_API_KEY"]
 
 def build(client, params):
-    Path(params["out"]).write_text(json.dumps(sorted(os.environ)))
+    Path(params["out"]).write_text(json.dumps(dict(os.environ)))
     return Func(lambda: PROXY)
 """
 
 
-def test_import_builds_its_tools_with_the_runs_environment_but_no_key(
-    tmp_path, monkeypatch
+def test_import_builds_its_tools_with_the_runs_environment_and_no_key_in_it(
+    tmp_path, monkeypatch, app_home
 ):
-    keys = [
-        *(vendor.key_env for vendor in VENDORS),
-        "ANTHROPIC_API_KEY",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-    ]
-    for name in keys:
+    vendors = [vendor.key_env for vendor in VENDORS]
+    claude_codes = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+    for name in [*vendors, *claude_codes]:
         monkeypatch.setenv(name, KEY_IN_A_FRAME)
+    # Another Library's custom server's key, in the shell and saved.
+    monkeypatch.setenv("DEEP_REASONING_ELSEWHERE_KEY", "sk-elsewhere-in-the-shell")
+    app_home.mkdir()
+    (app_home / ".env").write_text("DEEP_REASONING_SAVED_KEY=sk-saved-for-elsewhere\n")
+    monkeypatch.setenv("COPY_OF_A_KEY", KEY_IN_A_FRAME)
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
     monkeypatch.setenv("CATALOG_DB", "catalog.sqlite")
     (tmp_path / "tools.py").write_text(READS_THE_ENVIRONMENT)
@@ -235,9 +239,11 @@ def test_import_builds_its_tools_with_the_runs_environment_but_no_key(
         "namespaces:\n  helper: {tools: [fetch]}\n"
     )
     cli.main(["import", str(config), "--library", str(tmp_path / "lib.sqlite")])
-    seen = set(json.loads(out.read_text()))
-    assert {"HTTPS_PROXY", "CATALOG_DB", "PATH"} <= seen
-    assert not seen & set(keys)
+    seen = json.loads(out.read_text())
+    assert {"HTTPS_PROXY", "CATALOG_DB", "PATH"} <= seen.keys()
+    assert {seen[name] for name in vendors} == {NOT_A_KEY}
+    gone = {*claude_codes, "DEEP_REASONING_ELSEWHERE_KEY", "COPY_OF_A_KEY"}
+    assert not seen.keys() & gone
 
 
 @pytest.mark.parametrize(
@@ -285,7 +291,10 @@ def events_of(library):
         return connection.execute("SELECT seq, data FROM events").fetchall()
 
 
-STARTED_NOT = "so this one didn't start: two on one Library would end each other's runs"
+STARTED_NOT = (
+    "so this one didn't start, as two on one Library would end each other's runs: stop"
+    " it first"
+)
 
 
 @pytest.mark.parametrize(
@@ -320,7 +329,7 @@ def test_a_library_an_app_serves_is_refused_to_a_second_app_import_and_reset(
         unfinished_run(library)
         before = events_of(library)
         with pytest.raises(
-            SystemExit, match=f"already using {re.escape(given)}, {refused}"
+            SystemExit, match=f"already serving {re.escape(given)}, {refused}"
         ):
             cli.main(second)
         seen.append(events_of(library) == before and library.is_file())
@@ -339,7 +348,8 @@ def test_an_app_started_while_a_reset_deletes_is_refused_and_makes_no_library(
 
     def deleting(paths):
         delete_all(paths)
-        with pytest.raises(SystemExit, match=STARTED_NOT):
+        refused = "A reset is under way of .*, so this one didn't start.*wait for it"
+        with pytest.raises(SystemExit, match=refused):
             cli.main(["--port", str(free_port), "--no-browser"])
 
     monkeypatch.setattr(cli, "delete_all", deleting)
@@ -359,7 +369,7 @@ def test_the_lock_is_let_go_when_the_app_stops_or_is_killed(served, tmp_path):
     )
     try:
         assert holder.stdout.readline() == "held\n"
-        with pytest.raises(SystemExit, match="already using"):
+        with pytest.raises(SystemExit, match="already serving"):
             cli.main(options)
     finally:
         holder.kill()
@@ -468,7 +478,7 @@ def test_reset_yes_deletes_the_app_file_its_folders_and_old_leftovers(
     other.mkdir(parents=True)
     cli.main(["reset", "--yes"])
     assert [path for path in doomed if os.path.lexists(path)] == []
-    assert lock.read_bytes() == b""
+    assert lock.is_file()
     assert keys.read_text() == KEYS
     assert project.is_dir()
     assert other.is_dir()
