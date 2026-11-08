@@ -19,8 +19,10 @@ import sys
 import unicodedata
 from collections import Counter, defaultdict
 from contextlib import closing, contextmanager
+from functools import partial
 from pathlib import Path
 
+import deep_reasoner.llm
 import jinja2
 import structlog
 import yaml
@@ -47,7 +49,22 @@ from deep_reasoner.v2.cli import (
     declared_tool_names,
 )
 from deep_reasoner.v2.messages import NoCodeBlock, _has_jinja, code
-from jinja2 import Environment, TemplateError, TemplateSyntaxError, meta, nodes
+from jinja2 import (
+    DictLoader,
+    Environment,
+    TemplateError,
+    TemplateSyntaxError,
+    meta,
+    nodes,
+)
+from jinja2.sandbox import (
+    UNSAFE_ASYNC_GENERATOR_ATTRIBUTES,
+    UNSAFE_COROUTINE_ATTRIBUTES,
+    UNSAFE_FUNCTION_ATTRIBUTES,
+    UNSAFE_GENERATOR_ATTRIBUTES,
+    UNSAFE_METHOD_ATTRIBUTES,
+    SandboxedEnvironment,
+)
 from pydantic import ValidationError
 
 log = structlog.get_logger()
@@ -514,14 +531,28 @@ FILLED_IN = ("task", "vars", "funcs", "coroutines")
 # Never rendered, only parsed and compiled; with no globals, range() is an unknown name.
 JINJA = Environment()
 JINJA.globals.clear()
-TEMPLATE = "the engine reads a turn holding {{ or {% as a Jinja template"
+TEMPLATE = "the engine reads text holding {{ or {% as a Jinja template"
 ESCAPE = (
-    "Write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%, or put the turn between"
+    "Write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%, or put the text between"
     " {% raw %} and {% endraw %}."
 )
 NAMES_ONLY = (
     "a template may name only task, vars, funcs, coroutines and the run settings'"
     " prompt_template_variables, which the engine fills in"
+)
+# An empty loader, so an include fails as a render error the engine words.
+SANDBOXED = partial(SandboxedEnvironment, loader=DictLoader({}))
+INCLUDES = (nodes.Include, nodes.Extends, nodes.Import, nodes.FromImport)
+SCREENED = (*INCLUDES, nodes.Getattr, nodes.Getitem)
+# The names the sandbox refuses that don't start with _.
+UNSAFE_NAMES = frozenset(
+    {"mro"}.union(
+        UNSAFE_FUNCTION_ATTRIBUTES,
+        UNSAFE_METHOD_ATTRIBUTES,
+        UNSAFE_GENERATOR_ATTRIBUTES,
+        UNSAFE_COROUTINE_ATTRIBUTES,
+        UNSAFE_ASYNC_GENERATOR_ATTRIBUTES,
+    )
 )
 # Compiling a template nested too deep raises Python's own errors, not Jinja's.
 TEMPLATE_FAILURES = (TemplateError, SyntaxError, RecursionError, MemoryError)
@@ -1151,6 +1182,12 @@ def checked_text(text):
         )
 
 
+def sandbox_templates():
+    """Make every Jinja render the engine does in this process sandboxed: each process
+    that runs the engine calls it first."""
+    deep_reasoner.llm._JinjaEnv = SANDBOXED
+
+
 def template_names(config):
     """The names a turn's template may read: what the engine fills in, and the run
     settings' prompt_template_variables in *config*."""
@@ -1167,14 +1204,46 @@ def first_use(template, name):
     return min(uses)
 
 
+def internal_read(node):
+    """The Python internal *node* reads by a name it gives, which a run's sandbox
+    refuses; None for none."""
+    if isinstance(node, nodes.Getattr):
+        name = node.attr
+        return name if name.startswith("_") or name in UNSAFE_NAMES else None
+    if isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Const):
+        key = node.arg.value
+        return key if isinstance(key, str) and key.startswith("_") else None
+    return None
+
+
+def refused(node):
+    """Why a run can't render a template holding *node*, in words; None when it can."""
+    if isinstance(node, INCLUDES):
+        return "includes another template, which a run can't"
+    if internal := internal_read(node):
+        return f"reaches into Python internals ({internal}), which a run refuses"
+    return None
+
+
+def first_refused(template):
+    """The line of *template* (parsed) where it first holds what a run can't render, and
+    why; None when it holds none."""
+    found = template.find_all(SCREENED)
+    return next(((n.lineno, why) for n in found if (why := refused(n))), None)
+
+
 def template_problem(label, text, names):
-    """Why the engine couldn't render the turn *text*, *label*, when it reads more than
-    *names* or doesn't parse or compile; None when it holds no template or neither. It is
-    never rendered, so this runs none of its code."""
+    """Why the engine couldn't render the turn *text*, *label*, when it includes another
+    template, reads a Python internal, reads more than *names* or doesn't parse or
+    compile; None when it holds no template or none of these. It is never rendered, so
+    this runs none of its code."""
     if not _has_jinja(text):
         return None
     try:
         template = JINJA.parse(text)
+        if found := first_refused(template):
+            line, why = found
+            return f"{label}, line {line}: {TEMPLATE}, and this one {why}. {ESCAPE}"
         missing = sorted(meta.find_undeclared_variables(template) - names)
         if missing:
             line = first_use(template, missing[0])
@@ -1466,6 +1535,9 @@ def var_problem(name):
         )
     if keyword.iskeyword(name):
         return f'Var "{name}" is a Python keyword; rename it, like "{name}_value".'
+    if name.startswith("_"):
+        plain = name.lstrip("_") or "value"
+        return f'Var "{name}" starts with _, which templates may not read; rename it, like "{plain}".'
     if name in BUILTIN_NAMES:
         return (
             f"Var \"{name}\" would hide Python's own {name}, which the agent's code may"
@@ -1489,10 +1561,25 @@ def hidden_vars(registry, names):
             )
 
 
+def suffix_problem(connection, namespace):
+    """Why the engine couldn't render *namespace*'s system_suffix, as template_problem
+    words it; None when it can."""
+    suffix = namespace.system_suffix or ""
+    if not _has_jinja(suffix):
+        return None
+    config, _ = config_and_registry(connection)
+    label = f"The system_suffix of {namespace.name}"
+    return template_problem(label, suffix, template_names(config))
+
+
 def check_fields(connection, namespace):
-    """Raise unless *namespace*'s vars are well named and every namespace it may spawn
-    into is in the Library, or is itself."""
-    problems = list(filter(None, map(var_problem, namespace.vars)))
+    """Raise unless *namespace*'s vars are well named, its system_suffix renders, and
+    every namespace it may spawn into is in the Library, or is itself."""
+    problems = [
+        *map(var_problem, namespace.vars),
+        suffix_problem(connection, namespace),
+    ]
+    problems = [each for each in problems if each]
     if problems:
         raise LibraryError("\n".join(problems))
     # The engine lets a spawn name no namespace, and fails only when the agent spawns there.
