@@ -332,6 +332,12 @@ function setDrawer(open) {
   (byId("chats").querySelector("[aria-current]") ?? byId("new-chat")).focus();
 }
 
+// By Esc, or the drawer's own ×, as ☰ is under the page it makes inert: focus goes back to ☰.
+function shutDrawer() {
+  setDrawer(false);
+  byId("menu").focus();
+}
+
 // Opens or closes a side panel. Closing, with focus in the panel or nowhere (as after a tap on ×), gives focus back to the
 // button that opened it (the model button, for its "Open settings"), else the toggle: also when that button is hidden now, as
 // one in the other panel; a text field never, so no touch keyboard opens.
@@ -1273,6 +1279,7 @@ function wire() {
   // a click on a popover's button leaves focus in the popover, so the click toggles it
   for (const id of ["namespace", "model", "folder"]) byId(id).addEventListener("mousedown", (e) => e.preventDefault());
   byId("menu").addEventListener("click", () => setDrawer(!drawerOpen()));
+  byId("drawer-close").addEventListener("click", shutDrawer);
   // the event's path, as a click in the list may redraw the row it landed on; a side panel lies over the drawer, not outside it
   const inside = ["sidebar", "menu", "settings", "library"].map(byId);
   byId("app").addEventListener("click", (e) => {
@@ -1308,10 +1315,8 @@ function wire() {
     if (!ui.deleting && !drawerOpen() && !runHere && !startingHere) return;
     e.preventDefault();
     if (ui.deleting) keep(ui.deleting);
-    else if (drawerOpen()) {
-      setDrawer(false);
-      byId("menu").focus();
-    } else if (runHere) stop();
+    else if (drawerOpen()) shutDrawer();
+    else if (runHere) stop();
     else state.stopOnStart = true;
   });
   setInterval(() => {
