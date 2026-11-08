@@ -1,5 +1,6 @@
 import json
 import re
+import signal
 import socket
 import sqlite3
 import time
@@ -57,11 +58,13 @@ from deep_reasoning.library import (
     NO_SUB_AGENTS,
     PAGE_DESCRIPTION,
     PAST_THE_LIMIT,
+    RENDER_S,
     ROOT_SUFFIX,
     SANDBOX_LINE,
     SANDBOXED,
     SHAPES,
     SPAWN_LINE,
+    TOO_SLOW,
     UNREAD_SETTING,
     UNRENDERED_DECOMPOSITION,
     UPSERT_DECOMPOSITION,
@@ -97,6 +100,7 @@ from deep_reasoning.library import (
     template_problem,
     tool_text,
     turn_problems,
+    vars_read,
     writing,
 )
 
@@ -2041,6 +2045,64 @@ def test_a_template_refused_says_how_to_keep_its_braces_where_they_are(text, hin
     assert template_problem("Turn 1", text, template_names({})).endswith(hint)
 
 
+@pytest.mark.parametrize(
+    ("template", "read"),
+    [
+        ("{{ vars.rate.value }}", {"rate"}),
+        ("{{ vars['rate'].value }}", {"rate"}),
+        ("{{ vars.get('rate').value }}", {"rate"}),
+        ("{{ vars.items()|list }} {{ vars.keys() }} {{ vars.values() }}", set()),
+        ("{% for name in vars %}{{ name }}{% endfor %}", set()),
+    ],
+    ids=["an-attribute", "an-item", "get", "its-methods", "each-name"],
+)
+def test_the_vars_a_worked_example_reads_are_those_it_names(template, read):
+    assert vars_read(parsed(answering("reads", f'print("{template}")'))) == read
+
+
+def lacking(var, namespace):
+    return (
+        f"Turn 2 (assistant) reads vars.{var}, which {namespace} doesn't have: set"
+        f" {var} in its vars, or in those of a namespace above it."
+    )
+
+
+def problems_in(library, namespace):
+    [shown] = [
+        row for row in panel_of(library)["namespaces"] if row["name"] == namespace
+    ]
+    return {each["name"]: each["problems"] for each in shown["decompositions"]}
+
+
+def test_a_worked_example_reading_a_var_its_namespace_lacks_is_marked_never_refused(
+    library,
+):
+    change(library, add_namespace, "pricing", "vars: {currency: EUR}\n")
+    reads_rate = answering("apply", 'print("{{ vars.rate.value }}")')
+    stored, _ = change(library, add_decomposition, "pricing", reads_rate)
+    with closing(open_library(library)) as connection, writing(connection):
+        shared = answering("shared", 'print("{{ vars.fee.value }}")')
+        connection.execute(UPSERT_DECOMPOSITION, ("pricing", "shared", shared))
+    assert stored["problems"] == [lacking("rate", "pricing")]
+    assert problems_in(library, "pricing") == {
+        "apply": [lacking("rate", "pricing")],
+        "shared": [lacking("fee", "pricing")],
+    }
+    change(library, change_namespace, ROOT, "tools: [llm]\nvars: {rate: 0.2, fee: 1}\n")
+    assert problems_in(library, "pricing") == {"apply": [], "shared": []}
+
+
+def test_taking_away_a_var_read_with_get_is_refused_and_a_var_named_get_is_not_read(
+    library,
+):
+    change(library, add_namespace, "pricing", "vars: {rate: 0.2, get: 1}\n")
+    reads_rate = answering("apply", "print(\"{{ vars.get('rate').value }}\")")
+    change(library, add_decomposition, "pricing", reads_rate)
+    with pytest.raises(LibraryError, match=re.escape('"apply" reads vars.rate')):
+        change(library, change_namespace, "pricing", "vars: {get: 1}\n")
+    change(library, change_namespace, "pricing", "vars: {rate: 0.2}\n")
+
+
 def test_the_names_a_template_may_read_are_those_the_engine_fills_in():
     assert set(FILLED_IN) == set(_render_context([], {}, "a task"))
 
@@ -2100,6 +2162,25 @@ PAST_THE_LIMIT_TEMPLATES = {
     ),
     "a method": "{{ 'x'.ljust(3000000)|length }}",
     "a filter": "{{ ('a' * 999999)|replace('a', 'aaa')|length }}",
+    "a printf width": "{{ ('%03000000d' % 1)|length }}",
+    "a printf width given": "{{ ('%0*d' % (3000000, 1))|length }}",
+    "a printf width given, on the left": "{{ ('%*d' % (-3000000, 1))|length }}",
+    "a printf precision": "{{ ('%.3000000f' % 1.0)|length }}",
+    "printf fields together": "{{ (('%0999999d' * 3) % (1, 2, 3))|length }}",
+    "the format filter's width": "{{ ('%03000000d'|format(1))|length }}",
+    "a format width": "{{ '{:>3000000}'.format(1)|length }}",
+    "a format width given": "{{ '{:>{}}'.format(1, 3000000)|length }}",
+    "format fields together": "{{ ('{0:>999999}' * 3).format(1)|length }}",
+}
+# Widths no machine could allocate: unbounded, each fails at once, not as the limit.
+UNALLOCATABLE = 10**15
+WIDE_TEMPLATES = {
+    "center": f"{{{{ 'x'|center({UNALLOCATABLE}) }}}}",
+    "ljust": f"{{{{ 'x'.ljust({UNALLOCATABLE}) }}}}",
+    "rjust": f"{{{{ 'x'.rjust({UNALLOCATABLE}) }}}}",
+    "zfill": f"{{{{ '1'.zfill({UNALLOCATABLE}) }}}}",
+    "a printf width": f"{{{{ '%0{UNALLOCATABLE}d' % 1 }}}}",
+    "a format width": f"{{{{ '{{:>{UNALLOCATABLE}}}'.format(1) }}}}",
 }
 
 
@@ -2143,6 +2224,40 @@ def test_a_run_refuses_a_template_making_anything_past_the_limit(template):
     with pytest.raises(SecurityError, match=re.escape(PAST_THE_LIMIT)):
         SANDBOXED().from_string(template).render()
     assert time.monotonic() - started < REFUSED_S
+
+
+@pytest.mark.parametrize("template", WIDE_TEMPLATES.values(), ids=WIDE_TEMPLATES)
+def test_a_run_refuses_a_width_past_the_limit_before_making_it(template):
+    with pytest.raises(SecurityError, match=re.escape(PAST_THE_LIMIT)):
+        SANDBOXED().from_string(template).render()
+
+
+# Numbers past the limit that pad nothing, each with what it renders.
+NUMBERS_PAST_THE_LIMIT = {
+    "formatted": ("{{ '{:,}'.format(8000000000) }}", "8,000,000,000"),
+    "printf formatted": ("{{ '%d people' % 8000000000 }}", "8000000000 people"),
+    "through the format filter": ("{{ '%.1e'|format(8000000000) }}", "8.0e+09"),
+    "a filter's value": ("{{ 8000000000|filesizeformat }}", "8.0 GB"),
+}
+
+
+@pytest.mark.parametrize(
+    ("template", "rendered"),
+    NUMBERS_PAST_THE_LIMIT.values(),
+    ids=NUMBERS_PAST_THE_LIMIT,
+)
+def test_a_number_past_the_limit_that_pads_nothing_renders(template, rendered):
+    assert SANDBOXED().from_string(template).render() == rendered
+
+
+def test_a_template_still_rendering_past_its_time_on_the_main_thread_stops():
+    looping = LOOPING.replace("3000", "99999").format(body="")
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match=re.escape(TOO_SLOW)):
+        SANDBOXED().from_string(looping).render()
+    assert time.monotonic() - started < RENDER_S + REFUSED_S
+    assert signal.getsignal(signal.SIGALRM) is signal.SIG_DFL
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
 
 
 def test_a_template_making_as_much_as_the_limit_renders():

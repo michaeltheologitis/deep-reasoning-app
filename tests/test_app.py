@@ -69,6 +69,7 @@ from deep_reasoning.library import (
     ROOT_SUFFIX,
     SPAWN_LINE,
     TOO_LONG_ROW,
+    TOO_SLOW,
     UNREAD_DECOMPOSITION,
     UNRENDERED_DECOMPOSITION,
     UPSERT_DECOMPOSITION,
@@ -924,6 +925,10 @@ FAILING_AS_RENDERED = {
     "loops rendering past the limit": (
         "{% for i in 'x' * 3000 %}{% for j in 'x' * 3000 %}ab{% endfor %}{% endfor %}",
         PAST_THE_LIMIT_WHY,
+    ),
+    "loops rendering nothing past its time": (
+        "{% for i in 'x' * 99999 %}{% for j in 'x' * 99999 %}{% endfor %}{% endfor %}",
+        f"TimeoutError: {TOO_SLOW}",
     ),
 }
 TALLY_PLAN = {"Tally the votes for me.": [repl("FinalAnswer(4)")]}

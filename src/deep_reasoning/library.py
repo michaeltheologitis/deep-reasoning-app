@@ -15,13 +15,15 @@ import json
 import keyword
 import math
 import re
+import signal
 import sqlite3
 import sys
+import threading
 import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from contextlib import closing, contextmanager
-from functools import lru_cache, partial, wraps
+from functools import lru_cache, partial, update_wrapper, wraps
 from pathlib import Path
 
 import deep_reasoner.llm
@@ -60,6 +62,8 @@ from jinja2 import (
     nodes,
 )
 from jinja2.compiler import CodeGenerator
+from jinja2.defaults import DEFAULT_FILTERS
+from jinja2.environment import Template
 from jinja2.sandbox import (
     UNSAFE_ASYNC_GENERATOR_ATTRIBUTES,
     UNSAFE_COROUTINE_ATTRIBUTES,
@@ -67,8 +71,10 @@ from jinja2.sandbox import (
     UNSAFE_GENERATOR_ATTRIBUTES,
     UNSAFE_METHOD_ATTRIBUTES,
     SandboxedEnvironment,
+    SandboxedFormatter,
     SecurityError,
 )
+from markupsafe import EscapeFormatter, Markup
 from pydantic import ValidationError
 
 log = structlog.get_logger()
@@ -653,6 +659,7 @@ NAMES_ONLY = (
 INCLUDES = (nodes.Include, nodes.Extends, nodes.Import, nodes.FromImport)
 READS = (nodes.Getattr, nodes.Getitem)
 SCREENED = (*INCLUDES, *READS)
+VAR_READS = (*READS, nodes.Call)
 # The names the sandbox refuses that don't start with _.
 UNSAFE_NAMES = frozenset(
     {"mro"}.union(
@@ -675,6 +682,20 @@ PAST_THE_LIMIT = (
 # The values a template makes or reads that the limit counts; a tool, say, it leaves be.
 COUNTED = (str, list, tuple, dict, set, frozenset)
 DIGITS_PER_BIT = math.log10(2)
+# A printf-style field, as % fills it in: its width and precision, each a * for one
+# taken from the values, and its kind.
+PRINTF_FIELD = re.compile(
+    r"%(?:\([^)]*\))?[-#0 +]*(\*|\d*)(?:\.(\*|\d*))?[hlL]?(.)", re.DOTALL
+)
+# A str.format spec, its own fields filled in: its width and precision.
+FORMAT_SPEC = re.compile(
+    r"(?:.?[<>=^])?[-+ ]?z?#?0?(\d*)[,_]?(?:\.(\d*))?[a-zA-Z%]?", re.DOTALL
+)
+# How long a template may render on the main thread, where a signal can stop it.
+RENDER_S = 3
+TOO_SLOW = f"it was still rendering after {RENDER_S} s"
+# What a template reads of vars by name that is no var: its methods, as vars.get.
+DICT_METHODS = frozenset(name for name in dir(dict) if not name.startswith("_"))
 
 
 class LibraryError(ValueError):
@@ -1721,14 +1742,46 @@ def within_limit(value):
     return value
 
 
+def refuse_past_the_limit(size):
+    if size > MAX_RENDERED_CHARS:
+        raise SecurityError(PAST_THE_LIMIT)
+
+
+def refuse_widths(values):
+    """Raise if a whole number of *values*, a call's arguments, is past
+    MAX_RENDERED_CHARS, as a width it could pad to, before the call makes it."""
+    refuse_past_the_limit(
+        max((each for each in values if type(each) is int), default=0)
+    )
+
+
 def digits(number):
     return abs(number).bit_length() * DIGITS_PER_BIT
 
 
+def printf_size(text, values):
+    """How long *text* % *values* could be: the printf-style *text*'s length and each
+    field's width or precision, a * one's taken from *values*."""
+    given = iter(values if isinstance(values, tuple) else (values,))
+    size = len(text)
+    for width, precision, kind in PRINTF_FIELD.findall(text):
+        pads = [
+            next(given, 0) if each == "*" else int(each or 0)
+            for each in (width, precision)
+        ]
+        # A * width below 0 pads to its size, on the left.
+        size += max((abs(pad) for pad in pads if type(pad) is int), default=0)
+        if kind != "%":
+            next(given, None)
+    return size
+
+
 def size_made(operator, left, right):
-    """How big *left* *operator* *right*, * or **, would be: a text's or list's length,
-    or a whole number's digits; 0 for any other."""
+    """How big *left* *operator* *right*, *, ** or %, would be: a text's or list's
+    length, or a whole number's digits; 0 for any other."""
     wholes = isinstance(left, int) and isinstance(right, int)
+    if operator == "%":
+        return printf_size(left, right) if isinstance(left, str) else 0
     if operator == "**":
         powers = wholes and abs(left) > 1 and right > 0
         return right * math.log10(abs(left)) if powers else 0
@@ -1742,13 +1795,73 @@ def size_made(operator, left, right):
 
 
 def bounded_filter(function):
-    """*function*, a filter, its result refused past MAX_RENDERED_CHARS."""
+    """*function*, a filter, refusing a whole number past MAX_RENDERED_CHARS among its
+    arguments after the value it filters, before it runs, and its result past it."""
+    after = 2 if hasattr(function, "jinja_pass_arg") else 1
 
     @wraps(function)
     def filtered(*args, **kwargs):
+        refuse_widths((*args[after:], *kwargs.values()))
         return within_limit(function(*args, **kwargs))
 
     return filtered
+
+
+def bounded_format(value, *args, **kwargs):
+    """Jinja's format filter, refusing a printf field past MAX_RENDERED_CHARS before it
+    formats, whatever number it formats."""
+    refuse_past_the_limit(printf_size(str(value), kwargs or args))
+    return within_limit(DEFAULT_FILTERS["format"](value, *args, **kwargs))
+
+
+BOUNDED_FILTERS = {
+    name: bounded_filter(each) for name, each in DEFAULT_FILTERS.items()
+} | {"format": bounded_format}
+
+
+class BoundedFormatter(SandboxedFormatter):
+    """Jinja's formatter for a str's format method in the sandbox, refusing what its
+    fields would pad to, together, past MAX_RENDERED_CHARS, before it formats each."""
+
+    padded = 0
+
+    def format_field(self, value, format_spec):
+        spec = FORMAT_SPEC.fullmatch(format_spec)
+        self.padded += max(int(each or 0) for each in spec.groups()) if spec else 0
+        refuse_past_the_limit(self.padded)
+        return super().format_field(value, format_spec)
+
+
+class BoundedEscapeFormatter(BoundedFormatter, EscapeFormatter):
+    """BoundedFormatter, escaping what it fills in, for a Markup's format method."""
+
+
+@contextmanager
+def deadline():
+    """Raise TimeoutError in what runs within, past RENDER_S, on the main thread, as a
+    signal can stop only that; elsewhere, set none."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def too_slow(signum, frame):
+        raise TimeoutError(TOO_SLOW)
+
+    handler = signal.signal(signal.SIGALRM, too_slow)
+    timer = signal.setitimer(signal.ITIMER_REAL, RENDER_S)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, *timer)
+        signal.signal(signal.SIGALRM, handler)
+
+
+class TimedTemplate(Template):
+    """A template whose render stops past RENDER_S, on the main thread (deadline())."""
+
+    def render(self, *args, **kwargs):
+        with deadline():
+            return super().render(*args, **kwargs)
 
 
 class Rendered(list):
@@ -1759,8 +1872,7 @@ class Rendered(list):
 
     def append(self, piece):
         self.chars += len(piece)
-        if self.chars > MAX_RENDERED_CHARS:
-            raise SecurityError(PAST_THE_LIMIT)
+        refuse_past_the_limit(self.chars)
         super().append(piece)
 
     def extend(self, pieces):
@@ -1778,23 +1890,22 @@ class RenderedCodeGenerator(CodeGenerator):
 
 class BoundedSandbox(SandboxedEnvironment):
     """Jinja's sandbox, refusing what would make a template stand for more than a stored
-    text may hold (PAST_THE_LIMIT): * and ** before they make it; a value read, passed
-    to or got back from a call or a filter, as it comes; and its text as it renders."""
+    text may hold (PAST_THE_LIMIT): *, ** and %, a width or a str's format fields before
+    they make it; a value read, passed to or got back from a call or a filter, as it
+    comes; and its text as it renders, which stops past RENDER_S on the main thread."""
 
-    intercepted_binops = frozenset({"*", "**"})
+    intercepted_binops = frozenset({"*", "**", "%"})
     code_generator_class = RenderedCodeGenerator
+    template_class = TimedTemplate
     rendered = Rendered
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.filters = {
-            name: bounded_filter(each) for name, each in self.filters.items()
-        }
+        self.filters = dict(BOUNDED_FILTERS)
 
     def call_binop(self, context, operator, left, right):
-        if size_made(operator, left, right) > MAX_RENDERED_CHARS:
-            raise SecurityError(PAST_THE_LIMIT)
-        return super().call_binop(context, operator, left, right)
+        refuse_past_the_limit(size_made(operator, left, right))
+        return within_limit(super().call_binop(context, operator, left, right))
 
     def getattr(self, obj, attribute):
         return within_limit(super().getattr(obj, attribute))
@@ -1803,9 +1914,35 @@ class BoundedSandbox(SandboxedEnvironment):
         return within_limit(super().getitem(obj, argument))
 
     def call(self, context, obj, /, *args, **kwargs):
-        for each in (*args, *kwargs.values()):
+        given = (*args, *kwargs.values())
+        for each in given:
             within_limit(each)
+        # A str's format method measures its own fields, whatever numbers it formats.
+        if not getattr(obj, "measures_its_fields", False):
+            refuse_widths(given)
         return within_limit(super().call(context, obj, *args, **kwargs))
+
+    def wrap_str_format(self, value):
+        """Jinja's wrapper of a str's format or format_map method, formatting with a
+        BoundedFormatter."""
+        if super().wrap_str_format(value) is None:
+            return None
+        text, mapping = value.__self__, value.__name__ == "format_map"
+
+        def formatted(*args, **kwargs):
+            if mapping and (kwargs or len(args) != 1):
+                raise TypeError("format_map() takes exactly one argument")
+            if mapping:
+                args, kwargs = (), args[0]
+            formatter = (
+                BoundedEscapeFormatter(self, escape=text.escape)
+                if isinstance(text, Markup)
+                else BoundedFormatter(self)
+            )
+            return type(text)(formatter.vformat(text, args, kwargs))
+
+        formatted.measures_its_fields = True
+        return update_wrapper(formatted, value)
 
     def concat(self, pieces):
         text = Rendered()
@@ -1908,12 +2045,14 @@ def template_problems(decomposition, names):
 
 
 def check_templates(connection, decomposition):
-    """Raise unless every turn of *decomposition* is a template the engine renders."""
-    config, _ = config_and_registry(connection)
+    """Raise unless every turn of *decomposition* is a template the engine renders; the
+    Library's namespaces as the engine resolves them."""
+    config, registry = config_and_registry(connection)
     names = template_names(config.prompt_template_variables)
     problems = template_problems(decomposition, names)
     if problems:
         raise LibraryError("\n".join(problems))
+    return registry
 
 
 def running_code(content):
@@ -2036,9 +2175,10 @@ def add_decomposition(connection, namespace, text, replace=False, allowed=None):
         found = stored_decomposition(connection, namespace, name)
         if found is not None and not replace:
             raise already_has(namespace, name)
-        check_templates(connection, decomposition)
+        registry = check_templates(connection, decomposition)
         connection.execute(UPSERT_DECOMPOSITION, tuple(stored.values()))
     problems = example_problems(decomposition)
+    problems += lacking_vars(registry, namespace, decomposition)
     return stored | {"problems": problems}, found
 
 
@@ -2249,12 +2389,12 @@ def missing_spawn(spawned, name, adding):
     )
 
 
-def write_namespace(connection, name, text, adding):
+def write_namespace(connection, name, text, adding, vars_before):
     """Store namespace *name* as its YAML *text*, inside the caller's transaction, which
-    keeps it only if it passes check_written; *adding*, as when it is new."""
-    own = read_namespaces(connection)[0].get(name, {})
+    keeps it only if it passes check_written; *adding*, as when it is new, and
+    *vars_before*, the vars it set itself."""
     connection.execute(UPSERT_NAMESPACE, (name, text))
-    check_written(connection, name, adding, own.get("vars", {}))
+    check_written(connection, name, adding, vars_before)
 
 
 def check_written(connection, name, adding, vars_before):
@@ -2299,30 +2439,61 @@ def check_vars_kept(registry, removed, below):
 
 
 def vars_read(decomposition):
-    """The vars *decomposition*'s templates read by name, as {{ vars.rate }} or
-    {{ vars["rate"] }}; a turn that doesn't parse reads none."""
-    found = set()
-    for turn in decomposition.messages:
-        if not _has_jinja(turn.content):
-            continue
-        try:
-            template = JINJA.parse(turn.content)
-        except TEMPLATE_FAILURES:
-            continue
-        found |= {each for each in map(var_named, template.find_all(READS)) if each}
-    return found
+    """The vars *decomposition*'s templates read by name (turn_vars())."""
+    return set().union(*(turn_vars(turn.content) for turn in decomposition.messages))
+
+
+def turn_vars(text):
+    """The vars the turn *text* reads by name as a template: vars.rate, vars["rate"] or
+    vars.get("rate"), never a method such as vars.items; none for one that doesn't parse."""
+    if not _has_jinja(text):
+        return set()
+    try:
+        template = JINJA.parse(text)
+    except TEMPLATE_FAILURES:
+        return set()
+    return {each for each in map(var_named, template.find_all(VAR_READS)) if each}
 
 
 def var_named(node):
-    """The var *node*, an attribute or item read, reads from vars by name; None for none."""
-    if not (isinstance(node.node, nodes.Name) and node.node.name == "vars"):
+    """The var *node*, an attribute or item read or a call, reads from vars by name;
+    None for none."""
+    if isinstance(node, nodes.Call):
+        called = node.node
+        gets = isinstance(called, nodes.Getattr) and called.attr == "get"
+        return text_of(node.args[0]) if gets and of_vars(called) and node.args else None
+    if not of_vars(node):
         return None
     if isinstance(node, nodes.Getattr):
-        return node.attr
-    key = node.arg
+        return None if node.attr in DICT_METHODS else node.attr
+    return text_of(node.arg)
+
+
+def of_vars(node):
+    return isinstance(node.node, nodes.Name) and node.node.name == "vars"
+
+
+def text_of(node):
     return (
-        key.value if isinstance(key, nodes.Const) and type(key.value) is str else None
+        node.value
+        if isinstance(node, nodes.Const) and type(node.value) is str
+        else None
     )
+
+
+def lacking_vars(registry, namespace, decomposition):
+    """Each var *decomposition*, stored in *namespace*, reads by name that *namespace*'s
+    agents don't have, there or above, in words; none for a namespace the engine can't
+    read."""
+    if namespace not in registry.names:
+        return []
+    have = registry.resolve(namespace).vars.keys()
+    return [
+        f"Turn {number} ({turn.role}) reads vars.{var}, which {namespace} doesn't have:"
+        f" set {var} in its vars, or in those of a namespace above it."
+        for number, turn in enumerate(decomposition.messages, start=1)
+        for var in sorted(turn_vars(turn.content) - have)
+    ]
 
 
 def add_namespace(connection, name, text, allowed=None):
@@ -2336,7 +2507,7 @@ def add_namespace(connection, name, text, allowed=None):
         if allowed is not None:
             allowed(connection, namespace)
         check_place(connection, name)
-        write_namespace(connection, name, stored, adding=True)
+        write_namespace(connection, name, stored, adding=True, vars_before={})
     return stored
 
 
@@ -2426,7 +2597,8 @@ def change_namespace(connection, name, text, allowed=None, was=NOT_OPENED, merge
         if allowed is not None:
             allowed(connection, namespace)
         before = check_unchanged(connection, name, was)
-        write_namespace(connection, name, stored, adding=False)
+        own = fields_of(before).get("vars", {})
+        write_namespace(connection, name, stored, adding=False, vars_before=own)
     return before, stored
 
 
@@ -3001,7 +3173,7 @@ def namespace_rows(read, config, registry):
                 if name in readable
                 else []
             ),
-            "decompositions": checked(decompositions[name]),
+            "decompositions": checked(decompositions[name], registry),
             "yaml": own_yaml(read["namespace_yaml"].get(name, "")),
             "handed_to": handed[name],
             "usable": usable(name, left),
@@ -3023,26 +3195,29 @@ def hand_offs_made(registry, targets):
             yield target
 
 
-def checked(rows):
+def checked(rows, registry):
     """A namespace's stored decompositions, *rows* as read_decompositions() reads them,
-    each with its problems as a worked example; or, for one left out, which agents aren't
-    shown (read: false), why: its templates were checked as it was read."""
+    each with its problems as a worked example, a var it lacks in *registry* among them;
+    or, for one left out, which agents aren't shown (read: false), why: its templates
+    were checked as it was read."""
     return [
         {
             "name": row["name"],
             "yaml": row["yaml"],
-            "problems": problems_of(row),
+            "problems": problems_of(row, registry),
             "read": row["decomposition"] is not None,
         }
         for row in rows
     ]
 
 
-def problems_of(row):
+def problems_of(row, registry):
     decomposition = row["decomposition"]
     if decomposition is None:
         return row["why"].splitlines()
-    return example_problems(decomposition)
+    return example_problems(decomposition) + lacking_vars(
+        registry, row["namespace"], decomposition
+    )
 
 
 def listed_tools(read, config, registry, names):

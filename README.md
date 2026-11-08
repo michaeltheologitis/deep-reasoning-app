@@ -143,8 +143,9 @@ deep-reasoning`. A module file in the chat's folder imports too.
   namespace's `vars` that are tables (a list of records) as tables, to read (edit them in Namespaces). In its
   editors Tab indents, Esc leaves, and Ctrl+Enter or Cmd+Enter saves.
 - Each worked example is marked ✓ or ✗ by whether its turns are shaped like `deep_reasoner`'s own (the task; each
-  assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last), and a ✗
-  says why; it still saves, as a draft agents are shown from the next message. A new one starts in the namespace of
+  assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last) and whether
+  its namespace, or one above it, sets each var it reads by name (`{{ vars.rate }}`), and a ✗ says why; it still
+  saves, as a draft agents are shown from the next message. A new one starts in the namespace of
   the chat on screen. Its code isn't run.
 - Saving refuses what would fail every run there: a template (`{{` or `{%`) the engine can't render, that names
   anything but what it fills in (`task`, `vars`, `funcs`, `coroutines`, the run settings'
@@ -155,10 +156,11 @@ deep-reasoning`. A module file in the chat's folder imports too.
   keyword or built-in, or is a tool's, or taking away a var a worked example there or below reads (`{{ vars.rate }}`);
   and a namespace granting a tool of yours that no namespace granted yet, if it doesn't build (built first, up to a
   minute).
-- A worked example that still fails as a run renders it (`{{ task.votes.total }}`, `{{ 1/0 }}`) is left out of that
-  agent's prompt, whole, and the run goes on: the agent's steps start with a "Left out" line naming the example, its
-  namespace and why. A template may make no text, list or number past 1,000,000 characters, items or digits; a
-  suffix or system prompt that would, or that fails otherwise, is sent as written.
+- A worked example that still fails as a run renders it (`{{ task.votes.total }}`, `{{ 1/0 }}`), or that a chat's top
+  agent is still rendering after 3 seconds, is left out of that agent's prompt, whole, and the run goes on: the
+  agent's steps start with a "Left out" line naming the example, its namespace and why. A template may make no text,
+  list or number past 1,000,000 characters, items or digits, nor pad a field (`center`, `ljust`, `%05d`, `{:>5}`)
+  past that; a suffix or system prompt that would, or that fails otherwise, is sent as written.
 - A save or delete is refused if what you opened changed meanwhile (the librarian, another tab or an import): your
   draft stays beside what is stored. A delete the panel knows would be refused says why at once. The panel and the
   namespace menu read the Library again when you open the panel or come back to the window.

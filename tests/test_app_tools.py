@@ -1592,6 +1592,17 @@ messages:
 """
 
 
+def test_a_worked_example_the_tool_writes_reading_a_var_its_namespace_lacks_is_marked(
+    fresh,
+):
+    done = library_tool(fresh).write_decomposition("drafts", APPLY_THE_RATE)
+    lacking = (
+        "Turn 1 (user) reads vars.rate, which drafts doesn't have: set rate in its"
+        " vars, or in those of a namespace above it."
+    )
+    assert done["problems"] == [lacking]
+
+
 def test_the_tool_refuses_to_take_away_a_var_a_worked_example_reads(fresh):
     tool = library_tool(fresh)
     tool.change_namespace("drafts", {"vars": {"rate": 0.2, "currency": "EUR"}})

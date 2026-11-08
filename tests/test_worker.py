@@ -7,12 +7,14 @@ import sys
 
 import pytest
 from deep_reasoner.tools import ToolBuildError
-from deep_reasoner.v2.cli import V2Config
+from deep_reasoner.v2 import agent
+from deep_reasoner.v2.cli import V2Config, build_reasoner, close_run
 from deep_reasoner.v2.messages import code
 from deep_reasoner.v2.repl_coro import REPL
 from genai_prices import Usage, calc_price
 
 from deep_reasoning import worker
+from deep_reasoning.runs import LEFT_OUT
 from deep_reasoning.worker import (
     Recorder,
     build_failure,
@@ -310,6 +312,66 @@ def test_the_roots_start_is_reported():
     recorder(None, "debug", agent_start(ROOT, None))
     recorder(None, "debug", agent_start(CHILD, ROOT))
     assert started == [True]
+
+
+DIVIDING_BY_ZERO = {
+    "name": "tally",
+    "messages": [
+        {"role": "user", "content": "Tally {{ 1/0 }} votes."},
+        {
+            "role": "assistant",
+            "content": "<think>t</think>\n<repl>FinalAnswer(1)</repl>",
+        },
+    ],
+}
+
+
+def unstarted(folder):
+    """A run's root, not started, whose namespace holds a worked example no run renders."""
+    config = V2Config.model_validate(
+        {
+            "model": "gpt-6-luna",
+            "client": {"base_url": OWN_SERVER_URL, "api_key_env": "OPENAI_API_KEY"},
+            "namespaces": {"root": {"decompositions": [DIVIDING_BY_ZERO]}},
+        }
+    )
+    reasoner, _ = build_reasoner(config, run_dir=folder)
+    return reasoner.send("Tally the votes.")
+
+
+def test_a_worked_example_left_out_is_noted_for_the_agent_it_was_left_out_of_alone(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "fake")
+    # put back after the test, as the wrapping replaces them
+    monkeypatch.setattr(agent, "_rendered_turns", agent._rendered_turns)
+    base = agent.DeepReasonerAgentBase
+    monkeypatch.setattr(base, "_start", base._start)
+    out = io.StringIO()
+    recorder = new_recorder(out)
+    worker.leaving_out_unrendered(recorder)
+    failing, started = unstarted(tmp_path / "failing"), unstarted(tmp_path / "started")
+
+    def no_model():
+        raise RuntimeError("no model")
+
+    # It fails after rendering its examples, so it never says it started.
+    monkeypatch.setattr(failing, "_build_neural", no_model)
+    with pytest.raises(RuntimeError, match="no model"):
+        failing._start()
+    recorder(None, "debug", agent_start(CHILD, None))
+    started._start()
+    node = started._log_vars["node_id"]
+    recorder(None, "debug", agent_start(node, None))
+    close_run(failing)
+    close_run(started)
+    lines = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [(line["kind"], line["node"]) for line in lines] == [
+        ("agent.start", CHILD),
+        ("agent.start", node),
+        (LEFT_OUT, node),
+    ]
+    assert lines[-1]["why"] == "ZeroDivisionError: division by zero"
 
 
 def in_a_worker(code, *args):

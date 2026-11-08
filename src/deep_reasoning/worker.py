@@ -62,9 +62,11 @@ REPL_BLOCK = re.compile(r"<repl>.*?(?:</repl>|$)", re.DOTALL)
 THINK_TAG = re.compile(r"</?think>")
 OBSERVATION = re.compile(r"\A<observation>\n?(.*?)\n?</observation>\Z", re.DOTALL)
 YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-# The worked examples left out of the agent starting in this context, each as its
-# LEFT_OUT event says it, until its agent.start: the engine renders them before.
-NOT_SHOWN: ContextVar[tuple[dict[str, Any], ...]] = ContextVar("not_shown", default=())
+# The worked examples left out of the agent starting in this context, as it renders
+# them, each as its LEFT_OUT event says it.
+LEFT_OUT_NOW: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
+    "left_out_now", default=()
+)
 WHY_CHARS = 300
 
 
@@ -207,6 +209,8 @@ class Recorder:
         self._calls_going = 0
         self._lock = threading.RLock()
         self._agents: dict[int, _Agent] = {}
+        # The worked examples left out of each agent started, until it says so.
+        self._left_out: dict[int, tuple[dict[str, Any], ...]] = {}
         self._cells = 0
         self._root: int | None = None
         self._ended = False
@@ -235,6 +239,11 @@ class Recorder:
         except Exception:
             log.exception("worker.event_not_recorded", name=name)
         return event_dict
+
+    def left_out(self, node: int, examples: tuple[dict[str, Any], ...]) -> None:
+        """The worked examples left out of agent *node*, for its agent.start to say."""
+        with self._lock:
+            self._left_out[node] = examples
 
     def call_started(self) -> None:
         with self._lock:
@@ -302,9 +311,8 @@ class Recorder:
             namespace=event["namespace"],
             drive=drive,
         )
-        for left_out in NOT_SHOWN.get():
+        for left_out in self._left_out.pop(node, ()):
             self.emit(LEFT_OUT, node=node, **left_out)
-        NOT_SHOWN.set(())
 
     def _llm_call(self, event: dict[str, Any]) -> None:
         self._calls_going -= 1
@@ -401,11 +409,12 @@ def why_unrendered(error: Exception) -> str:
     return detail.split("\n", 1)[0][:WHY_CHARS]
 
 
-def leaving_out_unrendered() -> None:
+def leaving_out_unrendered(recorder: Recorder) -> None:
     """Leave each worked example that fails to render out of its agent's prompt, all its
-    turns, for the agent's start to say why, so the run goes on, where the engine would
-    end it. A stop is no failure to render: it isn't an Exception."""
+    turns, telling *recorder* which agent, once it started, so the run goes on, where
+    the engine would end it. A stop is no failure to render: it isn't an Exception."""
     rendered_turns = agent._rendered_turns
+    start = agent.DeepReasonerAgentBase._start
 
     def rendered_or_none(
         decomposition: Any, render_ctx: dict[str, Any], namespace: str
@@ -418,10 +427,21 @@ def leaving_out_unrendered() -> None:
             name = Decomposition.coerce(decomposition).name
             why = why_unrendered(error)
             left_out = {"name": name, "namespace": namespace, "why": why}
-            NOT_SHOWN.set((*NOT_SHOWN.get(), left_out))
+            LEFT_OUT_NOW.set((*LEFT_OUT_NOW.get(), left_out))
             return []
 
+    def started(self: agent.DeepReasonerAgentBase) -> None:
+        # Only an agent that started is told: one whose start failed never says so.
+        token = LEFT_OUT_NOW.set(())
+        try:
+            start(self)
+            if left_out := LEFT_OUT_NOW.get():
+                recorder.left_out(self._log_vars["node_id"], left_out)
+        finally:
+            LEFT_OUT_NOW.reset(token)
+
     agent._rendered_turns = rendered_or_none
+    agent.DeepReasonerAgentBase._start = started
 
 
 def end_group() -> NoReturn:
@@ -525,6 +545,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     recorder = Recorder(out, on_root_start=stop_if_asked, base_url=base_url)
     configure_structlog_fixture(console=False, extra_processors=[recorder])
     counting_calls(recorder)
+    leaving_out_unrendered(recorder)
     threading.Thread(target=read_commands, args=(stdin, stop), daemon=True).start()
     # A tool that doesn't build while the run builds the config's tools, at its start,
     # stops every run; one that doesn't later is that run's own failure.
@@ -559,7 +580,6 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
 
 def main() -> None:
     sandbox_templates()
-    leaving_out_unrendered()
     folder = Path(sys.argv[1])
     # The cwd is the chat's folder: its own modules import, after every installed one.
     sys.path.append(os.getcwd())
