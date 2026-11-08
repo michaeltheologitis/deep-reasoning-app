@@ -460,9 +460,10 @@ def counting_calls(recorder: Recorder) -> None:
     create = AsyncCompletions.create
 
     async def counted(self: AsyncCompletions, *args: Any, **kwargs: Any) -> Any:
-        recorder.call_started()
+        # Before the count: a call escaped() raised on was never sent.
         if "messages" in kwargs:
             kwargs["messages"] = escaped(kwargs["messages"])
+        recorder.call_started()
         return await create(self, *args, **kwargs)
 
     AsyncCompletions.create = counted
