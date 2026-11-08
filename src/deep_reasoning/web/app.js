@@ -452,7 +452,7 @@ async function choose(chat, change) {
     chosen = await request("PATCH", `api/chats/${chat.id}`, change);
   } catch (error) {
     if (lostWith(error, chat)) return;
-    report(`Not changed: ${error.message}`);
+    report(`Not changed: ${error.message}`, { onModel: Boolean(change.model) });
     if (change.model) byId("settings").dispatchEvent(new Event(SETTINGS_CHANGED));
     return;
   }
@@ -565,12 +565,12 @@ function openSettings() {
   byId("settings").dispatchEvent(new Event(PANEL_OPEN));
 }
 
-// The providers changed, here or in another tab: the model menu reads its lists again when next opened, and a hint about what
-// the chat could run on, as "Pick a model" when there was none to pick, goes.
+// The providers changed, here or in another tab: the model menu reads its lists again when next opened, and a hint about the
+// chat's model, as "Pick a model" when there was none to pick, goes.
 function providersChanged() {
   modelLists = null;
-  if (state.problem == null) return;
-  state.problem = null;
+  if (!state.problemOnModel) return;
+  Object.assign(state, { problem: null, problemWhileDown: false, problemOnModel: false });
   renderComposer();
 }
 
@@ -820,8 +820,10 @@ function setUi(change) {
   renderList();
 }
 
-function report(problem) {
-  Object.assign(state, { problem, problemWhileDown: problem != null && notAnswering, notice: null });
+// onModel: the problem is about the chat's model, as one with none to pick or on a provider since removed, which a change of
+// providers settles
+function report(problem, { onModel = false } = {}) {
+  Object.assign(state, { problem, problemWhileDown: problem != null && notAnswering, problemOnModel: problem != null && onModel, notice: null });
   renderComposer();
 }
 
@@ -1174,7 +1176,7 @@ async function send() {
     ({ run, title } = await request("POST", `api/chats/${chat.id}/runs`, { prompt }));
   } catch (error) {
     if (lostWith(error, chat)) return;
-    if (error.status !== CONFLICT) return report(`Not sent: ${error.message}`);
+    if (error.status !== CONFLICT) return report(`Not sent: ${error.message}`, { onModel: !chat.model || chat.provider_missing });
     report(`Not sent: ${RUN_FROM_OTHER_TAB}.`);
     // read again, so the page follows the run another tab started
     refresh("bottom");
