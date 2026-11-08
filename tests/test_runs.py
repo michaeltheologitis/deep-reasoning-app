@@ -1,7 +1,9 @@
 import ast
+import asyncio
 import errno
 import hashlib
 import os
+import select
 import shlex
 import shutil
 import sqlite3
@@ -64,6 +66,7 @@ FAN_OUT = {
 }
 FAN_OUT_ANSWER = "{'C1': 'C1: 3', 'C2': 'C2: 4'}"
 PRINT_GROUP = repl("import os", "print(os.getpgrp())")
+OVERFILL = 2**24  # bytes: more than a pipe holds
 # More namespaces than a cell adds before a Stop at the first one's change ends it.
 ADDS = 12
 SAVE_S = 1.0
@@ -292,12 +295,24 @@ async def test_stop_ends_every_agent_and_cell_stopped(home, library, fake_config
         os.killpg(group_of(events), 0)
 
 
-async def test_stop_kills_a_cell_blocked_in_c(home, library, fake_config):
-    plan = {"Wait a minute.": [PRINT_GROUP, repl("import time", "time.sleep(60)")]}
+async def test_stop_kills_a_cell_blocked_in_c(home, library, fake_config, tmp_path):
+    unread = tmp_path / "unread"
+    os.mkfifo(unread)
+    reader = os.open(unread, os.O_RDONLY | os.O_NONBLOCK)
+    # More than a pipe holds, to one nobody reads: the write waits in C for good.
+    write = f"os.write(os.open({str(unread)!r}, os.O_WRONLY), bytes({OVERFILL}))"
+    plan = {"Wait a minute.": [PRINT_GROUP, repl("import os", write)]}
     with FakeOpenAI(scripted(plan)) as fake:
         runs = Runs(library, home, stop_grace_s=0.5)
         run = runs.start(CHAT, "Wait a minute.", fake_config(fake), [])
-        events, seconds = await stop_at(runs, run, "import time\ntime.sleep(60)")
+        # The pipe holds what the cell wrote, so the cell is in its write.
+        ready, _, _ = await asyncio.to_thread(select.select, [reader], [], [], HELD_S)
+        assert ready
+        stopped_at = time.monotonic()
+        assert runs.stop(run)
+        events = [event async for event in runs.events(run)]
+        seconds = time.monotonic() - stopped_at
+    os.close(reader)
     assert seconds < 3
     assert of_kind(events, "agent.end") == []
     assert events[-1]["outcome"] == "stopped"
