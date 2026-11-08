@@ -391,23 +391,45 @@ def end_group() -> NoReturn:
 
 
 def read_commands(stdin: int, stop: Callable[[], None]) -> NoReturn:
-    """The server's commands on *stdin*, on a thread of their own, as they come."""
+    """The server's commands on *stdin*, on a thread of their own, as they come. It is
+    what ends the worker when the server goes, so a command that fails is logged and it
+    reads on."""
     while True:
-        select.select([stdin], [], [])
-        take_commands(stdin, stop)
+        try:
+            select.select([stdin], [], [])
+        except OSError:
+            log.exception("worker.stdin_unreadable")
+            end_group()
+        try:
+            take_commands(stdin, stop)
+        except Exception:
+            log.exception("worker.command_failed")
 
 
-def take_commands(stdin: int, stop: Callable[[], None]) -> None:
-    """Act on each command the server has sent on *stdin*, of which there is one, `stop`,
-    without waiting for more. At EOF the server is gone, so nothing would read the
-    events: the worker ends its whole process group."""
+def take_commands(stdin: int, stop: Callable[[], None]) -> bool:
+    """Act on the command the server has sent on *stdin*, if it has, without waiting:
+    there is one, `stop`, sent at most once and whole. Whether it stopped."""
     with TAKING_COMMANDS:
-        while select.select([stdin], [], [], 0)[0]:
-            sent = os.read(stdin, STDIN_READ_SIZE)
-            if not sent:
-                end_group()
-            if b"stop" in sent.split():
-                stop()
+        stopping = b"stop" in sent_so_far(stdin).split()
+        if stopping:
+            stop()
+    return stopping
+
+
+def sent_so_far(stdin: int) -> bytes:
+    """What the server has sent on *stdin* and no one has read, without waiting. At EOF
+    the server is gone, so nothing would read the events, and so when stdin can't be
+    read: the worker ends its whole process group."""
+    try:
+        if not select.select([stdin], [], [], 0)[0]:
+            return b""
+        sent = os.read(stdin, STDIN_READ_SIZE)
+    except OSError:
+        log.exception("worker.stdin_unreadable")
+        end_group()
+    if not sent:
+        end_group()
+    return sent
 
 
 def exit_after(seconds: float) -> None:
@@ -455,9 +477,8 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     def stop_if_asked() -> None:
         # A stop does nothing before the root's first drive, so one asked earlier is
         # repeated here, when the root's drive has begun; one the stdin thread hasn't
-        # read yet is read here, before the root's first call.
-        take_commands(stdin, stop)
-        if stop_asked.is_set():
+        # read yet is taken here, before the root's first call.
+        if not take_commands(stdin, stop) and stop_asked.is_set():
             reasoner.stop()
 
     base_url = spec["config"]["client"]["base_url"]
