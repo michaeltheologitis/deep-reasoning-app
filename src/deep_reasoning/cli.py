@@ -4,6 +4,7 @@ config into the Library, or reset: delete the Library file and its folders."""
 import argparse
 import contextlib
 import errno
+import fcntl
 import logging
 import os
 import shutil
@@ -49,16 +50,26 @@ SIDE = "SQLite's file beside the Library"
 THE_LIBRARY = "the Library: its namespaces, decompositions, tools, chats and settings"
 ITS_FOLDERS = "the Library's run and scratch folders"
 OLD = "left by an older version"
-STOP_FIRST = (
-    "Stop Deep Reasoning before a reset: deleting its Library while it runs breaks it."
-)
 BUSY = (
-    "A run may be going, or the app stopped during one: "
-    "the Library's -wal file holds changes."
+    "The Library's -wal file holds changes: the app stopped without closing the file, as"
+    " in a crash."
 )
 # What a read-only connection meets in a file a crash left part way through a change.
 MID_CHANGE = "SQLITE_READONLY_ROLLBACK"
 CRASHED = " A crash left it part way through a change: start the app once, then reset."
+# Beside the Library, held while the app serves it, imports into it or resets it: a file
+# of its own, as SQLite's locks are on the Library's. The OS lets go when the process ends.
+LOCK = ".lock"
+LOCK_MODE = 0o644
+# What flock meets on a file system without locks: NFS mounted nolock, some FUSE and SMB.
+NO_LOCKS = {errno.ENOLCK, errno.EOPNOTSUPP, errno.EINVAL}
+IN_USE = "Deep Reasoning is already using {}, so {}."
+NOT_STARTED = (
+    "this one didn't start: two on one Library would end each other's runs. Use the one"
+    " that is running, stop it first, or pass another --library"
+)
+NOT_IMPORTED = "nothing was imported: stop it first, then import"
+NOT_DELETED = "nothing was deleted: stop it first, then reset"
 
 log = structlog.get_logger()
 
@@ -85,6 +96,19 @@ def listen(port):
         )
 
 
+def folder_or_exit(library, home):
+    """A plain error, making nothing, unless *library*'s folder is there; the app's home
+    is made."""
+    folder = library.absolute().parent
+    if folder == home:
+        folder.mkdir(parents=True, exist_ok=True)
+    elif not folder.is_dir():
+        sys.exit(
+            f"There is no folder {folder}, so no Library was made there: check the path"
+            " given to --library, or make the folder first."
+        )
+
+
 def open_or_exit(path):
     """The Library at *path*, created if new, or a plain error when it can't be one."""
     try:
@@ -93,8 +117,52 @@ def open_or_exit(path):
         sys.exit(f"Could not open the Library at {path}: {error}")
 
 
-def import_or_exit(library, config):
-    with contextlib.closing(open_or_exit(library)) as connection:
+def lock_of(library):
+    """The lock beside the file *library* names, through any symlink."""
+    return Path(f"{os.path.realpath(library)}{LOCK}")
+
+
+@contextlib.contextmanager
+def owning(library, refused, read=open_or_exit):
+    """What *read* makes of *library*, the Library opened unless told otherwise, read only
+    once this process holds the lock beside it, which it holds until the block ends; a
+    plain error saying *refused* when another Deep Reasoning holds it."""
+    path = lock_of(library)
+    try:
+        lock = os.open(path, os.O_RDWR | os.O_CREAT, LOCK_MODE)
+    except OSError as error:
+        sys.exit(
+            f"Could not open {path}, the lock that keeps a second Deep Reasoning off the"
+            f" Library: {error.strerror}."
+        )
+    try:
+        take(lock, library, refused)
+        yield read(library)
+    finally:
+        os.close(lock)
+
+
+def take(lock, library, refused):
+    """Take the *lock* beside *library*, or a plain error saying *refused*; where the file
+    system has no locks, say so and go on without."""
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(IN_USE.format(library, refused))
+    except OSError as error:
+        if error.errno not in NO_LOCKS:
+            raise
+        log.warning(
+            "The Library's file system can't lock it, so nothing stops a second"
+            " Deep Reasoning on it: run one at a time",
+            library=str(library),
+            error=error.strerror,
+        )
+
+
+def import_or_exit(library, config, home):
+    folder_or_exit(library, home)
+    with owning(library, NOT_IMPORTED) as connection, contextlib.closing(connection):
         try:
             imported = import_config(connection, config)
         except (OSError, ValueError, yaml.YAMLError, sqlite3.Error) as error:
@@ -164,7 +232,7 @@ def reset_targets(library, home):
 
 def reset_plan(doomed, kept, home, busy):
     width = max(len(short_path(path)) for path, _ in doomed)
-    lines = [STOP_FIRST, *([BUSY] if busy else []), "", "This deletes:"]
+    lines = [*([BUSY, ""] if busy else []), "This deletes:"]
     lines += [f"  {short_path(path):<{width}}  {what}" for path, what in doomed]
     lines += [
         f"It keeps {short_path(path)}, as a chat chose it or a folder in it."
@@ -223,19 +291,25 @@ def reset_or_exit(library, home, yes):
     # Before the Library is read: reading a Library in WAL mode makes an empty -wal.
     wal = library.with_name(library.name + WAL)
     busy = library.is_file() and os.path.isfile(wal) and os.path.getsize(wal) > 0
-    chosen = chosen_or_exit(library) if library.is_file() else []
-    there = reset_targets(library, home)
-    kept = [path for path, _ in there if holds_any(path, chosen)]
-    doomed = [(path, what) for path, what in there if path not in kept]
-    if not doomed:
-        print(
-            f"Nothing to reset: no Library at {short_path(library)}, nor folders of it."
-        )
-        return
-    print(reset_plan(doomed, kept, home, busy))
-    if not yes and not confirmed():
-        sys.exit("Nothing was deleted.")
-    delete_all([path for path, _ in doomed])
+    # Read once no app can start on it; the lock file stays, as one starting may hold it.
+    owned = (
+        owning(library, NOT_DELETED, chosen_or_exit)
+        if library.is_file()
+        else contextlib.nullcontext([])
+    )
+    with owned as chosen:
+        there = reset_targets(library, home)
+        kept = [path for path, _ in there if holds_any(path, chosen)]
+        doomed = [(path, what) for path, what in there if path not in kept]
+        if not doomed:
+            print(
+                f"Nothing to reset: no Library at {short_path(library)}, nor folders of it."
+            )
+            return
+        print(reset_plan(doomed, kept, home, busy))
+        if not yes and not confirmed():
+            sys.exit("Nothing was deleted.")
+        delete_all([path for path, _ in doomed])
     print(
         "Deleted them. The next start makes a fresh Library, with the historian and "
         "librarian namespaces."
@@ -243,17 +317,21 @@ def reset_or_exit(library, home, yes):
 
 
 def serve(port, no_browser, library, home):
-    open_or_exit(library).close()
-    server = Server(uvicorn.Config(create_app(library, home)))
-    with listen(port) as sock:
-        url = f"http://{HOST}:{sock.getsockname()[1]}/"
-        log.info("Deep Reasoning is running", url=url, library=str(library))
-        if not no_browser:
-            # The tab's request waits for uvicorn; a thread, as some launchers block.
-            threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
-        # uvicorn re-raises Ctrl+C after a clean shutdown; uvicorn.run hides it too.
-        with contextlib.suppress(KeyboardInterrupt):
-            server.run(sockets=[sock])
+    folder_or_exit(library, home)
+    with owning(library, NOT_STARTED) as connection:
+        connection.close()
+        server = Server(uvicorn.Config(create_app(library, home)))
+        with listen(port) as sock:
+            url = f"http://{HOST}:{sock.getsockname()[1]}/"
+            log.info("Deep Reasoning is running", url=url, library=str(library))
+            if not no_browser:
+                # The tab's request waits for uvicorn; a thread, as some launchers block.
+                threading.Thread(
+                    target=webbrowser.open, args=(url,), daemon=True
+                ).start()
+            # uvicorn re-raises Ctrl+C after a clean shutdown; uvicorn.run hides it too.
+            with contextlib.suppress(KeyboardInterrupt):
+                server.run(sockets=[sock])
 
 
 def main(argv=None):
@@ -297,7 +375,7 @@ def main(argv=None):
             "Delete the Library file (its namespaces, decompositions, tools, chats and "
             "settings), its runs' and chats' scratch folders, and what older versions "
             "left in the app's home, after asking. Your keys and the folders chats chose "
-            "stay. Stop the app first."
+            "stay. It refuses while the app is running on the Library."
         ),
     )
     resetter.add_argument("--yes", action="store_true", help="delete without asking")
@@ -310,7 +388,7 @@ def main(argv=None):
     if not 0 <= args.port <= MAX_PORT:
         parser.error(f"--port must be between 0 and {MAX_PORT}")
     if args.command == "import":
-        import_or_exit(args.library, args.config)
+        import_or_exit(args.library, args.config, home)
         return
     if args.command == "reset":
         reset_or_exit(args.library, home, args.yes)

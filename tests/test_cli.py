@@ -1,3 +1,5 @@
+import errno
+import fcntl
 import io
 import os
 import queue
@@ -6,6 +8,7 @@ import shutil
 import socket
 import sqlite3
 import stat
+import subprocess
 import sys
 import urllib.parse
 import webbrowser
@@ -25,6 +28,16 @@ from deep_reasoning.library import ADDED_IN, open_library
 WAIT_SECONDS = 0.5
 KEY_IN_A_FRAME = "sk-held-in-a-frame"
 KEYS = "OPENAI_API_KEY=sk-kept-by-reset\n"
+# A process that holds the lock beside the Library it is given, as an app serving it does,
+# until it is killed.
+HOLD_THE_LOCK = """
+import sys, time
+from pathlib import Path
+from deep_reasoning import cli
+with cli.owning(Path(sys.argv[1]), "held"):
+    print("held", flush=True)
+    time.sleep(600)
+"""
 
 
 @pytest.fixture
@@ -168,6 +181,131 @@ def test_a_failed_import_exits_with_a_plain_error(tmp_path):
         cli.main(["import", str(missing), "--library", str(tmp_path / "lib.sqlite")])
 
 
+@pytest.mark.parametrize("command", [[], ["import", "CONFIG"]])
+def test_a_library_in_a_folder_that_is_not_there_is_refused_and_nothing_made(
+    served, tmp_path, advisors, free_port, command
+):
+    missing = tmp_path / "typo" / "lib.sqlite"
+    argv = [str(advisors) if each == "CONFIG" else each for each in command]
+    options = ["--port", str(free_port), "--no-browser", "--library", str(missing)]
+    with pytest.raises(SystemExit, match=f"There is no folder {missing.parent}"):
+        cli.main([*options, *argv])
+    assert not missing.parent.exists()
+    assert served == []
+
+
+def unfinished_run(library):
+    """A run going in the app file, as the first app's would be: started, not ended."""
+    chat = create_chat(library)["id"]
+    started = '{"seq": 1, "t": 1, "kind": "turn.start", "prompt": "Hi."}'
+    with closing(open_library(library)) as connection:
+        connection.execute("INSERT INTO runs VALUES ('a-run', ?)", (chat,))
+        connection.execute("INSERT INTO events VALUES ('a-run', 1, ?)", (started,))
+
+
+def events_of(library):
+    with closing(open_library(library)) as connection:
+        return connection.execute("SELECT seq, data FROM events").fetchall()
+
+
+STARTED_NOT = "so this one didn't start: two on one Library would end each other's runs"
+
+
+@pytest.mark.parametrize(
+    ("named", "command", "refused"),
+    [
+        ("lib.sqlite", [], STARTED_NOT),
+        ("link.sqlite", [], STARTED_NOT),
+        ("relative", [], STARTED_NOT),
+        ("lib.sqlite", ["import", "CONFIG"], "so nothing was imported: stop it first"),
+        ("lib.sqlite", ["reset", "--yes"], "so nothing was deleted: stop it first"),
+    ],
+    ids=[
+        "serve",
+        "serve through a symlink",
+        "serve by a relative path",
+        "import",
+        "reset",
+    ],
+)
+def test_a_library_an_app_serves_is_refused_to_a_second_app_import_and_reset(
+    monkeypatch, tmp_path, advisors, free_port, named, command, refused
+):
+    library = tmp_path / "lib.sqlite"
+    (tmp_path / "link.sqlite").symlink_to(library)
+    monkeypatch.chdir(tmp_path)
+    given = "lib.sqlite" if named == "relative" else str(tmp_path / named)
+    argv = [str(advisors) if each == "CONFIG" else each for each in command]
+    second = ["--no-browser", "--port", "0", "--library", given, *argv]
+    seen = []
+
+    def serve(server, sockets):
+        unfinished_run(library)
+        before = events_of(library)
+        with pytest.raises(
+            SystemExit, match=f"already using {re.escape(given)}, {refused}"
+        ):
+            cli.main(second)
+        seen.append(events_of(library) == before and library.is_file())
+
+    monkeypatch.setattr(uvicorn.Server, "run", serve)
+    cli.main(["--port", str(free_port), "--no-browser", "--library", str(library)])
+    assert seen == [True]
+
+
+def test_an_app_started_while_a_reset_deletes_is_refused_and_makes_no_library(
+    app_home, monkeypatch, served, free_port
+):
+    library = app_home / "library.sqlite"
+    open_library(library).close()
+    delete_all = cli.delete_all
+
+    def deleting(paths):
+        delete_all(paths)
+        with pytest.raises(SystemExit, match=STARTED_NOT):
+            cli.main(["--port", str(free_port), "--no-browser"])
+
+    monkeypatch.setattr(cli, "delete_all", deleting)
+    cli.main(["reset", "--yes"])
+    assert not library.exists()
+    assert served == []
+
+
+def test_the_lock_is_let_go_when_the_app_stops_or_is_killed(served, tmp_path):
+    library = tmp_path / "lib.sqlite"
+    options = ["--port", "0", "--no-browser", "--library", str(library)]
+    cli.main(options)
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLD_THE_LOCK, str(library)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline() == "held\n"
+        with pytest.raises(SystemExit, match="already using"):
+            cli.main(options)
+    finally:
+        holder.kill()
+        holder.wait()
+    cli.main(options)
+    assert len(served) == 2
+
+
+def test_a_file_system_without_locks_is_said_and_the_app_starts_all_the_same(
+    served, monkeypatch, capsys, tmp_path, free_port
+):
+    def no_locks(lock, operation):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(fcntl, "flock", no_locks)
+    library = tmp_path / "lib.sqlite"
+    cli.main(["--port", str(free_port), "--no-browser", "--library", str(library)])
+    said = capsys.readouterr().out
+    assert "can't lock it, so nothing stops a second Deep Reasoning" in said
+    assert "No locks available" in said
+    assert len(served) == 1
+
+
 def test_a_file_that_is_not_a_library_exits_with_a_plain_error(
     served, tmp_path, free_port
 ):
@@ -244,12 +382,16 @@ def test_reset_yes_deletes_the_app_file_its_folders_and_old_leftovers(
     journal = library.with_name(library.name + "-journal")
     journal.write_bytes(b"")
     doomed += [*side_files(library), journal]
+    # An app that served the file left its lock, which a reset keeps: one starting may hold it.
+    lock = library.with_name(library.name + ".lock")
+    lock.write_bytes(b"")
     keys = app_home / ".env"
     keys.write_text(KEYS)
     other = data_folder(app_home, tmp_path / "other.sqlite")
     other.mkdir(parents=True)
     cli.main(["reset", "--yes"])
     assert [path for path in doomed if os.path.lexists(path)] == []
+    assert lock.read_bytes() == b""
     assert keys.read_text() == KEYS
     assert project.is_dir()
     assert other.is_dir()
@@ -268,7 +410,6 @@ def test_reset_lists_what_goes_and_deletes_nothing_unless_told_delete(
     assert "~/.deep-reasoning/library.sqlite" in said
     assert "~/.deep-reasoning/chats.sqlite" in said
     assert "~/.deep-reasoning/.env" in said
-    assert "Stop Deep Reasoning" in said
     assert all(os.path.lexists(path) for path in doomed)
 
 
@@ -311,7 +452,7 @@ def test_reset_with_nothing_there_says_so(app_home, capsys):
     assert keys.read_text() == KEYS
 
 
-def test_reset_warns_that_a_run_may_be_going_when_the_wal_file_holds_changes(
+def test_reset_says_the_app_stopped_without_closing_the_file_when_the_wal_holds_changes(
     app_home, monkeypatch, capsys
 ):
     library = app_home / "library.sqlite"
@@ -320,7 +461,7 @@ def test_reset_warns_that_a_run_may_be_going_when_the_wal_file_holds_changes(
     monkeypatch.setattr(sys, "stdin", Terminal("no\n"))
     with pytest.raises(SystemExit, match="Nothing was deleted"):
         cli.main(["reset"])
-    assert "A run may be going" in capsys.readouterr().out
+    assert "the app stopped without closing the file" in capsys.readouterr().out
 
 
 def test_reset_never_deletes_through_a_symlink(app_home, tmp_path):
