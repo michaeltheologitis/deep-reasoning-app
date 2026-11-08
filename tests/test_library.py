@@ -1381,6 +1381,18 @@ def test_a_left_out_namespaces_delete_waits_for_its_children_and_the_spawns_nami
     assert once_it_went == (spawners, spawners)
 
 
+@pytest.mark.parametrize("name", ["2024-taxes", "team/a", "café", "research.Root"])
+def test_a_namespace_named_as_saves_no_longer_name_one_still_reads_as_usable(
+    library, name
+):
+    # Saves refuse these names now, but an older Library may hold them.
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, (name.partition(".")[0], ""))
+        connection.execute(UPSERT_NAMESPACE, (name, "system_suffix: Keep receipts.\n"))
+    shown = {each["name"]: each for each in panel_of(library)["namespaces"]}
+    assert (shown[name]["usable"], shown[name]["problems"]) == (True, [])
+
+
 def test_a_row_whose_name_isnt_text_is_left_out_and_listed_nowhere(library):
     unnamed = b"\xff"
     rows = {

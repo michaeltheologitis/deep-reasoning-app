@@ -1008,7 +1008,7 @@ def own_fields(name, text):
 def read_namespaces(connection):
     """The namespaces that load, as {name: own fields}; those left out, as {name: why};
     and each one's own YAML as the panel shows it, None for one too long or not text.
-    One named as no save names one goes, so none passes for root in the menu. One under
+    One named so it could pass for another (misleading()) goes too. One under
     a namespace left out or not there goes too, as the engine can't resolve it; root's
     stay, as the engine supplies a bare root for a file without one."""
     query = f"SELECT name, {fitting('yaml')} FROM namespaces ORDER BY rowid"
@@ -2092,16 +2092,32 @@ def check_name(name):
 
 
 def check_stored_name(name):
-    """Raise unless a stored namespace's *name* is root or one check_name() passes,
-    written out, so one such as r\u043eot (a Cyrillic o) shows what it holds."""
-    if name == ROOT:
-        return
-    try:
-        check_name(name)
-    except LibraryError as error:
+    """Raise unless a stored namespace's *name* reads as what it is (misleading()),
+    written out, so one such as r\u043eot (a Cyrillic o) shows what it holds. The save's
+    stricter rules (check_name()) are left to saving, so an older Library's names stay."""
+    why = misleading(name)
+    if why:
         raise LibraryError(
-            f"Its name, {name!a}, would be refused on save: {error}"
-        ) from error
+            f"Its name, {name!a}, {why}, so it could pass for another, such as root,"
+            " in the menu."
+        )
+
+
+def misleading(name):
+    """Why namespace *name* could pass for another's: a character you can't see, a
+    spelling of root but root's own, or letters of more than one script; None when it
+    can't."""
+    hidden = [char for char in name if unicodedata.category(char) in INVISIBLE]
+    if hidden:
+        return f"holds a character you can't see (U+{ord(hidden[0]):04X})"
+    folded = unicodedata.normalize("NFKC", name)
+    if name != ROOT and folded.casefold().strip() == ROOT:
+        return "reads as root"
+    letters = [char for char in folded if char.isalpha()]
+    scripts = sorted({unicodedata.name(char, "?").split()[0] for char in letters})
+    if len(scripts) > 1:
+        return f"mixes letters of {' and '.join(each.title() for each in scripts)}"
+    return None
 
 
 def check_place(connection, name):

@@ -26,7 +26,7 @@ This project's Notion page (todos, changelog, notes): https://app.notion.com/p/4
 
 ### Trust boundary: a shared file
 
-- Everything read from the file is checked as the app could have written it (Library rows as the engine reads them, within 1,000,000 characters, a namespace's name and a decomposition's templates as a save checks them; custom servers, settings, chats, runs, events, pages), and what fails is left out with a warning, so it reads as unset; the panel lists each Library row left out, to fix or delete. The page and the `history` tool read a run's record as untrusted too.
+- Everything read from the file is checked as the app could have written it (Library rows as the engine reads them, within 1,000,000 characters, no namespace whose name could pass for another (`misleading`; the save's stricter naming is left to saves, so older names stay), a decomposition's templates as a save checks them; custom servers, settings, chats, runs, events, pages), and what fails is left out with a warning, so it reads as unset; the panel lists each Library row left out, to fix or delete. The page and the `history` tool read a run's record as untrusted too.
 - Deleted rows are wiped (`secure_delete`) and the file's own triggers and views never run, so a copy carries nothing deleted.
 - The engine's templates render sandboxed in the app's processes, so a shared file's worked example, prompt or suffix reaches no Python internals.
 

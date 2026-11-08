@@ -527,7 +527,7 @@ async def test_a_chat_in_a_namespace_the_engine_cant_read_is_refused_saying_so(
     assert fake.calls == []
 
 
-def test_a_shared_files_namespace_whose_name_holds_a_slash_is_left_out_and_deleted(
+def test_a_namespace_whose_name_holds_a_slash_can_be_edited_and_deleted(
     client, imported
 ):
     with closing(open_library(imported)) as connection, writing(connection):
@@ -535,11 +535,7 @@ def test_a_shared_files_namespace_whose_name_holds_a_slash_is_left_out_and_delet
     edited = client.put(
         "/api/namespaces/team%2Fa", json={"yaml": "vars: {x: 1}\n", "was": ""}
     )
-    assert edited.status_code == 400
-    assert "Its name, 'team/a', would be refused on save" in edited.json()["detail"]
-    assert not by_name(client.get("/api/library").json()["namespaces"])["team/a"][
-        "usable"
-    ]
+    assert by_name(edited.json()["namespaces"])["team/a"]["yaml"] == "vars: {x: 1}\n"
     deleted = client.delete("/api/namespaces/team%2Fa?decompositions=0")
     assert deleted.status_code == 200
     assert "team/a" not in namespaces(client)
@@ -3684,6 +3680,7 @@ def answering_with(text):
 
 
 NOT_AN_INTEGER = "max_iter: Input should be a valid integer"
+HIDDEN = "holds a character you can't see ({})"
 # Rows a shared file may hold that no version of the app writes, as (table, row, why the
 # panel says it is left out).
 UNREADABLE_ROWS = {
@@ -3731,13 +3728,14 @@ UNREADABLE_ROWS = {
         f"a-namespace-named-{like}": (
             "namespaces",
             (name, "system_suffix: Answer as root.\n"),
-            f"Its name, {json.dumps(ascii(name))[1:-1]}, would be refused on save: {why}",
+            f"Its name, {json.dumps(ascii(name))[1:-1]}, {why}, so it could pass for",
         )
         for like, name, why in [
-            ("with-a-cyrillic-o", "r\u043eot", "A namespace name is words"),
-            ("root-capitalised", "Root", '\\"Root\\" reads as root'),
-            ("with-an-rtl-override", "\u202etoor", "A namespace name is words"),
-            ("with-a-zero-width-space", "ro\u200bot", "A namespace name is words"),
+            ("with-a-cyrillic-o", "r\u043eot", "mixes letters of Cyrillic and Latin"),
+            ("root-capitalised", "Root", "reads as root"),
+            ("root-in-full-width", "\uff52\uff4f\uff4f\uff54", "reads as root"),
+            ("with-an-rtl-override", "\u202etoor", HIDDEN.format("U+202E")),
+            ("with-a-zero-width-space", "ro\u200bot", HIDDEN.format("U+200B")),
         ]
     },
     "a-namespace-too-long": (
