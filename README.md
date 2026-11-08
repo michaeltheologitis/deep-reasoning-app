@@ -136,11 +136,12 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   that grants a tool of yours no namespace granted yet, if that tool doesn't build: it is built first, as an import
   builds one, which can take up to a minute, and the form says so while it builds. A
   template is checked, never run, so whether `vars.x` holds what it reads isn't. A stored decomposition that fails
-  the check, as a shared Library may hold, is marked ✗ with why. Runs render templates sandboxed, so a shared
-  Library's templates reach no Python internals: a worked example that tries fails the run, naming it, and a system prompt or
-  suffix that tries is shown to the model as written.
+  the check, as a shared Library may hold, is left out, so agents aren't shown it, and marked ✗ with why. Runs render
+  templates sandboxed, so a shared Library's templates reach no Python internals: a worked example that still tries
+  fails the run, naming it, and a system prompt or suffix that tries is shown to the model as written.
 - A shared Library file may hold a decomposition, namespace, tool or run setting the engine can't read (YAML that
-  doesn't parse or has the wrong shape, or over 1,000,000 characters). It is left out, so it reads as unset and the
+  doesn't parse or has the wrong shape, or over 1,000,000 characters), or a namespace named as no save names one,
+  such as `Root` or a look-alike of root, which only Delete mends. It is left out, so it reads as unset and the
   rest works. The panel marks it ✗ with why and can delete it; Edit fixes a decomposition short enough to show, or a
   namespace (one too long to show from a blank draft). Runs ignore a grant of a tool left out until it is fixed or
   deleted. A namespace under one left out is left out too, and chats can't pick either until it is fixed; root still
@@ -203,7 +204,10 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   namespace, anything over 1,000,000 characters), `max_iter` or `max_depth` below 1, a file whose aliases written out
   would pass 4,000,000 values and characters, and a tool a namespace grants that doesn't build: it builds each such
   tool once to check it, from its own file alone and with no key (each provider's key variable holds `not-a-key`),
-  so a file or module beside the config isn't carried in. An import into a new path that changes nothing, or fails,
+  so a file or module beside the config isn't carried in. It reads only files in the config's folder and below
+  (`_compose`, `namespaces_dir`, `factory_from`, after following links), refusing another by name; pass
+  `--within FOLDER` when a config composes files from a folder above it, as deep_reasoner's examples do. An import into
+  a new path that changes nothing, or fails,
   or is stopped with Ctrl+C, leaves no Library there. Import only configs you trust.
 - `uv run deep-reasoning reset` starts afresh: it deletes the Library file (`--library PATH` for another), with its
   chats and settings, and its run and scratch folders, after listing them and asking you to type `delete`
