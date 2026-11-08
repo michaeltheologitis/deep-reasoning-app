@@ -705,6 +705,23 @@ def test_reset_without_a_terminal_or_yes_deletes_nothing(app_home, monkeypatch):
     assert all(os.path.lexists(path) for path in doomed)
 
 
+@pytest.mark.parametrize("terminal", [True, False], ids=["answered no", "no terminal"])
+def test_a_reset_that_deletes_nothing_leaves_and_lists_no_side_file_of_its_own(
+    app_home, monkeypatch, capsys, terminal
+):
+    library = app_home / "library.sqlite"
+    app_file(app_home, library)
+    # In WAL mode, as the app leaves a Library it served: once closed, nothing beside it.
+    with closing(sqlite3.connect(library)) as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+    monkeypatch.setattr(sys, "stdin", Terminal("no\n") if terminal else io.StringIO())
+    with pytest.raises(SystemExit, match="(?i)nothing was deleted"):
+        cli.main(["reset"])
+    said = capsys.readouterr().out
+    assert re.findall(r"-wal|-shm|\.lock", said) == []
+    assert [path for path in side_files(library) if path.exists()] == []
+
+
 @pytest.mark.parametrize("before", [True, False], ids=["before reset", "after reset"])
 def test_reset_library_resets_that_file_alone_not_the_default_or_old_leftovers(
     app_home, tmp_path, before

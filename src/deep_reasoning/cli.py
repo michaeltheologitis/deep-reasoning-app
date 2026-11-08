@@ -218,8 +218,13 @@ def unchanged(error):
 def forget(library):
     """Delete the Library an import made at *library*, and its side files, as it wrote
     nothing to keep; the lock stays, as one starting may hold it."""
-    for path in [library, *(library.with_name(library.name + side) for side in SIDES)]:
+    for path in [library, *sides_of(library)]:
         path.unlink(missing_ok=True)
+
+
+def sides_of(library):
+    """SQLite's files beside *library*, there or not."""
+    return [library.with_name(library.name + side) for side in SIDES]
 
 
 def file_or_exit(library):
@@ -239,7 +244,10 @@ def file_or_exit(library):
 def chosen_in(library):
     """The folders the Library's chats and settings chose, read without writing the file;
     a LibraryError for a file that isn't a Library this version can open."""
-    with contextlib.closing(open_existing(library, "ro")) as connection:
+    # With no side file, it holds all it has itself: read so, it leaves none behind,
+    # where a reader of one in WAL mode leaves a -wal and -shm.
+    alone = not any(os.path.lexists(path) for path in sides_of(library))
+    with contextlib.closing(open_existing(library, "ro", alone)) as connection:
         version = schema_version(connection)
         if not LIBRARY_ONLY <= version <= SCHEMA_VERSION:
             raise LibraryError(
@@ -270,7 +278,7 @@ def reset_targets(library, home):
     for the default Library, as theirs."""
     targets = []
     if library.is_file():
-        targets += [(library.with_name(library.name + side), SIDE) for side in SIDES]
+        targets += [(path, SIDE) for path in sides_of(library)]
     targets += [(library, THE_LIBRARY), (data_folder(home, library), ITS_FOLDERS)]
     if library == home / LIBRARY_FILE:
         targets += [(home / name, OLD) for name in LEFTOVERS]
