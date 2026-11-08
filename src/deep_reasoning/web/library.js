@@ -450,7 +450,9 @@ function deleteQuestion(namespace) {
   const count = namespace.decompositions.length;
   const what = count ? ` and its ${count} decomposition${count === 1 ? "" : "s"}` : "";
   const fallback = namespace.name === library.default_namespace ? ` New chats will start in ${ROOT} instead.` : "";
-  return `Delete namespace ${namespace.name}${what}?${fallback}`;
+  const handed = namespace.handed_to;
+  const handing = handed ? ` ${handed} worked example${handed === 1 ? " hands" : "s hand"} questions to it, and without it agents say they can't answer those.` : "";
+  return `Delete namespace ${namespace.name}${what}?${fallback}${handing}`;
 }
 
 // It sends the count the confirm said, so the server deletes no more than that.
