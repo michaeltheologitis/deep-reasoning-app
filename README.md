@@ -119,6 +119,10 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   it as it is, so a new one starts in the namespace of the chat on screen, not root. The code isn't run, so an
   observation isn't checked against it. In its YAML editors Tab indents, Esc leaves the editor (a second closes
   the panel), and Ctrl+Enter or Cmd+Enter saves.
+- A namespace that sets a `spawn` list has its agents, and those of the namespaces under it that set none, told in
+  each run where they can hand work: nowhere for `spawn: []`, else only the namespaces it names that exist and those
+  under them, so they name one in each call. The line isn't stored; the panel shows it under the System suffix, as
+  added at run time, and marks a listed namespace that is gone.
 - Saving refuses what would make every run there fail: a decomposition holding `{{` or `{%` (which the engine reads
   as a Jinja template) whose template doesn't parse, names anything but what the engine fills in (`task`, `vars`,
   `funcs`, `coroutines` and the run settings' `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`),

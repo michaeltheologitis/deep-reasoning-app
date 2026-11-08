@@ -257,6 +257,20 @@ CANT_REACH = jinja2.Template(
     "{% else %}this namespace's spawn list leaves it out{% endif %}",
     undefined=jinja2.StrictUndefined,
 )
+# The system prompt's fan-out names no namespace, and runs where a spawn list may refuse it.
+SPAWN_LINE = jinja2.Template(
+    "Sub-agents run only in {{ allowed | join(', ') }} or namespaces under them;"
+    " subagent() without namespace= runs in your own namespace, which these may not"
+    " include, so name one on every call, fan-outs too: run_all({k:"
+    ' anext(subagent(namespace="{{ allowed[0] }}").send(t)) for k, t in {"a": "first'
+    ' task", "b": "second task"}.items()}){% if above %}. This replaces any line above'
+    " on sub-agents{% endif %}.",
+    undefined=jinja2.StrictUndefined,
+)
+NO_SUB_AGENTS = (
+    "Whatever is said above of sub-agents, agents here can't hand work to them: subagent"
+    " is refused, so answer without them."
+)
 # What a namespace that can't make a worked example's hand-off is shown in its place, by
 # kind: "here" when it is the target or under it, so it answers itself; "record" when only
 # the target reads the chat's record, so it can't; else it answers itself if it can.
@@ -1168,15 +1182,42 @@ def hand_off_targets(config):
 
 
 def unreachable(registry, namespace, target):
-    """Why *namespace*'s agents can't hand a question to namespace *target*, as the
-    engine's check_spawn decides; None when they can."""
+    """Why *namespace*'s agents can't hand a question to namespace *target*; None when
+    they can."""
     if target not in registry.names:
         return CANT_REACH.render(gone=True, target=target)
+    if not spawnable(registry, namespace, target):
+        return CANT_REACH.render(gone=False, target=target)
+    return None
+
+
+def spawnable(registry, namespace, target):
+    """Whether *namespace*'s agents may hand work to namespace *target*, as the engine's
+    check_spawn decides."""
     try:
         check_spawn(registry, namespace, target)
     except NamespaceSpawnError:
-        return CANT_REACH.render(gone=False, target=target)
-    return None
+        return False
+    return True
+
+
+def spawn_lines(registry):
+    """What the agents of each namespace that sets a spawn list, and of those under it
+    that set none, are told of where they can hand work, by that namespace."""
+    lines = {}
+    for name in registry.names:
+        resolved = registry.resolve(name)
+        if resolved.spawn is None or resolved.sources.spawn != name:
+            continue
+        allowed = [each for each in resolved.spawn if each in registry.names]
+        chain = registry.chain(name)
+        above = len(chain) > 1 and registry.resolve(chain[-2]).spawn is not None
+        lines[name] = (
+            SPAWN_LINE.render(allowed=allowed, above=above)
+            if allowed
+            else NO_SUB_AGENTS
+        )
+    return lines
 
 
 def hand_off_kind(registry, namespace, target):
@@ -1321,6 +1362,7 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
             name for name in registry.names if sees(registry, name, LIBRARY_TOOL)
         ]
         config = without_impossible_hand_offs(config, resolved, registry)
+        config = with_spawn_lines(config, registry)
     except ValueError as error:
         # The worker refuses such a Library itself, in its own words.
         log.warning("library.not_checked", error=str(error))
@@ -1328,6 +1370,16 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     if LIBRARY_TOOL in config["tools"]:
         config["tools"][LIBRARY_TOOL]["editors"] = editors
     return config | {"entry_namespace": namespace}
+
+
+def with_spawn_lines(config, registry):
+    """*config* with each of spawn_lines() after its namespace's own system_suffix, a
+    blank line between, for its run only: the Library holds none."""
+    for name, line in spawn_lines(registry).items():
+        fields = config["namespaces"][name]
+        own = (fields.get("system_suffix") or "").rstrip("\n")
+        fields["system_suffix"] = "\n\n".join(filter(None, [own, line]))
+    return config
 
 
 def default_namespace(library_path):
@@ -2336,8 +2388,9 @@ def backbone(resolved, run):
     return {"value": "chat", "source": "the run's default"}
 
 
-def namespace_fields(registry, name, run, targets):
-    """Each field of namespace *name* as the engine resolves it, with where it comes from."""
+def namespace_fields(registry, name, run, targets, lines):
+    """Each field of namespace *name* as the engine resolves it, with where it comes from;
+    *lines* as spawn_lines() gives them."""
     resolved = registry.resolve(name)
     sources = resolved.sources
     repl = repl_text(resolved.repl)
@@ -2348,9 +2401,11 @@ def namespace_fields(registry, name, run, targets):
     if resolved.spawn is None:
         spawn = {"value": "any namespace", "source": "not set"}
     else:
-        spawn = located(
-            ", ".join(resolved.spawn) or "nowhere: a leaf", sources.spawn, name
-        )
+        listed = [
+            each if each in registry.names else f"{each} (not a namespace now)"
+            for each in resolved.spawn
+        ]
+        spawn = located(", ".join(listed) or "nowhere: a leaf", sources.spawn, name)
     # Granted here when it lists the tool itself, though a level above grants it too.
     own_tools = registry.config(name).tools
     tools = [
@@ -2363,10 +2418,14 @@ def namespace_fields(registry, name, run, targets):
         located(f"{key} ({var_summary(value)})", sources.vars[key], name)
         for key, value in resolved.vars.items()
     ]
-    suffixes = [
-        located(registry.config(level).system_suffix.strip(), level, name)
-        for level in sources.system_suffix
-    ]
+    suffixes = []
+    for level in registry.chain(name):
+        if level in sources.system_suffix:
+            text = registry.config(level).system_suffix.strip()
+            suffixes.append(located(text, level, name))
+        if level in lines:
+            item = located(lines[level], level, name)
+            suffixes.append(item | {"source": f"added at run time, {item['source']}"})
     fields = [
         {"label": "REPL", "items": [repl_item]},
         {"label": "Backbone", "items": [backbone(resolved, run)]},
@@ -2614,12 +2673,13 @@ def namespace_rows(read, config, registry):
     handed = Counter(hand_offs_made(registry, targets))
     readable = set(registry.names)
     spawns = own_spawns(registry, left)
+    lines = spawn_lines(registry)
     return [
         {
             "name": name,
             "depth": len(chain_of(name)) - 1,
             "fields": (
-                namespace_fields(registry, name, config, targets)
+                namespace_fields(registry, name, config, targets, lines)
                 if name in readable
                 else []
             ),
