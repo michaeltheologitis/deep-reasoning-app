@@ -47,6 +47,7 @@ from deep_reasoning.app_tools import (
 )
 from deep_reasoning.library import (
     CHANGED_MEANWHILE,
+    FIELDS_MAPPING,
     HISTORIAN,
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
@@ -56,6 +57,9 @@ from deep_reasoning.library import (
     LIBRARY_DESCRIPTION,
     MAX_YAML_CHARS,
     TOO_LONG_ROW,
+    UNREAD_DECOMPOSITION,
+    UPSERT_DECOMPOSITION,
+    UPSERT_NAMESPACE,
     UPSERT_TOOL,
     YAML_NOT_TEXT,
     LibraryError,
@@ -791,10 +795,18 @@ def own_decompositions(tool, namespace):
     return [each for each in shown if each["from"] == namespace]
 
 
-def test_show_of_a_name_gives_that_namespace_whole_as_the_panel_shows_it(fresh):
+def test_show_of_a_name_gives_only_its_documented_fields(fresh):
     tool = library_tool(fresh)
     tool.write_decomposition("drafts", EXAMPLE)
     drafts = tool.show("drafts")
+    assert list(drafts) == [
+        "name",
+        "depth",
+        "yaml",
+        "fields",
+        "decompositions",
+        "decompositions_left_out",
+    ]
     assert (drafts["name"], drafts["depth"], drafts["yaml"]) == ("drafts", 1, "")
     assert own_decompositions(tool, "drafts") == [
         {
@@ -804,7 +816,11 @@ def test_show_of_a_name_gives_that_namespace_whole_as_the_panel_shows_it(fresh):
             "problems": ONLY_THE_TASK,
         }
     ]
+    assert drafts["decompositions_left_out"] == []
     assert {each["label"] for each in drafts["fields"]} >= {"Tools", "System suffix"}
+
+
+ROOTS = [{"name": name, "from": "root"} for where, name in FRESH if where == "root"]
 
 
 def test_show_of_a_name_lists_every_decomposition_its_agents_see_and_where_from(
@@ -813,32 +829,67 @@ def test_show_of_a_name_lists_every_decomposition_its_agents_see_and_where_from(
     tool = library_tool(fresh)
     tool.add_namespace("team", {"system_suffix": "Split the question."})
     tool.add_namespace("team.worker", {"system_suffix": "Compute your part."})
-    tool.write_decomposition("team", EXAMPLE.replace("count the", "plan the"))
     tool.write_decomposition("team", EXAMPLE)
-    # One of the same name lower down takes the place of the planner's, where it was.
+    tool.write_decomposition("team", EXAMPLE.replace("count the", "plan the"))
+    # The worker's own "count the tickets" takes the place of team's, where it was.
     tool.write_decomposition("team.worker", EXAMPLE)
-    roots = [{"name": name, "from": "root"} for where, name in FRESH if where == "root"]
     assert tool.show("team.worker")["decompositions"] == [
-        *roots,
-        {"name": "plan the tickets", "from": "team"},
+        *ROOTS,
         {
             "name": "count the tickets",
             "from": "team.worker",
             "yaml": EXAMPLE,
             "problems": ONLY_THE_TASK,
         },
+        {"name": "plan the tickets", "from": "team"},
     ]
 
 
-def test_show_of_a_name_says_nothing_of_the_panels_delete_button(fresh):
-    # The panel's Delete refuses a namespace another's spawn names: an agent that can't
-    # delete read that as a reason it couldn't edit it.
+def test_show_of_a_name_lists_its_own_decompositions_the_engine_cant_read_apart(fresh):
     tool = library_tool(fresh)
     tool.add_namespace("team", {"system_suffix": "Split the question."})
-    tool.add_namespace("team.editor", {"system_suffix": "Write the answer."})
-    tool.change_namespace("team", {"spawn": ["team.editor", HISTORIAN, LIBRARIAN]})
-    editor = tool.show("team.editor")
-    assert list(editor) == ["name", "depth", "yaml", "fields", "decompositions"]
+    tool.add_namespace("team.worker", {"system_suffix": "Compute your part."})
+    tool.write_decomposition("team", EXAMPLE)
+    # A shared file's rows: one at root, and one at the worker in place of team's.
+    with closing(open_library(fresh)) as connection, writing(connection):
+        connection.execute(UPSERT_DECOMPOSITION, ("root", "broken", "messages: ["))
+        unread = ("team.worker", "count the tickets", "messages: nope")
+        connection.execute(UPSERT_DECOMPOSITION, unread)
+    tool = library_tool(fresh)
+    worker = tool.show("team.worker")
+    assert worker["decompositions"] == [
+        *ROOTS,
+        {"name": "count the tickets", "from": "team"},
+    ]
+    [left_out] = worker["decompositions_left_out"]
+    assert (left_out["name"], left_out["yaml"]) == unread[1:]
+    assert left_out["problems"][0] == UNREAD_DECOMPOSITION
+    root = tool.show("root")
+    assert [each["name"] for each in root["decompositions_left_out"]] == ["broken"]
+    assert [each["name"] for each in root["decompositions"]] == [
+        each["name"] for each in ROOTS
+    ]
+
+
+def test_show_of_a_name_marks_the_hand_offs_its_agents_are_shown_rewritten(fresh):
+    tool = library_tool(fresh)
+    tool.add_namespace("team", {"spawn": []})
+    tool.add_namespace("team.worker", {"spawn": [HISTORIAN, LIBRARIAN]})
+    assert tool.show("team")["decompositions"] == [
+        each | {"rewritten": True} for each in ROOTS
+    ]
+    assert tool.show("team.worker")["decompositions"] == ROOTS
+
+
+def test_show_of_a_root_left_out_says_so_in_place_of_its_yaml(fresh):
+    with closing(open_library(fresh)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("root", "- not a mapping\n"))
+    root = library_tool(fresh).show("root")
+    assert root["yaml"] == left_out_note(FIELDS_MAPPING)
+    assert root["decompositions"] == []
+    assert [each["name"] for each in root["decompositions_left_out"]] == [
+        name for where, name in FRESH if where == "root"
+    ]
 
 
 def test_show_cuts_each_long_text_in_its_brief_list_but_not_for_one_namespace(fresh):
