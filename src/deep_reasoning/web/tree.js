@@ -12,6 +12,11 @@ const UNKNOWN_COST = "N/A";
 const COST_NA = `cost\u00a0${UNKNOWN_COST}`;
 const PRICE_UNKNOWN = "this model's price isn't known";
 const FINAL_ANSWER = "FinalAnswer: ";
+// marked's tokens that leave an answer plain: shown as written, raw HTML included
+const PLAIN_TOKENS = new Set(["paragraph", "space", "text", "escape", "br", "html"]);
+const WORD_CHAR = /\w/;
+const NEW_TAB_LINK = '<a target="_blank" rel="noopener noreferrer" ';
+const LINE_CHARS = 100;
 const TRACEBACK = /^(?:Traceback| {2}\+ Exception Group Traceback) \(most recent call last\):$/;
 // an exception group's lines hang off its frame, "  | "; the exception's own line is the first after the head not indented within it
 const GROUP_FRAME = /^ {2}\| /;
@@ -34,6 +39,8 @@ const keys = new WeakMap();
 const counter = new Intl.NumberFormat();
 let nextId = 1;
 let frame = 0;
+// made on first use, from the vendored marked a page loads before its modules
+let markdown = null;
 // Whether a Library change shows that it applies from the next message: the chat says, for its newest turn's; a page's never do.
 let appliesNext = () => false;
 
@@ -280,7 +287,7 @@ function renderChange(change, node = change, by = null) {
 
 // A page's link opens its tab; its id and title come from the run's record, so each shows as text.
 function pageLink(step, props, ...kids) {
-  return element("a", { href: `/pages/${encodeURIComponent(asText(step.page))}`, target: "_blank", rel: "noopener", ...props }, kids);
+  return element("a", { href: `/pages/${encodeURIComponent(asText(step.page))}`, target: "_blank", rel: "noopener noreferrer", ...props }, kids);
 }
 
 function renderPage(step) {
@@ -335,12 +342,59 @@ function renderAgent(agent) {
   return remember(agent, el, () => renderAgent(agent));
 }
 
-function renderAnswer(text) {
-  const el = element("div", { class: "answer" });
-  // answers are model output, and marked passes raw HTML through
-  if (window.marked && window.DOMPurify) el.innerHTML = window.DOMPurify.sanitize(window.marked.parse(text));
-  else Object.assign(el, { textContent: text, style: "white-space: pre-wrap" });
+const escapeHtml = (text) => text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
+const isPlain = (tokens) => tokens.every((token) => PLAIN_TOKENS.has(token.type) && isPlain(token.tokens ?? []));
+
+// Markdown as answers show it: raw HTML shows as text; underscores never emphasise, nor asterisks touching a letter or digit
+// outside them, as in code (__init__, 2*3*4); an image is a link to it, never fetched; and each link opens in a new tab.
+function newMarkdown({ Marked, Renderer, Tokenizer }) {
+  return new Marked({
+    breaks: true,
+    tokenizer: {
+      emStrong(src, masked, before = "") {
+        const token = Tokenizer.prototype.emStrong.call(this, src, masked, before);
+        if (!token) return token;
+        const after = src[token.raw.length] ?? "";
+        // undefined, as false would fall back to marked's own
+        return token.raw.startsWith("_") || WORD_CHAR.test(before) || WORD_CHAR.test(after) ? undefined : token;
+      },
+    },
+    renderer: {
+      html: (html, block) => (block ? `<pre><code>${escapeHtml(html)}</code></pre>` : escapeHtml(html)),
+      image(href, title, alt) {
+        return this.link(href, title, alt || escapeHtml(href));
+      },
+      link(href, title, text) {
+        return Renderer.prototype.link.call(this, href, title, text).replace(/^<a /, NEW_TAB_LINK);
+      },
+    },
+  });
+}
+
+// An answer's HTML, or null when marked finds no Markdown in it, so it shows exactly as written.
+function markdownHtml(text) {
+  markdown ??= newMarkdown(globalThis.marked);
+  const tokens = markdown.lexer(text);
+  return isPlain(tokens) ? null : markdown.parser(tokens);
+}
+
+// Answers and a page's text are model output: shown as Markdown when they hold some, else as plain text.
+function renderAnswer(text, clamp = "") {
+  const html = markdownHtml(text);
+  if (html == null) return element("div", { class: `answer plain ${clamp}` }, text);
+  const el = element("div", { class: `answer ${clamp}` });
+  el.innerHTML = globalThis.DOMPurify.sanitize(html, { ADD_ATTR: ["target"] });
   return el;
+}
+
+// A text past longLines (about a wide screen's) shows its first lines until shown whole: set holds the nodes shown whole,
+// and name tells a node's toggles apart. draw makes the text's element with the class it is given.
+function clamped(node, set, name, text, longLines, draw) {
+  const lines = text.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / LINE_CHARS)), 0);
+  if (lines <= longLines) return draw("");
+  const whole = set.has(node);
+  const label = whole ? "show less" : `show all · ${plural(lines, "line")}`;
+  return [draw(whole ? "" : "clamped"), toggler(node, { class: "show-all" }, label, set, `${keyOf(node)}:${name}`)];
 }
 
 const whenChangesApply = (test) => {
@@ -370,6 +424,7 @@ export {
   PRICE_UNKNOWN,
   UNKNOWN_COST,
   caret,
+  clamped,
   clock,
   costView,
   element,
@@ -377,6 +432,7 @@ export {
   formatSeconds,
   join,
   known,
+  markdownHtml,
   opened,
   out,
   pageLink,

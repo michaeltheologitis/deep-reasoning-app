@@ -1,7 +1,11 @@
-// The tree's renderers on drives a crafted page may hold. Node has no DOM, so the document is faked at its boundary.
+// The tree's renderers on drives a crafted page may hold, and answers as they show. Node has no DOM, so the document is faked
+// at its boundary; marked is the vendored copy the page loads.
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import test from "node:test";
-import { known, opened, renderAgent, renderStep } from "../src/deep_reasoning/web/tree.js";
+import { clamped, known, markdownHtml, opened, renderAgent, renderAnswer, renderStep } from "../src/deep_reasoning/web/tree.js";
+
+globalThis.marked = createRequire(import.meta.url)("../src/deep_reasoning/web/vendor/marked.min.js");
 
 class FakeElement {
   constructor(tag) {
@@ -104,4 +108,78 @@ test("a cell closed failed as its agent ended, with no output, draws no empty er
   const el = openDrawn(delegation(closed));
   assert.match(metaOf(el), /^cell failed · 4 done/);
   assert.deepEqual(parts(el), ["node", "rows"]);
+});
+
+// Answers seen mangled when every answer went through Markdown, and others that hold no Markdown.
+const PLAIN_ANSWERS = [
+  "List<String>",
+  "The constructor is __init__.",
+  "f(*args, **kwargs); 2*3*4",
+  "Edit json/__init__.py",
+  "<!doctype html><html><body><h1>Hi</h1><img src=\"http://example.com/x.png\"></body></html>",
+  "x**2 + y**2, regex \\d+\\.\\d+, C:\\Users\\_temp and &lt;",
+  "two\nlines\n\nthen a paragraph",
+];
+const MARKDOWN_ANSWERS = [
+  ["a list", "- first\n- second", /<ul>\n<li>first<\/li>\n<li>second<\/li>\n<\/ul>/],
+  ["a table", "| room | seats |\n|---|---:|\n| A | 12 |", /<table>[\s\S]*<th>room<\/th>[\s\S]*<td align="right">12<\/td>/],
+  ["a code block", "```python\nprint(1 < 2)\n```", /<pre><code class="language-python">print\(1 &lt; 2\)\n<\/code><\/pre>/],
+  ["bold text", "The answer is **42**.", /<p>The answer is <strong>42<\/strong>\.<\/p>/],
+];
+const anchors = (html) => html.match(/<a [^>]*>/g) ?? [];
+
+for (const text of PLAIN_ANSWERS) {
+  test(`an answer with no Markdown shows exactly as written: ${JSON.stringify(text)}`, () => {
+    assert.equal(markdownHtml(text), null);
+    const el = renderAnswer(text);
+    assert.equal(el.textContent, text);
+    assert.match(el.className, /\bplain\b/);
+  });
+}
+
+for (const [name, text, html] of MARKDOWN_ANSWERS) {
+  test(`an answer with ${name} shows as Markdown`, () => {
+    assert.match(markdownHtml(text), html);
+  });
+}
+
+test("in a Markdown answer, code-like text and raw HTML show as written", () => {
+  const html = markdownHtml("- __init__, json/__init__.py and 2*3*4\n- List<String>\n\n<div onclick=\"x()\">hi</div>");
+  assert.match(html, /__init__, json\/__init__\.py and 2\*3\*4/);
+  assert.match(html, /List&#60;String&#62;/);
+  assert.match(html, /&#60;div onclick=&#34;x\(\)&#34;&#62;hi&#60;\/div&#62;/);
+  assert.doesNotMatch(html, /<(strong|em|div)\b/);
+});
+
+test("an image in an answer is a link to it, never fetched", () => {
+  const html = markdownHtml("A ![chart](http://127.0.0.1:9/leak?q=secret) and ![](http://127.0.0.1:9/plain.png).");
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /<a [^>]*href="http:\/\/127\.0\.0\.1:9\/leak\?q=secret">chart<\/a>/);
+  assert.match(html, /<a [^>]*href="http:\/\/127\.0\.0\.1:9\/plain\.png">http:\/\/127\.0\.0\.1:9\/plain\.png<\/a>/);
+});
+
+test("every link in an answer opens in a new tab, with no opener or referrer", () => {
+  const links = anchors(markdownHtml("[a](https://a.example), https://b.example, <https://c.example> and ![d](https://d.example/d.png)"));
+  assert.equal(links.length, 4);
+  for (const link of links) assert.match(link, /^<a target="_blank" rel="noopener noreferrer" href=/);
+});
+
+test("a long text shows its first lines with a toggle to show it all, and all of it once shown whole", () => {
+  const turn = {};
+  const whole = new WeakSet();
+  const draw = (clamp) => ({ className: clamp });
+  const text = "line\n".repeat(30);
+  const [shown, toggle] = clamped(turn, whole, "prompt", text, 12, draw);
+  assert.equal(shown.className, "clamped");
+  assert.equal(toggle.textContent, "show all · 31 lines");
+  whole.add(turn);
+  const [all, back] = clamped(turn, whole, "prompt", text, 12, draw);
+  assert.equal(all.className, "");
+  assert.equal(back.textContent, "show less");
+  assert.equal(clamped({}, whole, "prompt", "short", 12, draw).className, "");
+});
+
+test("one very long line counts as the lines it wraps to", () => {
+  const [, toggle] = clamped({}, new WeakSet(), "answer", "x".repeat(100000), 200, () => ({}));
+  assert.equal(toggle.textContent, "show all · 1,000 lines");
 });

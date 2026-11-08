@@ -369,7 +369,6 @@ const FIELD_FITS = {
 };
 
 function readYaml(text) {
-  if (!window.jsyaml) return { problem: "The YAML reader (js-yaml, from cdnjs) didn't load; check the connection and reload." };
   try {
     return { value: jsyaml.load(text) };
   } catch (error) {

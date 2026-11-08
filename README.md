@@ -24,6 +24,10 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   after a restart. Deleting a chat wipes its messages from the file.
 - Each message is a run, shown live as a tree of sub-agents you open level by level. Esc stops it.
 - Each run shows its time, sub-agent count, cost (N/A when the model's price isn't known) and model.
+- An answer that holds Markdown (headings, lists, tables, code, links, bold) shows as Markdown; any other shows
+  exactly as written, so `List<String>`, `__init__` or `2*3*4` stay as they are. Raw HTML always shows as text, an
+  image as a link to it (never loaded), and every link opens in a new tab. A run that ran out of turns says so in
+  place of an answer, and a long prompt or answer shows its first lines with a **show all** toggle.
 - Follow-ups see the chat's earlier messages and answers as the conversation's own turns, and can ask how one was
   worked out, what its sub-agents did or what went wrong. A new Library has a `historian` namespace, which reads the
   chat's earlier runs (each message's sub-agents, thoughts and cells) with the app's own `history` tool, and root
@@ -52,7 +56,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   there is nothing to show, so asking to be shown how an answer was reached goes there too.
 - Each chat has its own model, namespace and working folder, picked under the message box; a change applies from
   the next message.
-- Light and dark themes; works at phone width.
+- Light and dark themes; works at phone width, and with no internet: the page loads nothing but the app.
 
 **Models and keys**, in **settings** (bottom left)
 - Vendors and their key variables: OpenAI `OPENAI_API_KEY`, OpenRouter `OPENROUTER_API_KEY`, Anthropic
