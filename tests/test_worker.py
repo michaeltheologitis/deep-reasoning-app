@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import os
 
 import pytest
 from deep_reasoner.tools import ToolBuildError
@@ -291,6 +292,18 @@ def test_the_roots_start_is_reported():
     recorder(None, "debug", agent_start(ROOT, None))
     recorder(None, "debug", agent_start(CHILD, ROOT))
     assert started == [True]
+
+
+def test_a_stop_already_sent_is_taken_at_once_without_waiting_for_more():
+    """As the root starts, the run takes a stop the stdin thread hasn't read yet."""
+    read, write = os.pipe()
+    os.write(write, b"stop\n")
+    stops = []
+    for _ in range(2):
+        worker.take_commands(read, lambda: stops.append("stop"))
+    os.close(read)
+    os.close(write)
+    assert stops == ["stop"]
 
 
 @pytest.mark.parametrize(

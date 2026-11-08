@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import re
+import select
 import signal
 import sys
 import threading
@@ -51,6 +52,9 @@ from deep_reasoning.runs import (
 log = structlog.get_logger()
 
 CLOSE_RUN_WATCHDOG_S = 2.0
+STDIN_READ_SIZE = 4096
+# Held while the server's commands are read: by the stdin thread, or as the root starts.
+TAKING_COMMANDS = threading.Lock()
 REPL_BLOCK = re.compile(r"<repl>.*?(?:</repl>|$)", re.DOTALL)
 THINK_TAG = re.compile(r"</?think>")
 OBSERVATION = re.compile(r"\A<observation>\n?(.*?)\n?</observation>\Z", re.DOTALL)
@@ -386,13 +390,24 @@ def end_group() -> NoReturn:
     os.killpg(0, signal.SIGKILL)
 
 
-def read_commands(stop: Callable[[], None]) -> None:
-    """Stdin, on its own thread. At EOF the server is gone, so nothing would read the
+def read_commands(stdin: int, stop: Callable[[], None]) -> NoReturn:
+    """The server's commands on *stdin*, on a thread of their own, as they come."""
+    while True:
+        select.select([stdin], [], [])
+        take_commands(stdin, stop)
+
+
+def take_commands(stdin: int, stop: Callable[[], None]) -> None:
+    """Act on each command the server has sent on *stdin*, of which there is one, `stop`,
+    without waiting for more. At EOF the server is gone, so nothing would read the
     events: the worker ends its whole process group."""
-    for line in sys.stdin:
-        if line.strip() == "stop":
-            stop()
-    end_group()
+    with TAKING_COMMANDS:
+        while select.select([stdin], [], [], 0)[0]:
+            sent = os.read(stdin, STDIN_READ_SIZE)
+            if not sent:
+                end_group()
+            if b"stop" in sent.split():
+                stop()
 
 
 def exit_after(seconds: float) -> None:
@@ -430,6 +445,7 @@ def counting_calls(recorder: Recorder) -> None:
 async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     stop_asked = threading.Event()
     reasoner = None
+    stdin = sys.stdin.fileno()
 
     def stop() -> None:
         stop_asked.set()
@@ -438,7 +454,9 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
 
     def stop_if_asked() -> None:
         # A stop does nothing before the root's first drive, so one asked earlier is
-        # repeated here, when the root's drive has begun.
+        # repeated here, when the root's drive has begun; one the stdin thread hasn't
+        # read yet is read here, before the root's first call.
+        take_commands(stdin, stop)
         if stop_asked.is_set():
             reasoner.stop()
 
@@ -446,7 +464,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     recorder = Recorder(out, on_root_start=stop_if_asked, base_url=base_url)
     configure_structlog_fixture(console=False, extra_processors=[recorder])
     counting_calls(recorder)
-    threading.Thread(target=read_commands, args=(stop,), daemon=True).start()
+    threading.Thread(target=read_commands, args=(stdin, stop), daemon=True).start()
     # A tool that doesn't build while the run builds the config's tools, at its start,
     # stops every run; one that doesn't later is that run's own failure.
     starting = True
