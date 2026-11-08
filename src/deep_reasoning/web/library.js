@@ -765,7 +765,16 @@ function noteMark(notes) {
   return notes.length > 0 && element("span", { class: "lib-check lib-detail" }, label);
 }
 
-const noteList = (notes) => notes.length > 0 && element("div", { class: "lib-notes" }, notes.map((text) => element("p", {}, text)));
+const noteList = (notes) => notes.length > 0 && element("div", { class: "lib-call-notes" }, notes.map((text) => element("p", {}, text)));
+
+// what a namespace agents still run in may need looking at, as a shared file's false run line: ◆ in the warn colour, as a run's Left out line, not a ✗
+function warningMark(warnings) {
+  const count = warnings.length;
+  const label = `${count} warning${count === 1 ? "" : "s"}`;
+  return count > 0 && element("span", { class: "lib-check warned", role: "img", "aria-label": label, title: label }, "◆");
+}
+
+const warningList = (warnings) => warnings.length > 0 && element("div", { class: "lib-notes" }, warnings.map((text) => element("p", {}, text)));
 
 function decompositionRow(namespace, decomposition) {
   const { name, yaml, problems, notes } = decomposition;
@@ -826,8 +835,8 @@ function renderNamespaces() {
   const tree = library.namespaces.map((namespace) => {
     const star = namespace.name === library.default_namespace && element("span", { class: "lib-star" }, "★ new chats start here");
     const name = element("span", { class: "lib-name ns-name", title: namespace.name }, nameParts(namespace.name));
-    const head = [name, star, namespace.problems.length > 0 && checkMark(namespace.problems)];
-    const content = () => [problemList(namespace.problems), namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
+    const head = [name, star, namespace.problems.length > 0 ? checkMark(namespace.problems) : warningMark(namespace.warnings)];
+    const content = () => [problemList(namespace.problems), warningList(namespace.warnings), namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
     return element("div", { style: `--depth: ${namespace.depth}` }, disclosure(namespaceKey(namespace.name), head, content));
   });
   const run = disclosure("run-settings", element("span", { class: "lib-name" }, "Run settings"), runSettings);

@@ -235,7 +235,8 @@ async def test_a_run_works_in_its_folder_and_keeps_its_own_files_in_the_run_fold
     assert [path.name for path in folder.iterdir()] == ["note.txt"]
     assert (folder / "note.txt").read_text() == "written in the folder"
     run_folder = {path.name for path in (home / "runs" / run).iterdir()}
-    assert {"spec.yaml", "worker.log"} <= run_folder
+    # The spec, which holds the whole Library and the chat so far, goes once the run ends.
+    assert "worker.log" in run_folder and "spec.yaml" not in run_folder
     assert saved(library, run) == events
 
 

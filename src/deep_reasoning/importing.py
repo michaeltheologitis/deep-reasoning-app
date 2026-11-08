@@ -19,7 +19,6 @@ from pydantic import ValidationError
 from deep_reasoning.app_tools import claude_code_tools
 from deep_reasoning.library import (
     APP_TOOLS,
-    BUILDERS,
     CLAUDE_CODE,
     CONTENT,
     ENTRY_NAMESPACE,
@@ -40,10 +39,14 @@ from deep_reasoning.library import (
     check_name,
     check_size,
     check_tool_block,
+    check_tool_name,
     check_written,
+    claim_refusal,
     config_of,
     decomposition_problems,
     dump,
+    expanded_shape,
+    false_claims,
     granted,
     granted_in,
     handed_to,
@@ -57,12 +60,10 @@ from deep_reasoning.library import (
     run_config_and_registry,
     running_code,
     shown,
-    taken,
     template_names,
     template_problems,
     texts_in,
     tool_file,
-    tool_name_problem,
     unreachable,
     writing,
 )
@@ -147,18 +148,8 @@ def tool_row(name, block, config_dir, folder):
         raise LibraryError(
             f'Tool "{name}" has the name of one of the app\'s own tools; rename yours.'
         )
-    factory = block.get("factory", name)
     factory_from = block.get("factory_from")
-    the_builtin = factory_from is None and factory == name and name in BUILDERS
-    if taken(name) and not the_builtin:
-        raise LibraryError(
-            f'Tool "{name}" has a name a built-in, the app or the REPL uses (such as llm,'
-            " history or subagent), or a Python keyword, so it would take that one's"
-            " place in every namespace. Rename it in the config; a block may use a"
-            " built-in's name only to give that built-in its settings."
-        )
-    if problem := tool_name_problem(name):
-        raise LibraryError(problem)
+    check_tool_name(name, block)
     check_tool_block(name, block)
     if runs_on_the_chats_model(name, block):
         # The config's model or preset may not exist where the chat runs.
@@ -318,22 +309,6 @@ def about(where):
         raise LibraryError(f"{where}: {error}") from error
 
 
-def expanded_size(data, cap):
-    """How big *data* is with each alias written out in full, as values plus their
-    text's characters, as the engine expands them; the walk stops past *cap*."""
-    size, stack = 0, [data]
-    while stack and size <= cap:
-        value = stack.pop()
-        size += 1
-        if isinstance(value, str | bytes):
-            size += len(value)
-        elif isinstance(value, dict):
-            stack += [*value, *value.values()]
-        elif isinstance(value, list):
-            stack += value
-    return size
-
-
 def reading_folder(path, within=None):
     """The folder an import of the config at *path* reads in, as its real path: the
     config's own, or *within*, a folder holding it; a LibraryError for one that isn't."""
@@ -387,11 +362,11 @@ def namespace_files(config, folder):
 
 def check_expanded(path, files, size=0):
     """How big the config at *path* is, *size* so far, with *files*, the data of more of
-    the files it reads, as expanded_size() measures them; raise past MAX_EXPANDED, before
+    the files it reads, as expanded_shape() measures them; raise past MAX_EXPANDED, before
     the engine writes the aliases out. Those conflit composes into it are measured first,
     then those in its namespaces_dir."""
     for data in files:
-        size += expanded_size(data, MAX_EXPANDED - size)
+        size += expanded_shape(data)[0]
         if size > MAX_EXPANDED:
             raise LibraryError(
                 f"{path} is too big to import: with each alias written out, as the engine"
@@ -448,10 +423,11 @@ def check_decompositions(namespaces):
 
 def namespace_named(name):
     """Namespace *name*, as a refusal names it: quoted when it isn't a plain name, with
-    each character that doesn't show escaped."""
+    each character that isn't printable ASCII escaped, as a look-alike's would pass for
+    another's."""
     if NAMESPACE_NAME.fullmatch(name):
         return f"Namespace {name}"
-    return f'Namespace "{visible(name)}"'
+    return f'Namespace "{ascii(name)[1:-1]}"'
 
 
 def check_new_names(before, changes):
@@ -470,6 +446,19 @@ def check_namespaces(connection, before, changes):
         with about(namespace_named(name)):
             check_size(dump(own), "Its YAML")
             check_written(connection, name, held is None, (held or {}).get("vars", {}))
+
+
+def check_claims(changes, registry):
+    """Raise unless each decomposition the import writes makes no claim in the shape of a
+    run's line that isn't so in its namespace, as *registry* resolves it."""
+    for (namespace, name), each in changes["decompositions"].items():
+        if namespace in registry.names and (
+            claims := false_claims(registry, namespace, texts_in(each))
+        ):
+            refusal = claim_refusal("It", claims[0])
+            raise LibraryError(
+                f'Namespace {namespace}, decomposition "{name}": {refusal}'
+            )
 
 
 def check_renders(changes, decompositions, names, stored):
@@ -658,6 +647,7 @@ def import_config(connection, path, secrets=(), environment=None, within=None):
         store_changes(connection, changes)
         later = accepted(connection)
         check_namespaces(connection, before, changes)
+        check_claims(changes, later[1])
         names = template_names(later[0].prompt_template_variables)
         check_renders(changes, decompositions, names, read["decompositions"])
         built = to_build(before, imported, changes)

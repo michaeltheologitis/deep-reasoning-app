@@ -28,6 +28,7 @@ and changes() reads this chat's back, so the agent can write a before back.
 
 import copy
 import json
+import math
 import os
 import re
 import sqlite3
@@ -49,16 +50,18 @@ import structlog
 import yaml
 from deep_reasoner.namespaces import ROOT, NamespaceConfig, NamespaceRegistry
 from deep_reasoner.primitives import Func
-from deep_reasoner.v2.cli import V2Config, build_namespace_registry
+from deep_reasoner.v2.cli import V2Config
 
 from deep_reasoning import tool_check
 from deep_reasoning.library import (
     APP_TOOLS,
+    APP_TOOLS_MODULE,
     CLAUDE_CODE,
     HISTORY_DESCRIPTION,
     LIBRARY_DESCRIPTION,
     LIBRARY_TOOL,
     LOCAL_REPL,
+    MAX_YAML_CHARS,
     PAGE_DESCRIPTION,
     TAKEN_NAMES,
     LibraryError,
@@ -73,6 +76,7 @@ from deep_reasoning.library import (
     count,
     distrust,
     dump,
+    expanded_shape,
     fields_of,
     in_chain_order,
     left_out_note,
@@ -82,11 +86,9 @@ from deep_reasoning.library import (
     parsed,
     parsed_python,
     read_library,
-    read_namespaces,
     reading,
     refuse_keys,
     run_config_and_registry,
-    run_line_parts,
     running_code,
     same_grants,
     sees,
@@ -126,7 +128,9 @@ from deep_reasoning.runs import (
 )
 from deep_reasoning.tool_check import STOPS_EVERY_CHAT, refuse_unbuilt
 
-log = structlog.get_logger()
+# Named as the module, though the engine loads it by its path under a name of its own:
+# the worker keeps the app's logs, not the agent's, out of cells' output.
+log = structlog.get_logger(APP_TOOLS_MODULE)
 
 Event = dict[str, Any]
 Holder = dict[str, Any]
@@ -156,11 +160,12 @@ NOT_THIS_CHAT = jinja2.Template(
 NOT_TEXT = (
     "The namespace's name should be text, and the YAML text or a dict of plain values."
 )
-# Where a brief list, or history, cut a text short.
-CUT_MARK = re.compile(r"…\(\+[\d,]+ chars\)")
+# Where a brief list, or history, cut a text, list or dict short.
+CUT_MARK = re.compile(r"…\(\+[\d,]+ (?:chars|more items)\)")
 CUT_SHORT = (
-    "What you wrote holds “…(+N chars)”, where a brief list cut a text short: write the"
-    " whole text, from show(name), tools(name) or changes()."
+    "What you wrote holds “…(+N chars)” or “…(+N more items)”, where a text or list was"
+    " cut short: write the whole of it, from show(name, whole=True), tools(name) or"
+    " changes()."
 )
 # An example's cell tags, each on a line of its own, which a cell writes as placeholders,
 # as a reply's last real <repl> is the one that runs.
@@ -218,8 +223,7 @@ TWO_FORMS = (
 )
 NOT_A_TOOL = (
     "name, source and factory should be text, and settings a dict of plain values (text,"
-    " numbers, True, False, None, and lists and dicts of them keyed by text, each one"
-    " used once), or None."
+    " numbers, True, False, None, and lists and dicts of them keyed by text), or None."
 )
 PLAIN = (str, int, float, bool, type(None))
 # Deeper settings are refused, as YAML writes them by recursion.
@@ -254,12 +258,6 @@ READ_ONLY_HERE = jinja2.Template(
     " its instructions, Decompositions for its examples.",
     undefined=jinja2.StrictUndefined,
 )
-# show(name) lists the lines a run adds after a suffix, which the librarian may copy.
-RUN_TIME_LINE = jinja2.Template(
-    "system_suffix holds “{{ line }}”, which the app adds at run time: leave it out, or"
-    " its agents read it twice.",
-    undefined=jinja2.StrictUndefined,
-)
 NOT_LOCAL = (
     "Writing a tool, or granting a custom tool, works only in a chat whose namespace runs"
     " the local REPL: building the tool to check it runs its code outside any sandbox."
@@ -291,10 +289,18 @@ MAX_VALUE_CHARS = 2_000
 # And library.show() and tools() each text in their brief lists past this: a Library may
 # hold hundreds of namespaces and examples, and show(name) or tools(name) gives one whole.
 BRIEF_CHARS = 200
+# And show(name) each text past this, unless asked for it whole: a namespace's own YAML
+# and worked examples fit, and a shared file's may hold a million characters each.
+SHOWN_CHARS = 20_000
 # And each list or dict nested deeper than this: no run of the app's nests one past a
 # few levels, and a file from someone else may nest one thousands deep.
 MAX_VALUE_DEPTH = 20
 NESTED_TOO_DEEP = "…(nested too deep)"
+# And all a value holds past this many characters: no run of the app's returns one near
+# it, and a shared file's aliases can make millions of short texts.
+MAX_TOTAL_CHARS = 1_000_000
+# What is said in a list, or as a key of a dict, of the items left out past it.
+MORE = "…(+{:,} more items)"
 # errors and find list at most this many rows, then one saying how many more.
 MAX_FOUND = 50
 # What find shows on each side of a match.
@@ -512,18 +518,55 @@ def agent_row(row: Holder) -> dict[str, Any]:
     }
 
 
-def cut(value: Any, depth: int = 0, limit: int = MAX_VALUE_CHARS) -> Any:
-    """*value*, copied, with each text past *limit* characters cut there, saying how much
-    is left out, and each list or dict past MAX_VALUE_DEPTH levels marked in its place."""
-    if isinstance(value, str) and len(value) > limit:
-        return f"{value[:limit]}…(+{len(value) - limit:,} chars)"
-    if not isinstance(value, dict | list):
-        return value
-    if depth == MAX_VALUE_DEPTH:
-        return NESTED_TOO_DEEP
-    if isinstance(value, dict):
-        return {name: cut(each, depth + 1, limit) for name, each in value.items()}
-    return [cut(each, depth + 1, limit) for each in value]
+def cut(
+    value: Any,
+    limit: int | None = MAX_VALUE_CHARS,
+    total: float = MAX_TOTAL_CHARS,
+) -> Any:
+    """*value*, copied, with each text past *limit* characters (unless None) cut there,
+    saying how much is left out, each list or dict past MAX_VALUE_DEPTH levels marked in
+    its place, and, once *total* characters are copied, the rest of each list or dict
+    left out, saying how much: aliases in a shared file's YAML can make millions of
+    short texts."""
+    left = total
+
+    def copied(each: Any, depth: int) -> Any:
+        nonlocal left
+        left -= 1
+        if isinstance(each, str):
+            text = (
+                each if limit is None or len(each) <= limit else cut_text(each, limit)
+            )
+            left -= len(text)
+            return text
+        if not isinstance(each, dict | list):
+            return each
+        if depth == MAX_VALUE_DEPTH:
+            return NESTED_TOO_DEEP
+        items = list(each.items() if isinstance(each, dict) else enumerate(each))
+        kept = []
+        for key, item in items:
+            if left <= 0:
+                break
+            left -= len(key) if isinstance(key, str) else 0
+            kept.append((key, copied(item, depth + 1)))
+        more = len(items) - len(kept)
+        if isinstance(each, list):
+            return [item for _, item in kept] + ([MORE.format(more)] if more else [])
+        copy = dict(kept)
+        if more:
+            # Keyed by the mark itself, lengthened past any key the dict holds.
+            mark = MORE.format(more)
+            while mark in copy:
+                mark = f"…{mark}"
+            copy[mark] = None
+        return copy
+
+    return copied(value, 0)
+
+
+def cut_text(text: str, limit: int) -> str:
+    return f"{text[:limit]}…(+{len(text) - limit:,} chars)"
 
 
 def error_of(output: Any) -> str | None:
@@ -1065,6 +1108,27 @@ def tag_written(line: str) -> str:
     return line.replace(tag, REAL_TAGS[tag]) if tag in REAL_TAGS else line
 
 
+def written_out(value: Any, what: str) -> str:
+    """*value*, plain (plain()), as YAML text, each list or dict it shares written out
+    where it is; a LibraryError, saying *what* it is, for one that holds itself, nests
+    past MAX_NESTING lists and dicts, or is too long written out."""
+    size, depth = expanded_shape(value)
+    if depth == math.inf:
+        raise LibraryError(
+            f"{what} holds itself, so it never ends: give each list or dict once."
+        )
+    if depth > MAX_NESTING:
+        raise LibraryError(
+            f"{what} nests more than {MAX_NESTING} lists and dicts deep."
+        )
+    if size > MAX_YAML_CHARS:
+        raise LibraryError(
+            f"{what} may be at most {MAX_YAML_CHARS:,} characters; written out, this"
+            " holds more."
+        )
+    return dump(value)
+
+
 def from_turns(name: Any, turns: Any) -> str:
     """The worked example *name* written as YAML from its *turns*, as write_decomposition
     takes them, each as the engine's message, the tags written in."""
@@ -1096,7 +1160,7 @@ def yaml_text(value: Any) -> str:
     """*value*, YAML text or a dict of plain values, as YAML text, from its first line
     that isn't blank."""
     if type(value) is dict and plain(value):
-        return dump(value)
+        return written_out(value, "The YAML")
     # Exactly str: a subclass could compare unequal to "root" and still name it.
     if type(value) is not str:
         raise LibraryError(NOT_TEXT)
@@ -1140,20 +1204,19 @@ def code_problems(text: str) -> list[str]:
 
 def plain(value: Any) -> bool:
     """Whether *value* is text, a number, True, False or None, or a list or dict of them
-    keyed by text, nested at most MAX_NESTING deep, each list and dict in it once (so
-    none holds itself)."""
-    stack, seen = [(value, 0)], set()
+    keyed by text; one it shares is read once, as written_out() measures how deep it
+    nests and whether it holds itself."""
+    stack, seen = [value], set()
     while stack:
-        each, depth = stack.pop()
-        if type(each) in PLAIN:
+        each = stack.pop()
+        if type(each) in PLAIN or id(each) in seen:
             continue
-        if type(each) not in (list, dict) or id(each) in seen or depth == MAX_NESTING:
+        if type(each) not in (list, dict):
             return False
         seen.add(id(each))
         if type(each) is dict and any(type(key) is not str for key in each):
             return False
-        items = each.values() if type(each) is dict else each
-        stack.extend((item, depth + 1) for item in items)
+        stack.extend(each.values() if type(each) is dict else each)
     return True
 
 
@@ -1228,7 +1291,7 @@ def check_tool(
         raise LibraryError(problem)
     check_tool_block(name, {"factory": factory, "factory_from": tool_file(name)})
     check_size(source, "The source")
-    check_size(dump(settings), "The settings as YAML")
+    check_size(written_out(settings, "The settings as YAML"), "The settings as YAML")
     check_whole([source, *texts_in(settings)])
     # texts holds the source itself.
     check_no_key(
@@ -1308,48 +1371,20 @@ def locked(key: str, name: str, adding: bool) -> LibraryError:
     )
 
 
-def row_fields(connection: sqlite3.Connection, name: str) -> dict[str, Any]:
-    """The fields namespace *name*'s row sets, whether or not the engine reads it."""
-    return fields_of(read_namespaces(connection)[2].get(name) or "")
+def row_fields(read: dict[str, Any], name: str) -> dict[str, Any]:
+    """The fields namespace *name*'s row in the Library *read* (read_library()) sets,
+    whether or not the engine reads it."""
+    return fields_of(read["namespace_yaml"].get(name) or "")
 
 
-def check_unlocked(
-    connection: sqlite3.Connection, name: str, text: str, adding: bool
-) -> None:
+def check_unlocked(read: dict[str, Any], name: str, text: str, adding: bool) -> None:
     """Raise if the YAML *text* sets namespace *name*'s repl or reasoner otherwise than
-    its row does: before the engine reads it, so the lock is the refusal, not a field a
-    sandbox's settings lack."""
-    given, own = fields_of(text), row_fields(connection, name)
+    its row in the Library *read* does: before the engine reads it, so the lock is the
+    refusal, not a field a sandbox's settings lack."""
+    given, own = fields_of(text), row_fields(read, name)
     for key in LOCKED_FIELDS:
         if key in given and given[key] != own.get(key):
             raise locked(key, name, adding)
-
-
-def check_no_run_lines(
-    config: V2Config, registry: NamespaceRegistry, namespace: NamespaceConfig
-) -> None:
-    """Raise if *namespace*'s system_suffix holds a line a run adds after a suffix, as
-    show(name) lists them, before the write or after it, that its stored one doesn't."""
-    name, suffix = namespace.name, namespace.system_suffix or ""
-    stored = ""
-    if name in registry.names:
-        stored = registry.config(name).system_suffix or ""
-    for lines in [*run_line_parts(registry).values(), *lines_after(config, namespace)]:
-        for line in lines:
-            if line in suffix and line not in stored:
-                raise LibraryError(RUN_TIME_LINE.render(line=line))
-
-
-def lines_after(config: V2Config, namespace: NamespaceConfig) -> list[list[str]]:
-    """The lines run_line_parts() gives each namespace of *config*, a run's, once
-    *namespace* is written into it; none when the engine can't resolve it so, as the
-    write is then refused for why."""
-    namespaces = config.namespaces | {namespace.name: namespace}
-    written = config.model_copy(update={"namespaces": namespaces})
-    try:
-        return [*run_line_parts(build_namespace_registry(written)).values()]
-    except ValueError:
-        return []
 
 
 def check_inherited(
@@ -1399,9 +1434,10 @@ def field_changes(before: str, after: str) -> tuple[dict[str, Any], list[str]]:
 
 
 def in_brief(row: dict[str, Any], registry: NamespaceRegistry) -> dict[str, Any]:
-    """A namespace as show() lists it, each text cut short: what it sets itself, the
-    tools its agents get, and each of its own decompositions with its problem count."""
-    brief = {
+    """A namespace as show() lists it, before its texts are cut short: what it sets
+    itself, the tools its agents get, and each of its own decompositions with its
+    problem count."""
+    return {
         "name": row["name"],
         "depth": row["depth"],
         "sets": fields_of(row["yaml"]),
@@ -1411,10 +1447,9 @@ def in_brief(row: dict[str, Any], registry: NamespaceRegistry) -> dict[str, Any]
             for each in row["decompositions"]
         ],
     }
-    return cut(brief, limit=BRIEF_CHARS)
 
 
-def whole(
+def in_full(
     row: dict[str, Any],
     read: dict[str, Any],
     run: V2Config,
@@ -1617,11 +1652,12 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     editors = params.get("editors", [])
     pick = PICK_AN_EDITOR.render(editors=editors)
 
-    def show(name: str | None = None) -> Any:
-        """Every namespace in brief, or namespace *name* whole: its fields as the panel
-        shows them, and the decompositions its agents are shown, as a run resolves them.
-        Not the panel's Delete refusals: an agent that can't delete took them as reasons
-        not to edit."""
+    def show(name: str | None = None, whole: bool = False) -> Any:
+        """Every namespace in brief, or namespace *name* in full: its fields as the panel
+        shows them, and the decompositions its agents are shown, as a run resolves them,
+        each text cut past SHOWN_CHARS; or, *whole*, its own YAML and decompositions
+        uncut, without the fields, which repeat them. Not the panel's Delete refusals:
+        an agent that can't delete took them as reasons not to edit."""
         with app_file(library, "ro") as connection, reading(connection):
             read = read_library(connection)
             config, registry = run_config_and_registry(config_of(read))
@@ -1632,8 +1668,15 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
                 if row["name"] in registry.names
             ]
         if name is None:
-            return [in_brief(row, registry) for row in rows]
-        return whole(named(rows, name, "namespace", "show()"), read, config, registry)
+            return cut([in_brief(row, registry) for row in rows], limit=BRIEF_CHARS)
+        found = in_full(
+            named(rows, name, "namespace", "show()"), read, config, registry
+        )
+        if not whole:
+            return cut(found, limit=SHOWN_CHARS)
+        # Its own YAML and worked examples, not the fields, which repeat what they hold.
+        stored = {key: value for key, value in found.items() if key != "fields"}
+        return cut(stored, limit=None, total=math.inf)
 
     def tools(name: str | None = None) -> Any:
         """Every tool in brief, or tool *name* whole, with its source."""
@@ -1670,15 +1713,15 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         connection: sqlite3.Connection,
         namespace: NamespaceConfig,
         afresh: dict[str, tuple[dict[str, Any], str]],
+        read: dict[str, Any],
     ) -> None:
-        """Raise unless the tool may write *namespace*, as the Library stands, building
-        the custom tools it grants *afresh* if any."""
-        config, registry = config_and_registry(connection)
+        """Raise unless the tool may write *namespace*, as the Library stands (*read*),
+        building the custom tools it grants *afresh* if any."""
+        config, registry = run_config_and_registry(config_of(read))
         check_grant(registry)
         check_locks(config, registry, namespace)
-        stored = row_fields(connection, namespace.name).get("vars")
+        stored = row_fields(read, namespace.name).get("vars")
         check_no_secrets("vars", namespace.vars, stored)
-        check_no_run_lines(config, registry, namespace)
         if afresh:
             check_local(registry)
 
@@ -1697,11 +1740,14 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         """The write's *allowed* for namespace *name* as the YAML *text* makes it, once
         the custom tools it grants afresh are built (built_grants())."""
         build = partial(check_builds, tools_dir=tools_dir, done=GRANTED)
+
+        def first(read: dict[str, Any]) -> None:
+            check_grant(run_config_and_registry(config_of(read))[1])
+            check_unlocked(read, name, text, adding)
+
         with app_file(library, "ro") as connection:
-            may_write(connection)
-            check_unlocked(connection, name, text, adding)
             built = built_grants(
-                connection, name, text, build, adding, merge=merge, locks=locks
+                connection, name, text, build, adding, merge, locks=locks, first=first
             )
         return partial(same_grants, built, locks)
 

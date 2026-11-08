@@ -3,13 +3,15 @@ chat's folder.
 
 It runs the run folder's spec.yaml and writes the run's events to stdout, one JSON line each.
 It takes one command on stdin, `stop`. Anything else the run prints lands on stderr,
-which the server sends to the folder's worker.log.
+which the server sends to the folder's worker.log, and so do the app's own log records,
+which the engine would copy into the output of the cell that logged them.
 """
 
 import ast
 import asyncio
 import inspect
 import json
+import logging
 import os
 import re
 import select
@@ -56,6 +58,8 @@ from deep_reasoning.runs import (
 
 log = structlog.get_logger()
 
+# The logger of every module of the app's, the library tool's included.
+APP_LOGGER = __package__
 CLOSE_RUN_WATCHDOG_S = 2.0
 STDIN_READ_SIZE = 4096
 # Held while the server's commands are read: by the stdin thread, or as the root starts.
@@ -541,6 +545,15 @@ def finish(reasoner: Any) -> NoReturn:
     end_group()
 
 
+def keep_app_logs_out_of_cells() -> None:
+    """Send the app's own log records only where the engine's go, the worker's stderr,
+    by the handler it has just set up: the engine copies every record logged in a cell,
+    as by the library tool, into that cell's output, which the model and the tree read."""
+    app_logs = logging.getLogger(APP_LOGGER)
+    app_logs.handlers = list(logging.getLogger().handlers)
+    app_logs.propagate = False
+
+
 def counting_calls(recorder: Recorder) -> None:
     """Tell *recorder* of each chat call the run starts: the engine logs only those that
     finish. Each call's messages go with any half of a character escaped: a cell's output
@@ -577,6 +590,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     base_url = spec["config"]["client"]["base_url"]
     recorder = Recorder(out, on_root_start=stop_if_asked, base_url=base_url)
     configure_structlog_fixture(console=False, extra_processors=[recorder])
+    keep_app_logs_out_of_cells()
     counting_calls(recorder)
     leaving_out_unrendered(recorder)
     threading.Thread(target=read_commands, args=(stdin, stop), daemon=True).start()
