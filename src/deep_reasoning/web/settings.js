@@ -1,5 +1,5 @@
 // The settings panel: the providers, with each key's status, the custom servers, and the default folder. Keys go to the server, which keeps them in ~/.deep-reasoning/.env and never sends one back.
-import { PANEL_CLOSE, PANEL_OPEN, caret, closeOtherPanels, element, folderPicker, request, settingsChanged } from "./app.js";
+import { PANEL_CLOSE, PANEL_OPEN, SETTINGS_CHANGED, caret, closeOtherPanels, coverPage, element, folderPicker, request, settingsChanged } from "./app.js";
 
 const ENV_FILE = "~/.deep-reasoning/.env";
 // Ollama's, as an example: not the app's own port
@@ -21,6 +21,8 @@ let defaultFolder = null;
 // the name of the provider whose form shows, or ADDING for a new server's
 let opened = null;
 let cancelRemove = null;
+// what had focus when the panel opened, which gets it back on close: its toggle, or the model menu's button
+let opener = null;
 
 const providerRows = element("div", { class: "lib-rows" });
 const addToggle = element(
@@ -257,10 +259,16 @@ async function loadProviders() {
   }
 }
 
+// Closing gives focus back to what opened it when focus was in the panel, or nowhere, as after a tap on ×.
 async function setOpen(open) {
-  if (!open && panel.contains(document.activeElement)) toggleButton.focus();
+  const active = document.activeElement;
+  const nowhere = !active || active === document.body;
+  if (open && panel.hidden) opener = nowhere ? toggleButton : active;
+  const giveBack = !open && !panel.hidden && (nowhere || panel.contains(active));
   panel.hidden = !open;
   toggleButton.setAttribute("aria-expanded", String(open));
+  coverPage();
+  if (giveBack) (opener?.isConnected ? opener : toggleButton).focus();
   if (!open) return;
   closeOtherPanels(panel);
   render("v:0");
@@ -268,9 +276,24 @@ async function setOpen(open) {
   if (!panel.hidden) render(panel.contains(document.activeElement) ? undefined : "v:0");
 }
 
+// read ahead, so a change another tab makes shows as one
+const firstRead = loadProviders();
+
+// Back in this window: what another tab changed shows, and the model menu reads its lists again once the providers changed.
+// A form open in the panel keeps what is typed in it; the rows follow when it closes.
+async function readAgain() {
+  await firstRead;
+  const before = JSON.stringify(providers);
+  await Promise.all([loadProviders(), loadDefaultFolder()]);
+  if (JSON.stringify(providers) === before) return;
+  if (!panel.hidden && opened === null) render();
+  settingsChanged();
+}
+
 toggleButton.addEventListener("click", () => setOpen(panel.hidden));
 panel.addEventListener(PANEL_CLOSE, () => setOpen(false));
 panel.addEventListener(PANEL_OPEN, () => setOpen(true));
+panel.addEventListener(SETTINGS_CHANGED, readAgain);
 // Esc inside the panel takes back a Remove first, else closes it, and stops there, so it never also stops a run.
 panel.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;

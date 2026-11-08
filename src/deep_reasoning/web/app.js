@@ -15,8 +15,8 @@ import {
   decor,
   element,
   failureView,
-  formatCost,
   formatSeconds,
+  formatTotal,
   join,
   known,
   opened,
@@ -64,16 +64,22 @@ const PANEL_OPEN = "panel-open";
 const LIBRARY_CHANGED = "library-changed";
 const PLUS_NA = `\u00a0+\u00a0${UNKNOWN_COST}`;
 const MENU_STEPS = { ArrowDown: 1, ArrowUp: -1 };
+// to the first or last option, with no modifier, so Shift+Home still selects in the filter
+const MENU_ENDS = { Home: 0, End: -1 };
 const OUTCOME = {
   exhausted: ["ran out of turns", "warn"],
   failed: ["failed", "err"],
-  stopped: ["stopped by you", ""],
+  // in this tab or another: each tab following the run reads the same
+  stopped: ["stopped", ""],
 };
 const STOP_LABEL = "esc to interrupt";
 const STOPPING = "stopping…";
 const OPEN_PREFIX = "open:";
-// a touch keyboard has no shift+enter to speak of
-const NEW_LINE_HINT = matchMedia("(pointer: coarse)").matches ? "" : " · shift+enter for a new line";
+// A touch keyboard has no shift+enter to speak of, so there Enter makes a new line and a send button sends.
+const TOUCH = matchMedia("(pointer: coarse)").matches;
+const SEND_HINT = TOUCH ? "enter for a new line" : "enter to send · shift+enter for a new line";
+const SETTINGS_CHANGED = "settings-changed";
+const THEME_KEY = "theme";
 
 const byId = (id) => document.getElementById(id);
 // sending: the chat whose message is on its way; problem shows in red, notice in plain words
@@ -87,7 +93,8 @@ let refreshing = null;
 let notAnswering = false;
 let retrying = 0;
 let cameBack = -COME_BACK_MS;
-const library = { namespaces: null, defaultNamespace: null };
+// leftOut: the namespaces a shared file holds that the engine can't read, which the Library panel lists
+const library = { namespaces: null, defaultNamespace: null, leftOut: [] };
 const HOME_FOLDER = "~";
 let popover = null;
 // Each provider's models, as the server lists them with its key: read once per page load, and again after settings change.
@@ -214,15 +221,19 @@ function renderRename(chat) {
   return element("li", { class: "chat current" }, input);
 }
 
-// Keep is focused, as in the Library panel's confirms.
+// Keep is focused, as in the Library panel's confirms; the row stays a list item, holding the group.
 function renderConfirmDelete(chat) {
-  const question = chat.scratch_files ? "Delete this chat? Its scratch folder, and any files the agent wrote there, goes too." : "Delete this chat?";
+  const scratch = chat.scratch_files ? " Its scratch folder, and any files the agent wrote there, goes too." : "";
   return element(
     "li",
-    { class: "chat confirm", role: "group", "aria-labelledby": "chat-delete-question" },
-    element("span", { id: "chat-delete-question" }, question),
-    element("button", { type: "button", class: "yes", "data-key": `chat-yes:${chat.id}`, onclick: () => remove(chat) }, "Delete"),
-    element("button", { type: "button", class: "no", "data-key": `chat-keep:${chat.id}`, onclick: () => keep(chat) }, "Keep"),
+    { class: "chat confirm" },
+    element(
+      "div",
+      { class: "confirm-group", role: "group", "aria-labelledby": "chat-delete-question" },
+      element("span", { id: "chat-delete-question" }, `Delete “${chat.title}”?${scratch}`),
+      element("button", { type: "button", class: "yes", "data-key": `chat-yes:${chat.id}`, onclick: () => remove(chat) }, "Delete"),
+      element("button", { type: "button", class: "no", "data-key": `chat-keep:${chat.id}`, onclick: () => keep(chat) }, "Keep"),
+    ),
   );
 }
 
@@ -253,11 +264,19 @@ function renderList() {
 
 const focusRow = (chat, kind = "chat") => chat && refocus(`${kind}:${chat.id}`);
 
-// The scratch folder goes with the chat, so the question names it unless the server says it holds no files.
-async function askDelete(chat) {
+function askDelete(chat) {
   chat.scratch_files = true;
   setUi({ deleting: chat });
   focusRow(chat, "chat-keep");
+  // it may take more lines than the row did
+  byId("chats").querySelector(".confirm")?.scrollIntoView({ block: "nearest" });
+  checkScratch(chat);
+}
+
+// The scratch folder goes with the chat, so the question names it unless the server says it holds no files. A run going
+// in the chat may yet write some, so the question names it until the run ends, when it is asked again.
+async function checkScratch(chat) {
+  if (chat.live != null) return;
   let scratch;
   try {
     scratch = await request("GET", `api/chats/${chat.id}/scratch`);
@@ -265,8 +284,9 @@ async function askDelete(chat) {
     lostWith(error, chat);
     return;
   }
-  chat.scratch_files = scratch.files;
-  if (ui.deleting === chat && !scratch.files) renderList();
+  if (ui.deleting !== chat || chat.live != null || scratch.files) return;
+  chat.scratch_files = false;
+  renderList();
 }
 
 function keep(chat) {
@@ -285,10 +305,17 @@ function setDrawer(open) {
   const was = drawerOpen();
   byId("app").classList.toggle("list-open", open);
   byId("menu").setAttribute("aria-expanded", String(open));
-  byId("sidebar").inert = PHONE.matches && !open;
+  coverPage();
   if (!open || was) return;
   revealCurrent();
   (byId("chats").querySelector("[aria-current]") ?? byId("new-chat")).focus();
+}
+
+// At phone width a side panel covers the whole page, so nothing behind it takes focus, as the shut drawer takes none.
+function coverPage() {
+  const covered = PHONE.matches && document.querySelector(".library:not([hidden])") !== null;
+  byId("main").inert = covered;
+  byId("sidebar").inert = PHONE.matches && (covered || !byId("app").classList.contains("list-open"));
 }
 
 function keepScroll(scroll, draw) {
@@ -317,7 +344,7 @@ const runElsewhere = (live) => `a run is going in “${live.chat.title}”: wait
 function usualHint(live, here) {
   if (here) return "";
   if (live) return runElsewhere(live);
-  return `enter to send${NEW_LINE_HINT}`;
+  return SEND_HINT;
 }
 
 function renderComposer() {
@@ -325,8 +352,12 @@ function renderComposer() {
   const here = live?.chat === state.current;
   const hint = byId("hint");
   const text = state.problem ?? state.notice ?? usualHint(live, here);
-  byId("stop").hidden = !here;
-  byId("stop").textContent = live?.stopping ? STOPPING : STOP_LABEL;
+  const stopButton = byId("stop");
+  // the button goes as its run ends: focus on it would fall to the page
+  if (!here && document.activeElement === stopButton) byId("input").focus();
+  stopButton.hidden = !here;
+  stopButton.textContent = live?.stopping ? STOPPING : STOP_LABEL;
+  byId("send").hidden = here;
   hint.classList.toggle("err", state.problem != null);
   // the hint is a live region: setting the same text again would announce it again
   if (hint.textContent !== text) hint.textContent = text;
@@ -336,8 +367,7 @@ function renderComposer() {
 
 // What the chat's turns cost, with N/A when any turn's is unknown.
 function renderTotal(turns) {
-  const sum = turns.reduce((total, turn) => total + (turn.cost ?? 0), 0);
-  const known = sum > 0 && formatCost(sum);
+  const known = formatTotal(turns.map((turn) => turn.cost));
   const unpriced = turns.some((turn) => turn.unpriced);
   const unknown = unpriced || turns.some((turn) => turn.unfinished);
   const total = byId("total");
@@ -351,21 +381,27 @@ function renderChoices(chat) {
   const ready = library.namespaces && chat?.turns;
   byId("choices").hidden = !ready;
   if (!ready) return;
+  const model = chat.model ? servedBy(chat.model.name, chat.model.provider) : "none";
   byId("namespace-name").textContent = chat.namespace;
   byId("namespace").title = `${chat.namespace}: this chat's namespace, from its next message`;
+  byId("namespace").setAttribute("aria-label", `Namespace: ${chat.namespace}`);
   byId("model-name").textContent = chat.model?.name ?? "pick a model";
   byId("model-provider").textContent = chat.model ? ` · ${chat.model.provider}` : "";
-  byId("model").title = `${chat.model ? servedBy(chat.model.name, chat.model.provider) : "No model"}: this chat's model, from its next message`;
+  byId("model").title = `${chat.model ? model : "No model"}: this chat's model, from its next message`;
+  byId("model").setAttribute("aria-label", `Model: ${model}`);
   renderFolder(chat);
 }
 
-// A pick applies from the chat's next message; the server keeps it, so it survives a reload.
+// A pick applies from the chat's next message; the server keeps it, so it survives a reload. A model refused may be on a
+// server another tab removed, so settings and the model lists are read again.
 async function choose(chat, change) {
   let chosen;
   try {
     chosen = await request("PATCH", `api/chats/${chat.id}`, change);
   } catch (error) {
-    if (!lostWith(error, chat)) report(`Not changed: ${error.message}`);
+    if (lostWith(error, chat)) return;
+    report(`Not changed: ${error.message}`);
+    if (change.model) byId("settings").dispatchEvent(new Event(SETTINGS_CHANGED));
     return;
   }
   Object.assign(chat, { namespace: chosen.namespace, model: chosen.model });
@@ -407,7 +443,10 @@ function pickNamespace() {
   const chat = state.current;
   const star = element("span", { class: "lib-star" }, "★ new chats start here");
   const options = library.namespaces.map((name) => ({ value: name, label: [name, name === library.defaultNamespace && star] }));
-  if (!library.namespaces.includes(chat.namespace)) options.unshift({ value: chat.namespace, label: [chat.namespace, element("span", { class: "gone" }, "no longer exists")] });
+  if (!library.namespaces.includes(chat.namespace)) {
+    const why = library.leftOut.includes(chat.namespace) ? "can't be read now: see the Library panel" : "no longer exists";
+    options.unshift({ value: chat.namespace, label: [chat.namespace, element("span", { class: "gone" }, why)] });
+  }
   showMenu(byId("namespace"), byId("above"), {
     label: "Namespaces",
     filter: "filter the namespaces",
@@ -465,8 +504,9 @@ function noProviderMenu(button, host) {
   notePopover(button, host, "No models yet: add a provider's key, or a custom server (which needs none), in settings.", add);
 }
 
+// Focus goes back to the model button first, so closing settings returns there.
 function openSettings() {
-  closePopover(false);
+  closePopover(true);
   byId("settings").dispatchEvent(new Event(PANEL_OPEN));
 }
 
@@ -575,9 +615,15 @@ function markActive(open) {
 
 function menuKey(open, e) {
   const step = MENU_STEPS[e.key];
+  const end = MENU_ENDS[e.key];
+  const plain = !(e.shiftKey || e.altKey || e.ctrlKey || e.metaKey);
   if (step && open.options.length) {
     e.preventDefault();
     open.active = (open.active + step + open.options.length) % open.options.length;
+    markActive(open);
+  } else if (end !== undefined && plain && open.options.length) {
+    e.preventDefault();
+    open.active = (end + open.options.length) % open.options.length;
     markActive(open);
   } else if (e.key === "Enter" || (e.key === " " && !open.field)) {
     // also keeps Enter in the filter from sending the composer's message
@@ -984,6 +1030,7 @@ function finish(live) {
   const [ended = "answered"] = known(OUTCOME, live.turn.outcome);
   byId("announce").textContent = `Run ${ended} after ${formatSeconds(live.turn.seconds)} in “${live.chat.title}”.`;
   render("follow");
+  if (ui.deleting === live.chat) checkScratch(live.chat);
 }
 
 // EventSource retries a dropped stream itself; it gives up only when refused (a run deleted meanwhile), so the chat is read afresh.
@@ -1075,7 +1122,7 @@ function toggleTheme() {
   root.dataset.theme = isDark() ? "light" : "dark";
   labelTheme();
   try {
-    localStorage.setItem("theme", root.dataset.theme);
+    localStorage.setItem(THEME_KEY, root.dataset.theme);
   } catch {
     // storage can be blocked; the choice then lasts this visit only
   }
@@ -1086,6 +1133,12 @@ function wire() {
   labelTheme();
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", labelTheme);
   byId("theme").addEventListener("click", toggleTheme);
+  // another tab's toggle
+  addEventListener("storage", (e) => {
+    if (e.key !== THEME_KEY && e.key !== null) return;
+    useStoredTheme();
+    labelTheme();
+  });
   byId("new-chat").addEventListener("click", () => newChat());
   byId("stop").addEventListener("click", stop);
   byId("namespace").addEventListener("click", pickNamespace);
@@ -1094,10 +1147,11 @@ function wire() {
   // a click on a popover's button leaves focus in the popover, so the click toggles it
   for (const id of ["namespace", "model", "folder"]) byId(id).addEventListener("mousedown", (e) => e.preventDefault());
   byId("menu").addEventListener("click", () => setDrawer(!drawerOpen()));
-  // the event's path, as a click in the list may redraw the row it landed on
+  // the event's path, as a click in the list may redraw the row it landed on; a side panel lies over the drawer, not outside it
+  const inside = ["sidebar", "menu", "settings", "library"].map(byId);
   byId("app").addEventListener("click", (e) => {
     const path = e.composedPath();
-    if (drawerOpen() && !path.includes(byId("sidebar")) && !path.includes(byId("menu"))) setDrawer(false);
+    if (drawerOpen() && !inside.some((el) => path.includes(el))) setDrawer(false);
   });
   PHONE.addEventListener("change", () => setDrawer(false));
   setDrawer(false);
@@ -1112,9 +1166,13 @@ function wire() {
   byId("input").addEventListener("input", grow);
   byId("input").addEventListener("keydown", (e) => {
     if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    if (TOUCH && !(e.ctrlKey || e.metaKey)) return;
     e.preventDefault();
     send();
   });
+  byId("input").setAttribute("enterkeyhint", TOUCH ? "enter" : "send");
+  // a click or tap leaves focus in the message box, so a touch keyboard stays up
+  for (const id of ["send", "stop"]) byId(id).addEventListener("mousedown", (e) => e.preventDefault());
   // Esc keeps a chat it was asked to delete, else shuts the drawer, else stops this chat's run; the Library closes on an Esc left unused
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
@@ -1165,6 +1223,7 @@ function comeBack() {
   cameBack = now;
   if (byId("library").hidden) readNamespaces();
   else byId("library").dispatchEvent(new Event(LIBRARY_CHANGED));
+  byId("settings").dispatchEvent(new Event(SETTINGS_CHANGED));
   refresh();
 }
 
@@ -1180,6 +1239,7 @@ async function readNamespaces() {
 // The namespaces a chat can pick, and the default one new chats start in, as the Library panel reads them.
 function useLibrary(found) {
   library.namespaces = found.namespaces.filter(({ usable }) => usable).map(({ name }) => name);
+  library.leftOut = found.namespaces.filter(({ usable }) => !usable).map(({ name }) => name);
   library.defaultNamespace = found.default_namespace;
 }
 
@@ -1196,7 +1256,7 @@ async function start() {
   else newChat();
 }
 
-export { LIBRARY_CHANGED, PANEL_CLOSE, PANEL_OPEN, caret, chatNamespace, closeOtherPanels, element, folderPicker, libraryChanged, request, settingsChanged };
+export { LIBRARY_CHANGED, PANEL_CLOSE, PANEL_OPEN, SETTINGS_CHANGED, caret, chatNamespace, closeOtherPanels, coverPage, element, folderPicker, libraryChanged, request, settingsChanged };
 
 wire();
 start();

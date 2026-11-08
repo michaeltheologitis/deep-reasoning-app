@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { CLAMPS, COST_NA, SANITIZE, UNFINISHED, WAITING, clamped, costView, element, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
+import { CLAMPS, COST_NA, SANITIZE, UNFINISHED, WAITING, clamped, costView, element, formatTotal, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
 
 globalThis.marked = createRequire(import.meta.url)("../src/deep_reasoning/web/vendor/marked.min.js");
 
@@ -165,6 +165,13 @@ test("a run whose only calls never finished costs N/A, saying why, not $0", () =
   const shown = costView({ cost: null, unpriced: false, unfinished: true });
   assert.deepEqual([shown.textContent, shown.attributes.title], [COST_NA, UNFINISHED]);
   assert.equal(costView({ cost: 0, unpriced: false, unfinished: false }), "$0");
+});
+
+test("a chat's total shows the decimals of its finest turn's cost, so it reads as their sum", () => {
+  assert.equal(formatTotal(Array(23).fill(0.0011)), "$0.0253");
+  assert.equal(formatTotal([0.25, 0.31]), "$0.56");
+  assert.equal(formatTotal([0.25, 0.0011, null]), "$0.2511");
+  assert.equal(formatTotal([0, null]), null);
 });
 
 // A provider's errors as the OpenAI client words them, and what each shows first.

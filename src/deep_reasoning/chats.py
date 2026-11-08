@@ -133,11 +133,12 @@ def create_chat(path: Path, folder: str | None = None) -> Chat:
 
 
 def capped(title: str) -> str:
-    return title[:TITLE_CHARS].rstrip()
+    """*title* on one line, each line break a space, cut past TITLE_CHARS."""
+    return " ".join(title.splitlines())[:TITLE_CHARS].rstrip()
 
 
 def rename_chat(path: Path, chat: str, title: str) -> None:
-    """Title the chat *title*, cut past TITLE_CHARS."""
+    """Title the chat *title*, on one line, cut past TITLE_CHARS."""
     with connect(path) as connection:
         connection.execute(
             "UPDATE chats SET title = ? WHERE id = ?", (capped(title), chat)

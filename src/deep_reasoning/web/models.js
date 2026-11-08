@@ -2,22 +2,25 @@
 
 // A name a menu's filter keeps: one holding the text typed, trimmed, in any case.
 const holds = (name, typed) => name.toLowerCase().includes(typed.toLowerCase());
+const same = (name, typed) => name.toLowerCase() === typed.toLowerCase();
 
-// Each provider's featured models and the chat's own, or those matching what is typed and the typed name; one that lists
-// the typed name exactly comes first, with it first, so Enter picks it over another's "use".
+// Untyped, each provider's featured models and the chat's own. Typed, the models any provider lists that hold the text, a
+// provider whose list names it, in any case, first; then the text to use as it is, on each provider not listing it exactly,
+// so Enter picks a listed model before a name no list holds.
 export function modelGroups(lists, query, current) {
   const typed = query.trim();
   const groups = lists.map(({ provider, featured, models, problem }) => {
     const own = current?.provider === provider ? [current.name] : [];
     const known = [...new Set([...featured, ...own, ...(typed ? models : [])])];
-    const exact = typed !== "" && known.includes(typed);
-    const matches = known.filter((name) => holds(name, typed)).sort((a, b) => (b === typed) - (a === typed));
+    const matches = known.filter((name) => holds(name, typed)).sort((a, b) => same(b, typed) - same(a, typed));
     const options = matches.map((name) => ({ value: { provider, name }, label: name }));
-    if (typed && !exact) options.push({ value: { provider, name: typed }, label: `use “${typed}”` });
-    if (!options.length) options.push({ value: null, label: "use model name…", hint: `type a model name for ${provider}` });
-    return { name: provider, note: problem, options, exact };
+    if (!typed && !options.length) options.push({ value: null, label: "use model name…", hint: `type a model name for ${provider}` });
+    return { name: provider, note: problem, options, exact: matches.some((name) => same(name, typed)), listed: known.includes(typed) };
   });
-  return groups.sort((a, b) => b.exact - a.exact);
+  if (!typed) return groups;
+  const shown = groups.filter((group) => group.options.length || group.note).sort((a, b) => b.exact - a.exact);
+  const uses = groups.filter((group) => !group.listed).map(({ name }) => ({ value: { provider: name, name: typed }, label: `use “${typed}” on ${name}` }));
+  return uses.length ? [...shown, { name: null, note: null, options: uses }] : shown;
 }
 
 // The namespace menu's options whose names hold what is typed, in the Library's order, or a note that none do.

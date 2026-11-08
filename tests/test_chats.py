@@ -214,6 +214,7 @@ def test_rename_changes_only_that_chats_title(library):
         ("Plan a trip.\nTo Rome, in May.", "Plan a trip."),
         ("\n\n  Plan a trip.  \r\nTo Rome.", "Plan a trip."),
         (" \n\t\n", NEW_TITLE),
+        ("Plan a trip.\u2028To Rome.\nIn May.", "Plan a trip. To Rome."),
     ],
 )
 def test_a_new_chat_is_titled_after_its_first_messages_first_line(
@@ -222,6 +223,13 @@ def test_a_new_chat_is_titled_after_its_first_messages_first_line(
     chat = create_chat(library)
     title_new_chat(library, chat["id"], message)
     assert find_chat(library, chat["id"])["title"] == title
+
+
+@pytest.mark.parametrize("typed", ["Trip\nto Rome", "Trip\r\nto Rome", "Trip\vto Rome"])
+def test_a_rename_holding_a_line_break_puts_the_title_on_one_line(library, typed):
+    chat = create_chat(library)
+    rename_chat(library, chat["id"], typed)
+    assert find_chat(library, chat["id"])["title"] == "Trip to Rome"
 
 
 def test_a_renamed_chat_is_not_retitled(library):

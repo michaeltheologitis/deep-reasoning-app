@@ -460,7 +460,9 @@ def create_app(library, home):
                 check_namespace(connection, change.namespace)
         model = change.model
         if model is not None and find_provider(library, model.provider) is None:
-            raise SettingsError(f"There is no provider {model.provider}.")
+            raise SettingsError(
+                f"There is no provider {model.provider} any more; pick another model."
+            )
         moved = "folder" in change.model_fields_set
         folder = chosen_folder(change.folder) if moved else None
         if change.title is not None:

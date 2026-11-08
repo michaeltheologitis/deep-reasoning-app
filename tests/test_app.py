@@ -2351,6 +2351,16 @@ def test_a_blank_title_is_refused(client, title):
     assert client.get("/api/chats").json() == [chat]
 
 
+@pytest.mark.parametrize(
+    "typed", ["Trip\nto Rome", "Trip\r\nto Rome", "Trip\u2028to Rome"]
+)
+def test_a_title_holding_a_line_break_is_kept_on_one_line(client, typed):
+    chat = client.post("/api/chats").json()
+    renamed = client.patch(f"/api/chats/{chat['id']}", json={"title": typed})
+    assert renamed.json()["title"] == "Trip to Rome"
+    assert client.get("/api/chats").json() == [renamed.json()]
+
+
 def test_a_title_past_the_longest_kept_is_cut(client):
     chat = client.post("/api/chats").json()
     long = "Trip " + "x" * TITLE_CHARS
@@ -3365,7 +3375,9 @@ def test_a_namespace_or_model_the_app_does_not_have_is_refused(client):
         422,
     )
     assert nowhere.json()["detail"].startswith('The Library has no namespace "nowhere"')
-    assert nobody.json()["detail"] == "There is no provider Nobody."
+    assert nobody.json()["detail"] == (
+        "There is no provider Nobody any more; pick another model."
+    )
     read = client.get(f"/api/chats/{chat}").json()
     assert (read["namespace"], read["model"]) == ("router", None)
 
@@ -3930,6 +3942,12 @@ def test_a_decomposition_the_engine_cant_read_shows_its_yaml_and_why_agents_dont
             ),
         ],
     }
+
+
+def test_the_panel_tells_a_decomposition_agents_dont_see_by_the_servers_words(client):
+    # library.js leaves such a one out of a namespace's Decompositions field
+    page = client.get("/library.js").text
+    assert f'"{UNREAD_DECOMPOSITION}"' in page
 
 
 def test_malformed_settings_read_as_unset_and_the_page_can_set_them_again(

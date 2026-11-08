@@ -73,15 +73,17 @@ imports too.
   files).
 - The chat used last is listed first, and a reload opens it; **+ New chat** reuses an empty chat; an unsent message
   stays with its chat; a title is cut past 200 characters.
-- Several tabs on one app keep in step: coming back to a tab shows the chats, messages, runs and picks another tab
-  changed, and follows a run another tab started; a chat deleted in another tab leaves the list with a note.
+- Several tabs on one app keep in step: coming back to a tab shows the chats, messages, runs, picks, settings and
+  theme another tab changed, and follows a run another tab started; a chat deleted in another tab leaves the list
+  with a note.
 - Each message's run shows live as a tree of sub-agents you open level by level; what you open stays open after a
   reload. A sub-agent on another model than the chat's names it on its row.
 - Esc stops a run, saying so at once, though a cell busy in C (a long `time.sleep`) holds it up a few seconds.
 - Each run shows its time, sub-agent count, cost and model. A call is priced by the server's own figure where it sends
   one (OpenRouter does), else from the price list of the vendor whose address it went to (OpenAI, OpenRouter,
-  Anthropic, Google); any other, such as a vendor's model on a server of your own, costs N/A, as does a run whose
-  calls never finished, never $0.
+  Anthropic, Google). "cost N/A" means a call was cut off before it finished, or its price isn't known, as for a
+  vendor's model on a server of your own; a run that made no call costs $0. The chat's total under the message box
+  shows as many decimals as its finest run's, so it reads as their sum.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
   its own words after.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,
@@ -94,13 +96,15 @@ imports too.
   Library grants this to the historian, so "show me on a page how you got that" goes there.
 - Each chat has its own model, namespace and working folder, picked under the message box (typing filters the
   menus); a change applies from the next message.
-- Light and dark themes with text at WCAG AA contrast; phone width, where the chats are a drawer (☰; Esc shuts it);
-  no internet needed: the page loads nothing but the app.
+- Light and dark themes with text at WCAG AA contrast; phone width, where the chats are a drawer (☰; Esc shuts it)
+  and the Library and settings fill the screen; on a touch screen a **send** button sends and Enter makes a new line.
+  No internet needed: the page loads nothing but the app.
 
 **Models and keys**
 - The vendors above, and custom servers (any OpenAI-compatible URL, with an optional key).
 - The model menu shows the current models of each vendor you have a key for, and all of a custom server's; typing
-  searches the vendor's whole list of chat models (an exact name first, so Enter picks it), and any name is accepted.
+  searches every provider's whole list of chat models, in any case, and Enter picks the first model listed (an exact
+  name first); any other name is accepted, after every listed one.
   The model shows with its provider.
 - Settings keeps keys in `~/.deep-reasoning/.env`, readable only by you, and never shows them again; a saved key wins
   over the shell's.

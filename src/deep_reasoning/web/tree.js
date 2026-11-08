@@ -111,10 +111,20 @@ const keyOf = (node) => {
   return keys.get(node);
 };
 
-function formatCost(usd) {
+// cents from a cent up, else to a hundredth of a cent
+const costDigits = (usd) => (usd >= 0.01 ? 2 : 4);
+
+function formatCost(usd, digits = costDigits(usd)) {
   if (usd == null) return null;
   if (usd === 0) return "$0";
-  return `$${usd.toFixed(usd >= 0.01 ? 2 : 4)}`;
+  return `$${usd.toFixed(digits)}`;
+}
+
+// What priced turns cost together, to the decimals of the finest one's figure, so it reads as their sum; null for none.
+function formatTotal(costs) {
+  const priced = costs.filter((cost) => cost > 0);
+  if (!priced.length) return null;
+  return formatCost(priced.reduce((sum, cost) => sum + cost, 0), Math.max(...priced.map(costDigits)));
 }
 
 // An unpriced call's cost is unknown, not free; a holder with no calls yet shows none.
@@ -534,6 +544,7 @@ export {
   failureView,
   formatCost,
   formatSeconds,
+  formatTotal,
   join,
   known,
   markdownHtml,
