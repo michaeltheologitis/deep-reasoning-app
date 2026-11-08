@@ -187,7 +187,8 @@ imports too.
   have, `max_iter` or `max_depth` below 1, and a granted tool that doesn't build (built once, from the config alone,
   with no key). It reads only files in the config's folder and below (`_compose`, `namespaces_dir`, `factory_from`);
   pass `--within FOLDER` when a config composes files from a folder above it, as `deep_reasoner`'s examples do. An
-  import that fails or changes nothing leaves no Library (only its `.lock`). Import only configs you trust.
+  import that fails or changes nothing leaves no Library (only its `.lock`). Import only configs you trust. An import
+  can't be undone in the app: copy the Library file first to keep a way back.
 - `uv run deep-reasoning reset` deletes the Library file (`--library PATH` for another), with its chats and
   settings, and its run and scratch folders, after listing them and asking you to type `delete` (`--yes` skips it).
   Your keys and the folders you picked stay; it deletes only a Library file.
