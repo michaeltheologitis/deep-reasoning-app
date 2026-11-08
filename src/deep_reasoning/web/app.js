@@ -95,9 +95,11 @@ const PROVIDER_MISSING = "its provider is no longer in settings: pick another be
 const SETTINGS_CHANGED = "settings-changed";
 
 const byId = (id) => document.getElementById(id);
-// sending: the chat whose message is on its way, stopOnStart whether Esc asked to stop its run before it was there; sendOnLoad
-// whether a message waits for the chat on screen to load; problem shows in red, notice in plain words
-const state = { chats: [], current: null, live: null, sending: null, stopOnStart: false, sendOnLoad: false, problem: null, problemWhileDown: false, notice: null };
+// own: the run this tab started, followed while it goes, which holds up a message in another chat; watched: another tab's run,
+// followed while its chat is on screen. sending: the chat whose message is on its way, stopOnStart whether Esc asked to stop
+// its run before it was there; sendOnLoad whether a message waits for the chat on screen to load; problem shows in red, notice
+// in plain words, problemOnModel whether the problem is about the chat's model.
+const state = { chats: [], current: null, own: null, watched: null, sending: null, stopOnStart: false, sendOnLoad: false, problem: null, problemWhileDown: false, problemOnModel: false, notice: null };
 const ui = { renaming: null, deleting: null };
 const drafts = new Map();
 // the ids of the chats this tab made, which "+ New chat" may reuse while they are empty
@@ -180,7 +182,7 @@ function renderTurnAnswer(turn) {
 
 // A turn names its namespace when it differs from the turn before's, so a chat that switched reads clearly.
 function renderTurn(turn, previous) {
-  const live = state.live?.turn === turn ? state.live : null;
+  const live = followed().find((each) => each.turn === turn) ?? null;
   // no turn.end yet: still going, though this page may not follow it (a run started in another tab)
   const going = turn.outcome == null;
   const open = opened.has(turn);
@@ -389,17 +391,17 @@ function renderLog(scroll) {
 const runElsewhere = (live) => `a run is going in “${live.chat.title}”: wait for it, or open it and ${STOP_HOW} to stop it`;
 
 // Only a run this tab started holds up a message in another chat: one it follows, started elsewhere, doesn't.
-function usualHint(live, here) {
+function usualHint(here) {
   if (here) return "";
-  if (live?.own) return runElsewhere(live);
+  if (state.own) return runElsewhere(state.own);
   return SEND_HINT;
 }
 
 function renderComposer() {
-  const live = state.live;
-  const here = live?.chat === state.current;
+  const live = liveIn(state.current);
+  const here = live != null;
   const hint = byId("hint");
-  const text = state.problem ?? state.notice ?? usualHint(live, here);
+  const text = state.problem ?? state.notice ?? usualHint(here);
   // send gives way to stop as a run starts here, and stop to send as it ends: focus on the one going would fall to the page
   if (document.activeElement === byId(here ? "send" : "stop")) byId("input").focus();
   byId("stop").hidden = !here;
@@ -869,9 +871,11 @@ function answering(up) {
 }
 
 // What other tabs changed: the chats, and the open chat's turns when another tab ran in it.
+// A message held while its chat loaded goes once the read is done, so a refresh its send asks for reads afresh.
 function refresh(scroll = "follow") {
   refreshing ??= readAll(scroll).finally(() => {
     refreshing = null;
+    if (state.sendOnLoad && state.current?.turns) send();
   });
   return refreshing;
 }
@@ -894,14 +898,7 @@ async function readAll(scroll) {
       state.sendOnLoad = false;
       return report(`Could not open this chat: ${error.message}`);
     }
-    if (state.current !== chat) continue;
-    render(scroll);
-    // a message sent while the chat loaded goes now
-    if (state.sendOnLoad) {
-      state.notice = null;
-      send();
-    }
-    return;
+    if (state.current === chat) return render(scroll);
   }
   showTitle(state.current);
   renderComposer();
@@ -931,20 +928,30 @@ function adopt(chat, listed) {
   if (chat === state.current && picks(chat) !== picks(listed)) state.problem = null;
   // a run this page follows is its own to end
   const { live, ...rest } = listed;
-  return Object.assign(chat, rest, state.live?.chat === chat ? {} : { live });
+  return Object.assign(chat, rest, liveIn(chat) ? {} : { live });
 }
 
 // Read again when another tab ran something in it, or while its run goes on unfollowed, so its turn never stays half-folded.
-const stale = (chat) => !chat.turns || (state.live?.chat !== chat && (chat.live != null || chat.last_run !== chat.read_run));
+const stale = (chat) => !chat.turns || (!liveIn(chat) && (chat.live != null || chat.last_run !== chat.read_run));
 
-// A run still going in a chat is followed from where its turns end, unless the page follows another or the chat is gone. It is
-// this tab's own only if this tab started it, before a reload too.
+// A run still going in a chat on screen is followed from where its turns end, unless the chat is gone. It is this tab's own
+// only if this tab started it, before a reload too.
 async function readTurns(chat) {
   const { turns, ...rest } = await request("GET", `api/chats/${chat.id}`);
   const folds = turns.map((turn) => foldEvents(turn.events));
   for (const fold of folds) reopen(fold.turn);
   Object.assign(chat, rest, { turns: folds.map((fold) => fold.turn), read_run: rest.last_run });
-  if (rest.live && !state.live && state.chats.includes(chat)) follow(chat, rest.live, folds.at(-1), ownRun() === rest.live);
+  if (rest.live && !liveIn(chat) && state.chats.includes(chat)) follow(chat, rest.live, folds.at(-1), ownRun() === rest.live);
+}
+
+// The runs this tab follows, at most two, so their streams leave the browser room for its requests.
+const followed = () => [state.own, state.watched].filter(Boolean);
+const liveIn = (chat) => followed().find((live) => live.chat === chat) ?? null;
+
+function unfollow(live) {
+  live.source.close();
+  if (state.own === live) state.own = null;
+  if (state.watched === live) state.watched = null;
 }
 
 function ownRun() {
@@ -968,10 +975,7 @@ function lose(chat) {
   const index = state.chats.indexOf(chat);
   if (index >= 0) state.chats.splice(index, 1);
   drafts.delete(chat.id);
-  if (state.live?.chat === chat) {
-    state.live.source.close();
-    state.live = null;
-  }
+  if (liveIn(chat)) unfollow(liveIn(chat));
   if (ui.renaming === chat || ui.deleting === chat) Object.assign(ui, { renaming: null, deleting: null });
   state.notice = `“${chat.title}” was deleted in another tab.`;
   if (state.current === chat) {
@@ -1035,10 +1039,7 @@ async function newChat(how) {
 // The list drops the chat at once and focus goes to the next row; the server may take a few seconds, stopping a run that is going first.
 async function remove(chat) {
   const index = state.chats.indexOf(chat);
-  if (state.live?.chat === chat) {
-    state.live.source.close();
-    state.live = null;
-  }
+  if (liveIn(chat)) unfollow(liveIn(chat));
   state.chats.splice(index, 1);
   drafts.delete(chat.id);
   ui.deleting = null;
@@ -1088,11 +1089,14 @@ async function finishRename(chat, typed, backToRow) {
   render();
 }
 
-// own: whether this tab started the run, which then holds up a message in another chat until it ends
+// own: whether this tab started the run, which then holds up a message in another chat until it ends. Another tab's takes the
+// place of the one watched before, whose chat is read and followed again when next on screen.
 function follow(chat, run, fold, own) {
   const source = new EventSource(`api/runs/${run}/events?after=${fold.seq}`);
   const live = { chat, run, fold, turn: fold.turn, source, stopping: false, own };
-  state.live = live;
+  const before = own ? state.own : state.watched;
+  if (before) unfollow(before);
+  state[own ? "own" : "watched"] = live;
   chat.live = run;
   source.onopen = () => {
     if (state.problem === RECONNECTING) report(null);
@@ -1107,15 +1111,16 @@ function receive(live, event) {
   // the server ended it as another tab deleted its chat
   if (event.kind === "turn.end" && event.outcome === "deleted") return lose(live.chat);
   if (event.kind === "turn.end") return finish(live);
-  drawLive(live);
+  drawLive();
 }
 
-// Events come in bursts, as when catching up on a long run, so the live turn redraws at most once a frame.
-function drawLive(live) {
+// Events come in bursts, as when catching up on a long run, so the run on screen redraws at most once a frame.
+function drawLive() {
   if (drawing) return;
   drawing = requestAnimationFrame(() => {
     drawing = 0;
-    if (state.live !== live || live.chat !== state.current || !views.has(live.turn)) return;
+    const live = liveIn(state.current);
+    if (!live || !views.has(live.turn)) return;
     keepScroll("follow", () => redraw(live.turn));
     renderComposer();
   });
@@ -1127,7 +1132,7 @@ function finish(live) {
   live.chat.live = null;
   // a list read while the run went on would show it going again
   changes += 1;
-  if (state.live === live) state.live = null;
+  unfollow(live);
   const [ended = "answered"] = known(OUTCOME, live.turn.outcome);
   byId("announce").textContent = `Run ${ended} after ${formatSeconds(live.turn.seconds)} in “${live.chat.title}”.`;
   render("follow");
@@ -1137,7 +1142,7 @@ function finish(live) {
 // EventSource retries a dropped stream itself; it gives up only when refused (a run deleted meanwhile), so the chat is read afresh.
 function lost(live) {
   if (live.source.readyState !== EventSource.CLOSED) return report(RECONNECTING);
-  if (state.live === live) state.live = null;
+  unfollow(live);
   if (state.problem === RECONNECTING) state.problem = null;
   Object.assign(live.chat, { live: null, turns: null });
   if (live.chat === state.current) select(live.chat, { focus: null });
@@ -1157,10 +1162,9 @@ async function send() {
     renderComposer();
     return;
   }
-  state.sendOnLoad = false;
-  const live = state.live;
-  if (live?.chat === chat || live?.own) {
-    report(`Not sent: ${live.chat === chat ? `this chat's run is going: wait for it, or ${STOP_HOW} to stop it` : runElsewhere(live)}.`);
+  if (state.sendOnLoad) Object.assign(state, { sendOnLoad: false, notice: null });
+  if (liveIn(chat) || state.own) {
+    report(`Not sent: ${liveIn(chat) ? `this chat's run is going: wait for it, or ${STOP_HOW} to stop it` : runElsewhere(state.own)}.`);
     return;
   }
   Object.assign(state, { sending: chat, stopOnStart: false });
@@ -1188,7 +1192,6 @@ async function send() {
   Object.assign(fold.turn, { prompt, started: Date.now() / MS_PER_SECOND });
   chat.turns.push(fold.turn);
   state.problem = null;
-  state.live?.source.close();
   keepOwnRun(run);
   follow(chat, run, fold, true);
   render("bottom");
@@ -1206,11 +1209,11 @@ function keepOwnRun(run) {
 
 // Says so at once: a cell blocked in C holds the stop up until the app ends its worker.
 async function stop() {
-  const live = state.live;
+  const live = liveIn(state.current);
   if (!live || live.stopping) return;
   live.stopping = true;
   renderComposer();
-  drawLive(live);
+  drawLive();
   try {
     await request("POST", `api/runs/${live.run}/stop`);
   } catch (error) {
@@ -1218,7 +1221,7 @@ async function stop() {
     if (error.status === CONFLICT) return;
     live.stopping = false;
     report(`Not stopped: ${error.message}`);
-    drawLive(live);
+    drawLive();
   }
 }
 
@@ -1297,7 +1300,7 @@ function wire() {
   // is there; the Library closes on an Esc left unused
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    const runHere = state.live?.chat === state.current;
+    const runHere = liveIn(state.current) != null;
     const startingHere = state.sending != null && state.sending === state.current;
     if (!ui.deleting && !drawerOpen() && !runHere && !startingHere) return;
     e.preventDefault();
@@ -1309,7 +1312,7 @@ function wire() {
     else state.stopOnStart = true;
   });
   setInterval(() => {
-    if (state.live) tick();
+    if (followed().length) tick();
   }, SPIN_MS);
   // beforeunload comes before a live run's stream is cut, which drops its chat's turns; some phones send only pagehide
   for (const unloading of ["beforeunload", "pagehide"]) addEventListener(unloading, keepOpen);
@@ -1366,7 +1369,8 @@ function useLibrary(found) {
   library.defaultNamespace = found.default_namespace;
 }
 
-// A run going in a chat is what the page was showing before a reload, so that chat opens first; else the one used last.
+// This tab's own run, going on from before a reload, opens its chat first; else a run going, as another tab's; else the chat
+// used last.
 async function start() {
   try {
     await readChats();
@@ -1374,7 +1378,8 @@ async function start() {
     byId("log").textContent = `Could not load the chats (${error.message}). Start the app with: uv run deep-reasoning`;
     return;
   }
-  const first = state.chats.find((chat) => chat.live) ?? state.chats[0];
+  const own = ownRun();
+  const first = state.chats.find((chat) => chat.live != null && chat.live === own) ?? state.chats.find((chat) => chat.live) ?? state.chats[0];
   if (first) select(first);
   else newChat();
 }
