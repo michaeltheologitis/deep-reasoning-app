@@ -144,20 +144,43 @@ def owning(library, refused, read=open_or_exit, doing=SERVING):
     saying in it what it is *doing*; a plain error saying *refused* and what to do when
     another Deep Reasoning holds it."""
     path = lock_of(library)
+    lock = taken_lock(path, library, refused)
     try:
-        lock = os.open(path, os.O_RDWR | os.O_CREAT, LOCK_MODE)
-    except OSError as error:
-        sys.exit(
-            f"Could not open {path}, the lock that keeps a second Deep Reasoning off the"
-            f" Library: {error.strerror}."
-        )
-    try:
-        take(lock, library, refused)
         os.ftruncate(lock, 0)
         os.pwrite(lock, doing.encode(), 0)
         yield read(library)
     finally:
         os.close(lock)
+
+
+def taken_lock(path, library, refused):
+    """The lock at *path*, beside *library*, opened and taken (see take). An import that
+    made a Library and wrote nothing deletes it and its lock while holding it, so one
+    taken after is opened afresh until it is the file at *path*."""
+    while True:
+        try:
+            lock = os.open(path, os.O_RDWR | os.O_CREAT, LOCK_MODE)
+        except OSError as error:
+            sys.exit(
+                f"Could not open {path}, the lock that keeps a second Deep Reasoning off"
+                f" the Library: {error.strerror}."
+            )
+        try:
+            take(lock, library, refused)
+        except BaseException:
+            os.close(lock)
+            raise
+        if still_there(lock, path):
+            return lock
+        os.close(lock)
+
+
+def still_there(lock, path):
+    """Whether the open file *lock* is still the one at *path*."""
+    try:
+        return os.path.samestat(os.fstat(lock), os.stat(path))
+    except FileNotFoundError:
+        return False
 
 
 def take(lock, library, refused):
@@ -214,7 +237,10 @@ def import_or_exit(library, config, home):
             f" was made at {library}."
         )
     else:
-        header = f"Nothing to import: the Library at {library} already holds all of {config}."
+        header = (
+            f"Nothing to import: the Library at {library} already holds all of"
+            f" {config}."
+        )
     print("\n".join([header, *said["changes"], *said["left_out"]]))
 
 
@@ -227,7 +253,10 @@ def not_imported(config, error):
         (why for code, why in UNWRITABLE.items() if name.startswith(code)), None
     )
     if reason:
-        return f"Could not import {config}: the Library file can't be written, as {reason}; the Library is unchanged."
+        return (
+            f"Could not import {config}: the Library file can't be written, as"
+            f" {reason}; the Library is unchanged."
+        )
     return f"Could not import {config}; the Library is unchanged.\n{error}"
 
 

@@ -2,7 +2,6 @@
 plain words what would break the app, and say what it changed and what it left out."""
 
 import difflib
-import json
 import tempfile
 from collections import Counter
 from contextlib import contextmanager
@@ -372,11 +371,13 @@ def check_settings(settings):
             )
 
 
-def check_sources(tools):
-    """Raise unless each tool's source, of *tools* as tool_row gives them, fits."""
-    for name, (_, source) in tools.items():
-        if source is not None:
-            with about(f"Tool {name}"):
+def check_tools_fit(tools):
+    """Raise unless each tool's block and source, of *tools* as tool_row gives them,
+    fits."""
+    for name, (block, source) in tools.items():
+        with about(f"Tool {name}"):
+            check_fits(dump(block), "Its YAML")
+            if source is not None:
                 check_fits(source, "Its source")
 
 
@@ -398,9 +399,12 @@ def check_decompositions(namespaces):
 
 
 def namespace_named(name):
-    """Namespace *name*, as a refusal names it: quoted when it isn't a plain name."""
-    shown = name if NAMESPACE_NAME.fullmatch(name) else json.dumps(name)
-    return f"Namespace {shown}"
+    """Namespace *name*, as a refusal names it: quoted when it isn't a plain name, with
+    each character that doesn't show escaped."""
+    if NAMESPACE_NAME.fullmatch(name):
+        return f"Namespace {name}"
+    shown = "".join(each if each.isprintable() else ascii(each)[1:-1] for each in name)
+    return f'Namespace "{shown}"'
 
 
 def check_new_names(before, changes):
@@ -618,7 +622,7 @@ def import_config(connection, path, secrets=(), environment=None):
         name: tool_row(name, block, config.config_dir)
         for name, block in config.tools.items()
     }
-    check_sources(tools)
+    check_tools_fit(tools)
     # A root that sets nothing, like the bare one the engine adds, must not blank the Library's.
     namespaces = [
         namespace

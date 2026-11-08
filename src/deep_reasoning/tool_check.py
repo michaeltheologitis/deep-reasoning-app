@@ -16,13 +16,14 @@ tools see no chat's files or modules, in a process group of its own, and is stop
 BUILD_TIMEOUT_S. The parent names the file the verdicts go to before any tool's code
 runs; the child notes each tool's name in it before building it and its verdict after,
 and ends itself whatever happens, so a thread a tool left can't hold it up. The parent
-then kills its group before reaping it, so a process a tool started goes too, however
-the check ended (a tool's os._exit or crash included). The tools' files are in a folder
-of their own, apart from the notes, so a tool that writes a file of that name beside its
-own, or in its working folder, changes no verdict (one that seeks the notes out could
-forge one: it is the user's own code, unsandboxed in every run anyway). A tool that ends
-or hangs the check is the one blamed, and the tools after it are checked again without
-it.
+then kills its group before reaping it, so nothing in the check's process group outlives
+it, however the check ended (a tool's os._exit or crash included); a process a tool puts
+in a session or group of its own (setsid, start_new_session) isn't followed. The tools'
+files are in a folder of their own, apart from the notes, so a tool that writes a file
+of that name beside its own, or in its working folder, changes no verdict (one that
+seeks the notes out could forge one: it is the user's own code, unsandboxed in every run
+anyway). A tool that ends or hangs the check is the one blamed, and the tools after it
+are checked again without it.
 """
 
 import json
