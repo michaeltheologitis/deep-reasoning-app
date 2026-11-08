@@ -1,8 +1,7 @@
 // What the model menu lists for what is typed, from each provider's lists as the server reads them.
 
-// Each provider that can answer, with why its list is missing if it is: its featured models and the chat's own if it isn't one,
-// or, once something is typed, every model it knows that matches and the typed name. One that knows the typed name exactly
-// comes first, with it first, so Enter picks it over another's "use".
+// Each provider's featured models and the chat's own, or those matching what is typed and the typed name; one that lists
+// the typed name exactly comes first, with it first, so Enter picks it over another's "use".
 export function modelGroups(lists, query, current) {
   const typed = query.trim();
   const groups = lists.map(({ provider, featured, models, problem }) => {
