@@ -80,6 +80,7 @@ DRIVE = {
     "drive": MAYBE_NUMBER,
     "task": TEXT,
     "namespace": MAYBE_TEXT,
+    "model": MAYBE_TEXT,
     "status": DRIVE_STATUSES,
     "result": MAYBE_TEXT,
     "seconds": MAYBE_NUMBER,

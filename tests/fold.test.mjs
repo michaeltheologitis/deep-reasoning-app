@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
-import { changeText, foldEvent, foldEvents } from "../src/deep_reasoning/web/fold.js";
+import { changeText, foldEvent, foldEvents, nodesOf } from "../src/deep_reasoning/web/fold.js";
 
 const FOLD_URL = new URL("../src/deep_reasoning/web/fold.js", import.meta.url).href;
 const FOLD_TIMEOUT_MS = 5000;
@@ -66,11 +66,23 @@ test("a saved turn has the prompt, the answer and the run's own totals", () => {
   assert.equal(turn.started, events[0].t);
 });
 
-test("a turn keeps the model and namespace its run started on", () => {
+test("a turn keeps the model, provider and namespace its run started on, and the run's id", () => {
   const [start] = recorded("fanout");
   const { turn } = foldEvents([start]);
-  assert.deepEqual([turn.model, turn.namespace], [start.model, start.namespace]);
+  assert.deepEqual([turn.model, turn.provider, turn.namespace, turn.run], [start.model, start.provider, start.namespace, start.run]);
   assert.deepEqual([turn.model, turn.namespace], ["gpt-6-luna", "root"]);
+  assert.match(turn.run, /^\d{8}-\d{6}-\d+$/);
+});
+
+test("a sub-agent whose own calls are on another model than the run's names it on its row", () => {
+  const events = recorded("models");
+  const [row] = rowsOf(foldEvents(events).turn);
+  assert.equal(row.model, "fake-small");
+  assert.equal(foldEvents(events).turn.model, "gpt-6-luna");
+  // a tool's call inside the agent's cell, on its own model, isn't the agent's
+  const toolCalls = events.map((event) => (event.kind === "usage" && event.node !== 1 ? { ...event, own: false } : event));
+  assert.equal(rowsOf(foldEvents(toolCalls).turn)[0].model, undefined);
+  assert.ok(rowsOf(foldEvents(recorded("fanout")).turn).every((each) => each.model === undefined));
 });
 
 test("a fan-out puts every sub-agent as a row under the cell that started it", () => {
@@ -186,10 +198,49 @@ test("one unpriced call makes every total above it unknown, not zero", () => {
   assert.equal(foldEvents(events.slice(0, -1)).turn.unpriced, true);
 });
 
+test("a run whose only call never finished, as its server failed it, costs what no one knows, not the 0 it totals", () => {
+  const events = recorded("unanswered");
+  assert.deepEqual([ofKind(events, "usage"), last(events).cost, last(events).unfinished_calls], [[], 0, 1]);
+  const { turn } = foldEvents(events);
+  assert.deepEqual([turn.cost, turn.unpriced, turn.unfinished], [null, false, true]);
+});
+
+// A run's end with what it cost and how many of its calls never finished, if it says.
+const endedWith = (fields) => [
+  ...parentCycle.slice(0, 2),
+  { seq: 3, t: 2, kind: "turn.end", outcome: "failed", answer: null, detail: "ToolBuildError: x", seconds: 2, ...fields },
+];
+
+for (const [name, fields] of [
+  ["that called no model, as one whose tools didn't build", { cost: 0, unfinished_calls: 0 }],
+  ["recorded before its end said how many calls never finished", { cost: 0 }],
+]) {
+  test(`a run ${name} costs $0`, () => {
+    const { turn } = foldEvents(endedWith(fields));
+    assert.deepEqual([turn.cost, turn.unpriced, turn.unfinished], [0, false, false]);
+  });
+}
+
+test("a run whose calls finished costs what they did, though a later one never finished", () => {
+  const { turn } = foldEvents(endedWith({ cost: 0.25, unfinished_calls: 1 }));
+  assert.deepEqual([turn.cost, turn.unfinished], [0.25, false]);
+});
+
+test("each node of a turn has the same path each time the run's events are folded, so a reload reopens what was open", () => {
+  const events = recorded("nested");
+  const paths = (turn) => [...nodesOf(turn)].map(([path, node]) => `${path} ${node.kind ?? node.task ?? "turn"}`);
+  const whole = paths(foldEvents(events).turn);
+  assert.deepEqual(whole.slice(0, 5), ["turn turn", "0 cell", "0.0 Survey CS.", "0.0.0 cell", "0.0.0.0 Read CS101."]);
+  assert.deepEqual(paths(foldEvents(events).turn), whole);
+  // a reload mid-run folds fewer events: each node it has keeps its path
+  const sofar = paths(foldEvents(events.slice(0, Math.floor(events.length / 2))).turn);
+  assert.ok(sofar.length > 3 && sofar.every((path) => whole.includes(path)));
+});
+
 test("a priced run's totals are known", () => {
   const { turn } = foldEvents(recorded("fanout"));
   assert.ok(turn.cost > 0);
-  assert.equal(turn.unpriced, false);
+  assert.deepEqual([turn.unpriced, turn.unfinished], [false, false]);
   assert.ok(allRows(turn).every((row) => row.cost > 0 && !row.unpriced));
 });
 

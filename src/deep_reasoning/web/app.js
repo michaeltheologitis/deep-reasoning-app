@@ -1,15 +1,20 @@
 // The Deep Reasoning chat: chats and their runs from the app's API, each run's events folded into its tree, live as they stream.
-import { asText, clip, field, foldEvent, foldEvents, newFold } from "./fold.js";
+import { asText, clip, field, foldEvent, foldEvents, newFold, nodesOf } from "./fold.js";
+import { modelGroups } from "./models.js";
 import {
   COST_NA,
   MS_PER_SECOND,
   PRICE_UNKNOWN,
+  UNFINISHED,
   UNKNOWN_COST,
+  WAITING,
   caret,
   clamped,
   clock,
   costView,
+  decor,
   element,
+  failureView,
   formatCost,
   formatSeconds,
   join,
@@ -30,12 +35,14 @@ import {
   toggler,
   useStoredTheme,
   views,
+  waiting,
   whenChangesApply,
 } from "./tree.js";
 
 const SPIN_MS = 120;
 const STICK_PX = 80;
-const TRAIL_CHARS = 22;
+// past the widest the log is: CSS cuts each part to fit
+const TRAIL_CHARS = 120;
 const TRAIL_PARTS = 3;
 const CONFLICT = 409;
 const NEW_TITLE = "New chat";
@@ -52,8 +59,13 @@ const MENU_STEPS = { ArrowDown: 1, ArrowUp: -1 };
 const OUTCOME = {
   exhausted: ["ran out of turns", "warn"],
   failed: ["failed", "err"],
-  stopped: ["stopped by you", "err"],
+  stopped: ["stopped by you", ""],
 };
+const STOP_LABEL = "esc to interrupt";
+const STOPPING = "stopping…";
+const OPEN_PREFIX = "open:";
+// a touch keyboard has no shift+enter to speak of
+const NEW_LINE_HINT = matchMedia("(pointer: coarse)").matches ? "" : " · shift+enter for a new line";
 
 const byId = (id) => document.getElementById(id);
 const state = { chats: [], current: null, live: null, sending: false, problem: null };
@@ -82,24 +94,35 @@ function renderListedChange(entry) {
   return remember(entry, renderChange(entry.step, entry, by), () => renderListedChange(entry));
 }
 
+// a server of your own may serve a model under a vendor's name
+const servedBy = (model, provider) => (provider ? `${model} on ${provider}` : model);
+const modelView = (turn) => turn.model && element("span", { title: servedBy(turn.model, turn.provider) }, turn.model);
+
 function summary(turn, switched) {
   const [word, tone] = known(OUTCOME, turn.outcome);
   const seconds = formatSeconds(turn.seconds);
   const agents = countAgents(turn);
   const lead = word ? [element("span", { class: `word ${tone}` }, word), ` after ${seconds}`] : `Reasoned for ${seconds}`;
-  return join([lead, agents > 0 && plural(agents, "sub-agent"), costView(turn), turn.model, switched].filter(Boolean), " · ");
+  return join([lead, agents > 0 && plural(agents, "sub-agent"), costView(turn), modelView(turn), switched].filter(Boolean), " · ");
 }
 
-function liveSummary(turn, followed, switched) {
+function liveSummary(turn, live, switched) {
   const running = countAgents(turn, (agent) => agent.status === "running");
-  const facts = [clock(turn.started), running > 0 && `${plural(running, "sub-agent")} running`, turn.model, switched, followed && "esc to interrupt"];
+  const stop = live && (live.stopping ? element("span", { class: "working" }, STOPPING) : STOP_LABEL);
+  const facts = [clock(turn.started), running > 0 && `${plural(running, "sub-agent")} running`, modelView(turn), switched, stop];
   return [element("span", { class: "working" }, "Reasoning… "), "(", join(facts.filter(Boolean), " · "), ")"];
 }
 
-function trailText({ tasks, step }) {
+// The tasks of the sub-agents above the run's newest step, then the step.
+function renderTrail({ tasks, step }) {
   const trail = [...tasks.map((task) => clip(task, TRAIL_CHARS)), stepLabel(step, TRAIL_CHARS)];
   const parts = trail.length > TRAIL_PARTS ? [trail[0], "…", ...trail.slice(1 - TRAIL_PARTS)] : trail;
-  return parts.join(" › ");
+  const last = parts.length - 1;
+  return element(
+    "span",
+    { class: "trail" },
+    parts.map((part, i) => [i > 0 && decor(" › ", { class: "sep" }), element("span", { class: i === last ? "part step" : "part" }, part)]),
+  );
 }
 
 function renderPrompt(turn) {
@@ -115,27 +138,29 @@ function renderTurnAnswer(turn) {
 
 // A turn names its namespace when it differs from the turn before's, so a chat that switched reads clearly.
 function renderTurn(turn, previous) {
-  const live = state.live?.turn === turn;
+  const live = state.live?.turn === turn ? state.live : null;
   // no turn.end yet: still going, though this page may not follow it (a run started in another tab)
   const going = turn.outcome == null;
   const open = opened.has(turn);
-  const latest = live && state.live.fold.latest;
+  const latest = live?.fold.latest;
   const switched = previous && turn.namespace !== previous.namespace && turn.namespace;
+  // a slow model's first answer takes a while; another tab's run may have steps this one hasn't seen
+  const steps = turn.steps.length ? turn.steps.map((step) => renderStep(step, true)) : live && waiting();
   const el = element(
     "section",
     { class: "turn" },
     renderPrompt(turn),
     toggler(turn, { class: "summary" }, [
       caret(open),
-      going ? spinner() : element("span", {}, "✻"),
+      going ? spinner() : decor("✻"),
       element("span", { class: "text" }, going ? liveSummary(turn, live, switched) : summary(turn, switched)),
     ]),
-    live && !open && latest && out(trailText(latest), { full: true }),
-    open && element("div", { class: "steps" }, turn.steps.map((step) => renderStep(step, true))),
+    live && !open && (latest ? out(renderTrail(latest)) : out(WAITING)),
+    open && element("div", { class: "steps" }, steps),
     renderTurnAnswer(turn),
-    turn.outcome === "failed" && turn.detail && out(turn.detail, { tone: "err", full: true }),
+    turn.outcome === "failed" && turn.detail && out(failureView(turn.detail, { model: turn.model }), { tone: "err", full: true }),
     turn.changes.length > 0 && element("div", { class: "changes" }, turn.changes.map(renderListedChange)),
-    turn.pages.length > 0 && element("div", { class: "pages" }, turn.pages.map((step) => pageLink(step, { class: "page-line" }, `▸ page: ${asText(step.title)} ↗`))),
+    turn.pages.length > 0 && element("div", { class: "pages" }, turn.pages.map((step) => pageLink(step, { class: "page-line" }, decor("↗ "), `page: ${asText(step.title)}`))),
   );
   return remember(turn, el, () => renderTurn(turn, previous));
 }
@@ -223,9 +248,9 @@ function renderLog(scroll) {
 }
 
 function usualHint(live, here) {
-  if (here) return live.stopping ? "stopping…" : "";
+  if (here) return "";
   if (live) return `a run is going in “${live.chat.title}”`;
-  return "enter to send · shift+enter for a new line";
+  return `enter to send${NEW_LINE_HINT}`;
 }
 
 function renderComposer() {
@@ -234,6 +259,7 @@ function renderComposer() {
   const hint = byId("hint");
   const text = state.problem ?? usualHint(live, here);
   byId("stop").hidden = !here;
+  byId("stop").textContent = live?.stopping ? STOPPING : STOP_LABEL;
   hint.classList.toggle("err", state.problem != null);
   // the hint is a live region: setting the same text again would announce it again
   if (hint.textContent !== text) hint.textContent = text;
@@ -245,9 +271,10 @@ function renderComposer() {
 function renderTotal(turns) {
   const sum = turns.reduce((total, turn) => total + (turn.cost ?? 0), 0);
   const known = sum > 0 && formatCost(sum);
-  const unknown = turns.some((turn) => turn.unpriced);
+  const unpriced = turns.some((turn) => turn.unpriced);
+  const unknown = unpriced || turns.some((turn) => turn.unfinished);
   const total = byId("total");
-  total.title = unknown ? PRICE_UNKNOWN : "";
+  total.title = unknown ? (unpriced ? PRICE_UNKNOWN : UNFINISHED) : "";
   if (unknown) total.textContent = known ? `${known}${PLUS_NA} this chat` : `${COST_NA} this chat`;
   else total.textContent = known ? `${known} this chat` : "";
 }
@@ -258,7 +285,10 @@ function renderChoices(chat) {
   byId("choices").hidden = !ready;
   if (!ready) return;
   byId("namespace-name").textContent = chat.namespace;
+  byId("namespace").title = `${chat.namespace}: this chat's namespace, from its next message`;
   byId("model-name").textContent = chat.model?.name ?? "pick a model";
+  byId("model-provider").textContent = chat.model ? ` · ${chat.model.provider}` : "";
+  byId("model").title = `${chat.model ? servedBy(chat.model.name, chat.model.provider) : "No model"}: this chat's model, from its next message`;
   renderFolder(chat);
 }
 
@@ -365,21 +395,6 @@ function noProviderMenu(button, host) {
 function openSettings() {
   closePopover(false);
   byId("settings").dispatchEvent(new Event(PANEL_OPEN));
-}
-
-// Each provider that can answer, with why its list is missing if it is: its featured models and the chat's own if it isn't one,
-// or, once something is typed, every model it knows that matches (those first) and the typed name.
-function modelGroups(lists, query, current) {
-  const typed = query.trim();
-  return lists.map(({ provider, featured, models, problem }) => {
-    const own = current?.provider === provider ? [current.name] : [];
-    const known = [...new Set([...featured, ...own, ...(typed ? models : [])])];
-    const matches = known.filter((name) => name.toLowerCase().includes(typed.toLowerCase()));
-    const options = matches.map((name) => ({ value: { provider, name }, label: name }));
-    if (typed && !known.includes(typed)) options.push({ value: { provider, name: typed }, label: `use “${typed}”` });
-    if (!options.length) options.push({ value: null, label: "use model name…", hint: `type a model name for ${provider}` });
-    return { name: provider, note: problem, options };
-  });
 }
 
 // After a change in settings the lists are read again, and each chat's model too: one that never picked follows what new chats start on.
@@ -639,6 +654,7 @@ async function request(method, url, body) {
 async function readTurns(chat) {
   const { title, live, turns, namespace, model, folder } = await request("GET", `api/chats/${chat.id}`);
   const folds = turns.map((turn) => foldEvents(turn.events));
+  for (const fold of folds) reopen(fold.turn);
   Object.assign(chat, { title, live, namespace, model, folder, turns: folds.map((fold) => fold.turn) });
   if (live && !state.live && state.chats.includes(chat)) follow(chat, live, folds.at(-1));
 }
@@ -752,6 +768,8 @@ function finish(live) {
   live.source.close();
   live.chat.live = null;
   if (state.live === live) state.live = null;
+  const [ended = "answered"] = known(OUTCOME, live.turn.outcome);
+  byId("announce").textContent = `Run ${ended} after ${formatSeconds(live.turn.seconds)} in “${live.chat.title}”.`;
   render("follow");
 }
 
@@ -792,11 +810,13 @@ async function send() {
   render("bottom");
 }
 
+// Says so at once: a cell blocked in C holds the stop up until the app ends its worker.
 async function stop() {
   const live = state.live;
   if (!live || live.stopping) return;
   live.stopping = true;
   renderComposer();
+  drawLive(live);
   try {
     await request("POST", `api/runs/${live.run}/stop`);
   } catch (error) {
@@ -804,6 +824,7 @@ async function stop() {
     if (error.status === CONFLICT) return;
     live.stopping = false;
     report(`Not stopped: ${error.message}`);
+    drawLive(live);
   }
 }
 
@@ -873,6 +894,32 @@ function wire() {
   setInterval(() => {
     if (state.live) tick();
   }, SPIN_MS);
+  // beforeunload comes before a live run's stream is cut, which drops its chat's turns; some phones send only pagehide
+  for (const unloading of ["beforeunload", "pagehide"]) addEventListener(unloading, keepOpen);
+}
+
+// The nodes open in each chat's turns, kept for this tab as it unloads, so a reload opens them again.
+function keepOpen() {
+  const turns = state.chats.flatMap((chat) => chat.turns ?? []).filter((turn) => turn.run);
+  try {
+    for (const turn of turns) {
+      const paths = [...nodesOf(turn)].filter(([, node]) => opened.has(node)).map(([path]) => path);
+      if (paths.length) sessionStorage.setItem(OPEN_PREFIX + turn.run, JSON.stringify(paths));
+      else sessionStorage.removeItem(OPEN_PREFIX + turn.run);
+    }
+  } catch {
+    // storage can be blocked; the tree then opens shut after a reload
+  }
+}
+
+function reopen(turn) {
+  let paths;
+  try {
+    paths = new Set(JSON.parse(sessionStorage.getItem(OPEN_PREFIX + turn.run) ?? "[]"));
+  } catch {
+    return;
+  }
+  for (const [path, node] of nodesOf(turn)) if (paths.has(path)) opened.add(node);
 }
 
 // The namespaces a chat can pick, and the default one new chats start in, as the Library panel reads them.
