@@ -13,13 +13,15 @@ import builtins
 import inspect
 import json
 import keyword
+import math
 import re
 import sqlite3
 import sys
 import unicodedata
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from contextlib import closing, contextmanager
-from functools import lru_cache, partial
+from functools import lru_cache, partial, wraps
 from pathlib import Path
 
 import deep_reasoner.llm
@@ -57,6 +59,7 @@ from jinja2 import (
     meta,
     nodes,
 )
+from jinja2.compiler import CodeGenerator
 from jinja2.sandbox import (
     UNSAFE_ASYNC_GENERATOR_ATTRIBUTES,
     UNSAFE_COROUTINE_ATTRIBUTES,
@@ -64,6 +67,7 @@ from jinja2.sandbox import (
     UNSAFE_GENERATOR_ATTRIBUTES,
     UNSAFE_METHOD_ATTRIBUTES,
     SandboxedEnvironment,
+    SecurityError,
 )
 from pydantic import ValidationError
 
@@ -410,12 +414,13 @@ of its cells failed, its sub-agents' included).
 task, namespace, status, result, seconds (from its start to its end, to the tenth), cost \
 (its own sub-agents' included), steps (how many) and failed (how many of its cells \
 failed).
-  history.steps(turn, node=None): the thoughts, cells, Library changes and pages, in \
-order, of message `turn`'s top agent, or of the sub-agent whose node is `node`: {kind: \
-"think", text}, {kind: "cell", code, output, status ("done", "failed" or "stopped"), \
-agents: the nodes of the sub-agents it started}, {kind: "change", what, namespace, name, \
-before (None when added), after} or {kind: "page", page, title} (a page opened for the \
-user), each with its drive.
+  history.steps(turn, node=None): the thoughts, cells, Library changes, pages and worked \
+examples left out, in order, of message `turn`'s top agent, or of the sub-agent whose \
+node is `node`: {kind: "think", text}, {kind: "cell", code, output, status ("done", \
+"failed" or "stopped"), agents: the nodes of the sub-agents it started}, {kind: \
+"change", what, namespace, name, before (None when added), after}, {kind: "page", page, \
+title} (a page opened for the user) or {kind: "left_out", name, namespace, why} (a worked \
+example the agent wasn't shown, as it couldn't be rendered), each with its drive.
   history.errors(turn=None): what went wrong anywhere in message `turn`, or in every \
 earlier message: each failed cell of any agent, the top one included, as turn, node, \
 namespace (the agent's), task, index (its place in history.steps(turn, node)), error \
@@ -636,14 +641,18 @@ ESCAPE = (
     "Write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%, or put the text between"
     " {% raw %} and {% endraw %}."
 )
+# For braces in a cell's code, as an f-string's, where writing each out is awkward.
+CELL_ESCAPE = (
+    "Put the cell's code between {% raw %} and {% endraw %}, inside <repl>…</repl>, or"
+    " write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%."
+)
 NAMES_ONLY = (
     "a template may name only task, vars, funcs, coroutines and the run settings'"
     " prompt_template_variables, which the engine fills in"
 )
-# An empty loader, so an include fails as a render error the engine words.
-SANDBOXED = partial(SandboxedEnvironment, loader=DictLoader({}))
 INCLUDES = (nodes.Include, nodes.Extends, nodes.Import, nodes.FromImport)
-SCREENED = (*INCLUDES, nodes.Getattr, nodes.Getitem)
+READS = (nodes.Getattr, nodes.Getitem)
+SCREENED = (*INCLUDES, *READS)
 # The names the sandbox refuses that don't start with _.
 UNSAFE_NAMES = frozenset(
     {"mro"}.union(
@@ -656,6 +665,16 @@ UNSAFE_NAMES = frozenset(
 )
 # Compiling a template nested too deep raises Python's own errors, not Jinja's.
 TEMPLATE_FAILURES = (TemplateError, SyntaxError, RecursionError, MemoryError)
+# A run's template makes nothing past what a stored text may hold: no text it renders,
+# and no text, list or number it makes on the way.
+MAX_RENDERED_CHARS = MAX_YAML_CHARS
+PAST_THE_LIMIT = (
+    f"a template may make no text, list or number past {MAX_RENDERED_CHARS:,}"
+    " characters, items or digits"
+)
+# The values a template makes or reads that the limit counts; a tool, say, it leaves be.
+COUNTED = (str, list, tuple, dict, set, frozenset)
+DIGITS_PER_BIT = math.log10(2)
 
 
 class LibraryError(ValueError):
@@ -1695,9 +1714,112 @@ def check_size(text, what):
         )
 
 
+def within_limit(value):
+    """*value*, unless it is a text or collection past MAX_RENDERED_CHARS."""
+    if isinstance(value, COUNTED) and len(value) > MAX_RENDERED_CHARS:
+        raise SecurityError(PAST_THE_LIMIT)
+    return value
+
+
+def digits(number):
+    return abs(number).bit_length() * DIGITS_PER_BIT
+
+
+def size_made(operator, left, right):
+    """How big *left* *operator* *right*, * or **, would be: a text's or list's length,
+    or a whole number's digits; 0 for any other."""
+    wholes = isinstance(left, int) and isinstance(right, int)
+    if operator == "**":
+        powers = wholes and abs(left) > 1 and right > 0
+        return right * math.log10(abs(left)) if powers else 0
+    if wholes:
+        return digits(left) + digits(right)
+    if isinstance(left, Sequence) and isinstance(right, int):
+        return len(left) * right
+    if isinstance(right, Sequence) and isinstance(left, int):
+        return len(right) * left
+    return 0
+
+
+def bounded_filter(function):
+    """*function*, a filter, its result refused past MAX_RENDERED_CHARS."""
+
+    @wraps(function)
+    def filtered(*args, **kwargs):
+        return within_limit(function(*args, **kwargs))
+
+    return filtered
+
+
+class Rendered(list):
+    """A template's text as Jinja collects it, piece by piece, refused as it passes
+    MAX_RENDERED_CHARS, so a loop rendering billions of pieces stops."""
+
+    chars = 0
+
+    def append(self, piece):
+        self.chars += len(piece)
+        if self.chars > MAX_RENDERED_CHARS:
+            raise SecurityError(PAST_THE_LIMIT)
+        super().append(piece)
+
+    def extend(self, pieces):
+        for piece in pieces:
+            self.append(piece)
+
+
+class RenderedCodeGenerator(CodeGenerator):
+    """Jinja's, collecting a macro's or block's text in a Rendered, not a list."""
+
+    def buffer(self, frame):
+        super().buffer(frame)
+        self.writeline(f"{frame.buffer} = environment.rendered()")
+
+
+class BoundedSandbox(SandboxedEnvironment):
+    """Jinja's sandbox, refusing what would make a template stand for more than a stored
+    text may hold (PAST_THE_LIMIT): * and ** before they make it; a value read, passed
+    to or got back from a call or a filter, as it comes; and its text as it renders."""
+
+    intercepted_binops = frozenset({"*", "**"})
+    code_generator_class = RenderedCodeGenerator
+    rendered = Rendered
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.filters = {
+            name: bounded_filter(each) for name, each in self.filters.items()
+        }
+
+    def call_binop(self, context, operator, left, right):
+        if size_made(operator, left, right) > MAX_RENDERED_CHARS:
+            raise SecurityError(PAST_THE_LIMIT)
+        return super().call_binop(context, operator, left, right)
+
+    def getattr(self, obj, attribute):
+        return within_limit(super().getattr(obj, attribute))
+
+    def getitem(self, obj, argument):
+        return within_limit(super().getitem(obj, argument))
+
+    def call(self, context, obj, /, *args, **kwargs):
+        for each in (*args, *kwargs.values()):
+            within_limit(each)
+        return within_limit(super().call(context, obj, *args, **kwargs))
+
+    def concat(self, pieces):
+        text = Rendered()
+        text.extend(pieces)
+        return "".join(text)
+
+
+# An empty loader, so an include fails as a render error the engine words.
+SANDBOXED = partial(BoundedSandbox, loader=DictLoader({}))
+
+
 def sandbox_templates():
-    """Make every Jinja render the engine does in this process sandboxed: each process
-    that runs the engine calls it first."""
+    """Make every Jinja render the engine does in this process sandboxed and bounded:
+    each process that runs the engine calls it first."""
     deep_reasoner.llm._JinjaEnv = SANDBOXED
 
 
@@ -1752,23 +1874,24 @@ def template_problem(label, text, names):
     this runs none of its code."""
     if not _has_jinja(text):
         return None
+    escape = CELL_ESCAPE if _has_jinja(running_code(text)) else ESCAPE
     try:
         template = JINJA.parse(text)
         if found := first_refused(template):
             line, why = found
-            return f"{label}, line {line}: {TEMPLATE}, and this one {why}. {ESCAPE}"
+            return f"{label}, line {line}: {TEMPLATE}, and this one {why}. {escape}"
         missing = sorted(meta.find_undeclared_variables(template) - names)
         if missing:
             line = first_use(template, missing[0])
-            return f'{label}, line {line}: {TEMPLATE}, and this one names "{missing[0]}"; {NAMES_ONLY}. {ESCAPE}'
+            return f'{label}, line {line}: {TEMPLATE}, and this one names "{missing[0]}"; {NAMES_ONLY}. {escape}'
         JINJA.compile(template)
     except TemplateSyntaxError as error:
-        return f"{label}, line {error.lineno}: {TEMPLATE}, and this one doesn't parse ({error.message}). {ESCAPE}"
+        return f"{label}, line {error.lineno}: {TEMPLATE}, and this one doesn't parse ({error.message}). {escape}"
     except TEMPLATE_FAILURES as error:
         # A SyntaxError's own line is in the Python Jinja generates, not in the turn.
         reason = getattr(error, "msg", None) or str(error) or type(error).__name__
         return (
-            f"{label}: {TEMPLATE}, and this one can't be compiled ({reason}). {ESCAPE}"
+            f"{label}: {TEMPLATE}, and this one can't be compiled ({reason}). {escape}"
         )
     return None
 
@@ -2129,16 +2252,19 @@ def missing_spawn(spawned, name, adding):
 def write_namespace(connection, name, text, adding):
     """Store namespace *name* as its YAML *text*, inside the caller's transaction, which
     keeps it only if it passes check_written; *adding*, as when it is new."""
+    own = read_namespaces(connection)[0].get(name, {})
     connection.execute(UPSERT_NAMESPACE, (name, text))
-    check_written(connection, name, adding)
+    check_written(connection, name, adding, own.get("vars", {}))
 
 
-def check_written(connection, name, adding):
+def check_written(connection, name, adding, vars_before):
     """Raise unless namespace *name*, as just written (new, with *adding*), is one the
     panel saves: the engine accepts the Library and reads it; its fields pass
-    check_fields; and there and below, each backbone is one the engine builds and no tool
-    takes a var's place. A namespace elsewhere is not its to answer for. The panel's
-    saves and an import each call it, so a check added here reaches both."""
+    check_fields; and there and below, each backbone is one the engine builds, no tool
+    takes a var's place, and no worked example reads a var of *vars_before*, those it
+    set itself, that is gone. A namespace elsewhere is not its to answer for. The panel's
+    saves, the library tool's and an import each call it, so a check added here reaches
+    all three."""
     _, registry = accepted(connection)
     if name not in registry.names:
         raise LibraryError(read_namespaces(connection)[1][name])
@@ -2146,6 +2272,57 @@ def check_written(connection, name, adding):
     below = [each for each in registry.names if name in registry.chain(each)]
     check_backbones(registry, below)
     hidden_vars(registry, below)
+    removed = set(vars_before) - registry.config(name).vars.keys()
+    if removed:
+        check_vars_kept(registry, removed, below)
+
+
+def check_vars_kept(registry, removed, below):
+    """Raise if, in one of the namespaces *below*, a worked example its agents are shown
+    reads by name a var of *removed* that the namespace has no longer."""
+    losing = defaultdict(list)
+    for each in sorted(below, key=chain_of):
+        resolved = registry.resolve(each)
+        gone = removed - resolved.vars.keys()
+        for example in resolved.decompositions:
+            for var in sorted(gone & vars_read(example)):
+                losing[example.name, var].append(each)
+    if losing:
+        raise LibraryError(
+            "\n".join(
+                f'Worked example "{name}" reads vars.{var}, which this takes away from'
+                f" {', '.join(namespaces)}: keep {var} in vars, or change the worked"
+                " example first."
+                for (name, var), namespaces in losing.items()
+            )
+        )
+
+
+def vars_read(decomposition):
+    """The vars *decomposition*'s templates read by name, as {{ vars.rate }} or
+    {{ vars["rate"] }}; a turn that doesn't parse reads none."""
+    found = set()
+    for turn in decomposition.messages:
+        if not _has_jinja(turn.content):
+            continue
+        try:
+            template = JINJA.parse(turn.content)
+        except TEMPLATE_FAILURES:
+            continue
+        found |= {each for each in map(var_named, template.find_all(READS)) if each}
+    return found
+
+
+def var_named(node):
+    """The var *node*, an attribute or item read, reads from vars by name; None for none."""
+    if not (isinstance(node.node, nodes.Name) and node.node.name == "vars"):
+        return None
+    if isinstance(node, nodes.Getattr):
+        return node.attr
+    key = node.arg
+    return (
+        key.value if isinstance(key, nodes.Const) and type(key.value) is str else None
+    )
 
 
 def add_namespace(connection, name, text, allowed=None):

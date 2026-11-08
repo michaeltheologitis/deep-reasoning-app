@@ -1,0 +1,16 @@
+{"seq": 1, "t": 1794165657.7937825, "kind": "turn.start", "run": "20261108-192057-784798", "chat": "recorded", "prompt": "Tally the votes.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261108-192057-784798"}
+{"seq": 2, "t": 1794165659.1359518, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Tally the votes.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794165659.225391, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1780, "tokens_out": 6, "cost": 0.0017859999999999998}
+{"seq": 4, "t": 1794165659.2257278, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Count them.', namespace='tallying'))"}
+{"seq": 5, "t": 1794165659.2301762, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Count them.", "namespace": "tallying", "drive": 1}
+{"seq": 6, "t": 1794165659.2303376, "kind": "example.left_out", "node": 2, "name": "tally", "namespace": "tallying", "why": "ZeroDivisionError: division by zero"}
+{"seq": 7, "t": 1794165659.2879996, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1809, "tokens_out": 4, "cost": 0.001813}
+{"seq": 8, "t": 1794165659.2881079, "kind": "cell.start", "node": 2, "cell": 2, "code": "FinalAnswer(4)"}
+{"seq": 9, "t": 1794165659.288142, "kind": "cell.end", "node": 2, "cell": 2, "code": "FinalAnswer(4)", "output": "FinalAnswer: 4", "status": "done"}
+{"seq": 10, "t": 1794165659.2881765, "kind": "agent.end", "node": 2, "status": "done", "result": "4", "detail": null}
+{"seq": 11, "t": 1794165659.2895956, "kind": "cell.end", "node": 1, "cell": 1, "code": "print(subagent('Count them.', namespace='tallying'))", "output": "4", "status": "done"}
+{"seq": 12, "t": 1794165659.3018057, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1788, "tokens_out": 4, "cost": 0.001792}
+{"seq": 13, "t": 1794165659.3020518, "kind": "cell.start", "node": 1, "cell": 3, "code": "FinalAnswer('tallied')"}
+{"seq": 14, "t": 1794165659.3026793, "kind": "cell.end", "node": 1, "cell": 3, "code": "FinalAnswer('tallied')", "output": "FinalAnswer: 'tallied'", "status": "done"}
+{"seq": 15, "t": 1794165659.3028798, "kind": "agent.end", "node": 1, "status": "done", "result": "tallied", "detail": null}
+{"seq": 16, "t": 1794165659.3030746, "kind": "turn.end", "outcome": "answered", "answer": "tallied", "detail": null, "unfinished_calls": 0, "cost": 0.005391, "seconds": 1.5092921257019043}

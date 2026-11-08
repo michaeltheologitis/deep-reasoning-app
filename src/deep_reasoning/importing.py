@@ -463,9 +463,10 @@ def check_namespaces(connection, before, changes):
     """Raise unless each namespace the import writes fits, and is one the panel saves, as
     the Library stands with the import written (check_written())."""
     for name, own in changes["namespaces"].items():
+        held = before["namespaces"].get(name)
         with about(namespace_named(name)):
             check_size(dump(own), "Its YAML")
-            check_written(connection, name, name not in before["namespaces"])
+            check_written(connection, name, held is None, (held or {}).get("vars", {}))
 
 
 def check_renders(changes, decompositions, names, stored):

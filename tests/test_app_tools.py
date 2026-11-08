@@ -78,6 +78,8 @@ from deep_reasoning.pages import MAX_PAGE_CHARS, read_page
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
     KEY_WITHHELD,
+    LEFT_OUT,
+    LEFT_OUT_FIELDS,
     LOST,
     PAGE_FIELDS,
     SPEC,
@@ -262,6 +264,17 @@ def test_steps_list_each_page_opened_with_the_agent_that_opened_it(library):
     ]
     assert history.steps(1)[1] == as_step
     assert history.steps(1, node=tabler["node"])[1]["title"] == tabled["title"]
+
+
+def test_steps_list_a_worked_example_left_out_with_the_agent_it_was_for(library):
+    events = recorded("left_out")
+    plant(library, CHAT, events)
+    history = history_of(library)
+    [left_out] = [event for event in events if event["kind"] == LEFT_OUT]
+    [counter] = history.agents(1)
+    as_step = {"kind": "left_out"} | {key: left_out[key] for key in LEFT_OUT_FIELDS}
+    assert history.steps(1, node=counter["node"])[0] == as_step | {"drive": 1}
+    assert [step["kind"] for step in history.steps(1)] == ["cell", "cell"]
 
 
 @pytest.mark.parametrize("name", ["stopped", "killed"])
@@ -1571,6 +1584,30 @@ def test_a_suffix_the_user_stored_with_a_run_time_line_is_kept_by_a_change(fresh
     assert own_fields(fresh, "drafts")["system_suffix"] == suffix
 
 
+APPLY_THE_RATE = """\
+name: apply the rate
+messages:
+- {role: user, content: "Apply {{ vars.rate.value }} to 100."}
+- {role: assistant, content: "<think>Multiply.</think>\\n<repl>FinalAnswer(100 * rate)</repl>"}
+"""
+
+
+def test_the_tool_refuses_to_take_away_a_var_a_worked_example_reads(fresh):
+    tool = library_tool(fresh)
+    tool.change_namespace("drafts", {"vars": {"rate": 0.2, "currency": "EUR"}})
+    tool.write_decomposition("drafts", APPLY_THE_RATE)
+    before = stored_namespaces(fresh)
+    refusal = (
+        'Worked example "apply the rate" reads vars.rate, which this takes away from'
+        " drafts: keep rate in vars, or change the worked example first."
+    )
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        tool.change_namespace("drafts", {"vars": {"currency": "EUR"}})
+    assert stored_namespaces(fresh) == before
+    tool.change_namespace("drafts", {"vars": {"rate": 0.25}})
+    assert own_fields(fresh, "drafts")["vars"] == {"rate": 0.25}
+
+
 @pytest.mark.parametrize(
     ("parent", "own", "refusal"),
     [
@@ -2211,6 +2248,7 @@ RECORDED = [
     "stopped",
     "librarian",
     "pages",
+    "left_out",
 ]
 
 

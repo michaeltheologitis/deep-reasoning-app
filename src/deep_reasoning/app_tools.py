@@ -110,6 +110,8 @@ from deep_reasoning.pages import (
 )
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
+    LEFT_OUT,
+    LEFT_OUT_FIELDS,
     PAGE_FIELDS,
     SPEC,
     chat_turns,
@@ -320,8 +322,8 @@ def start_cell(tree: Tree, event: Event) -> None:
 
 
 def add_logged(kind: str, fields: tuple[str, ...], tree: Tree, event: Event) -> None:
-    """A change the library tool made, or a page the page tool opened, as a step of the
-    agent that did it."""
+    """A change the library tool made, a page the page tool opened, or a worked example
+    left out, as a step of the agent it was for."""
     step = {"kind": kind} | {key: event.get(key) for key in fields}
     add_step(tree, event.get("node"), step)
 
@@ -379,6 +381,7 @@ FOLDS = {
     "cell.end": end_cell,
     "library.change": partial(add_logged, "change", CHANGE_FIELDS),
     "page.open": partial(add_logged, "page", PAGE_FIELDS),
+    LEFT_OUT: partial(add_logged, "left_out", LEFT_OUT_FIELDS),
     "usage": add_usage,
     "agent.end": end_agent,
     "turn.end": end_turn,
@@ -654,8 +657,8 @@ class History:
         return cut([agent_row(row) for row in self.tree(turn).rows])
 
     def steps(self, turn: int, node: Any = None) -> list[dict[str, Any]]:
-        """The thoughts, cells, Library changes and pages of message *turn*'s top agent,
-        or of sub-agent *node*."""
+        """The thoughts, cells, Library changes, pages and worked examples left out of
+        message *turn*'s top agent, or of sub-agent *node*."""
         # A copy: the folded runs are kept for the next call.
         return cut([step for _, _, step in indexed(self.drives(turn, node))])
 

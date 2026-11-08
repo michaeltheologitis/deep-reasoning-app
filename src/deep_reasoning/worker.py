@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -27,6 +28,7 @@ import yaml
 from deep_reasoner.core import configure_structlog_fixture
 from deep_reasoner.namespaces import NamespaceRegistry
 from deep_reasoner.tools import ToolBuildError
+from deep_reasoner.v2 import agent
 from deep_reasoner.v2.agent import _parts
 from deep_reasoner.v2.cli import (
     V2Config,
@@ -35,7 +37,7 @@ from deep_reasoner.v2.cli import (
     close_run,
 )
 from deep_reasoner.v2.decompositions import as_cli_act
-from deep_reasoner.v2.messages import NoCodeBlock, code
+from deep_reasoner.v2.messages import Decomposition, NoCodeBlock, code
 from genai_prices import Usage, calc_price
 from openai.resources.chat.completions import AsyncCompletions
 
@@ -44,6 +46,7 @@ from deep_reasoning.library import granted_in, in_chain_order, sandbox_templates
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
     FINAL_ANSWER,
+    LEFT_OUT,
     PAGE_FIELDS,
     SPEC,
     raised_error,
@@ -59,6 +62,10 @@ REPL_BLOCK = re.compile(r"<repl>.*?(?:</repl>|$)", re.DOTALL)
 THINK_TAG = re.compile(r"</?think>")
 OBSERVATION = re.compile(r"\A<observation>\n?(.*?)\n?</observation>\Z", re.DOTALL)
 YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+# The worked examples left out of the agent starting in this context, each as its
+# LEFT_OUT event says it, until its agent.start: the engine renders them before.
+NOT_SHOWN: ContextVar[tuple[dict[str, Any], ...]] = ContextVar("not_shown", default=())
+WHY_CHARS = 300
 
 
 def source_of(reply: str) -> str | None:
@@ -295,6 +302,9 @@ class Recorder:
             namespace=event["namespace"],
             drive=drive,
         )
+        for left_out in NOT_SHOWN.get():
+            self.emit(LEFT_OUT, node=node, **left_out)
+        NOT_SHOWN.set(())
 
     def _llm_call(self, event: dict[str, Any]) -> None:
         self._calls_going -= 1
@@ -382,6 +392,36 @@ class Recorder:
         """The event is a known agent's own model call or cell, not a tool's inside it."""
         node = event.get("node_id")
         return node == event.get("agent_id") and node in self._agents
+
+
+def why_unrendered(error: Exception) -> str:
+    """What failed as a worked example rendered, on one line: what Jinja or Python
+    raised, unwrapped from the engine's error naming the example."""
+    detail = detail_of(error.__cause__ or error)
+    return detail.split("\n", 1)[0][:WHY_CHARS]
+
+
+def leaving_out_unrendered() -> None:
+    """Leave each worked example that fails to render out of its agent's prompt, all its
+    turns, for the agent's start to say why, so the run goes on, where the engine would
+    end it. A stop is no failure to render: it isn't an Exception."""
+    rendered_turns = agent._rendered_turns
+
+    def rendered_or_none(
+        decomposition: Any, render_ctx: dict[str, Any], namespace: str
+    ) -> list[tuple[str, str]]:
+        try:
+            return rendered_turns(decomposition, render_ctx, namespace)
+        # Logged as the run's event, which the chat shows; a log line would land in the
+        # output of the cell a sub-agent starts in.
+        except Exception as error:  # noqa: BLE001
+            name = Decomposition.coerce(decomposition).name
+            why = why_unrendered(error)
+            left_out = {"name": name, "namespace": namespace, "why": why}
+            NOT_SHOWN.set((*NOT_SHOWN.get(), left_out))
+            return []
+
+    agent._rendered_turns = rendered_or_none
 
 
 def end_group() -> NoReturn:
@@ -519,6 +559,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
 
 def main() -> None:
     sandbox_templates()
+    leaving_out_unrendered()
     folder = Path(sys.argv[1])
     # The cwd is the chat's folder: its own modules import, after every installed one.
     sys.path.append(os.getcwd())

@@ -49,8 +49,8 @@ NODE = (int, str, NONE)
 DRIVE_STATUSES = frozenset({"running", "done", "exhausted", "failed", "stopped"})
 CELL_STATUSES = frozenset({"running", "done", "failed", "stopped"})
 # The fields of each block, and of each step and sub-agent drive it copies, that the page
-# draws: each of one of its types, or one of its texts. A Library change's fields show as
-# text, whatever they hold.
+# draws: each of one of its types, or one of its texts. A Library change's fields, and a
+# worked example's left out, show as text, whatever they hold.
 BLOCKS = {
     "text": {"text": TEXT},
     "step": {
@@ -74,6 +74,7 @@ STEPS = {
     },
     "change": {},
     "page": {"page": TEXT, "title": TEXT},
+    "left_out": {},
 }
 DRIVE = {
     "node": NODE,

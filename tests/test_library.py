@@ -24,6 +24,7 @@ from deep_reasoner.v2.cli import (
     declared_tool_names,
 )
 from deep_reasoner.v2.messages import func, var
+from jinja2.sandbox import SecurityError
 from structlog.testing import capture_logs
 
 from deep_reasoning.importing import import_config
@@ -31,6 +32,8 @@ from deep_reasoning.library import (
     APP_TOOLS_FILE,
     BEFORE_EVENTS,
     BEFORE_PAGES,
+    CELL_ESCAPE,
+    ESCAPE,
     FIELDS_MAPPING,
     FILLED_IN,
     HAND_OFF_TURNS,
@@ -46,14 +49,17 @@ from deep_reasoning.library import (
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
     LOCAL_REPL,
+    MAX_RENDERED_CHARS,
     MAX_ROW_BYTES,
     MAX_YAML_CHARS,
     NAME_NOT_TEXT,
     NO_DESCRIPTION,
     NO_SUB_AGENTS,
     PAGE_DESCRIPTION,
+    PAST_THE_LIMIT,
     ROOT_SUFFIX,
     SANDBOX_LINE,
+    SANDBOXED,
     SHAPES,
     SPAWN_LINE,
     UNREAD_SETTING,
@@ -87,6 +93,8 @@ from deep_reasoning.library import (
     sandbox_templates,
     store_tool,
     stored_config,
+    template_names,
+    template_problem,
     tool_text,
     turn_problems,
     writing,
@@ -1817,7 +1825,9 @@ def test_a_decomposition_the_engine_cant_render_is_refused_naming_its_turn(
 ):
     text = answering("braces", code)
     before = dumped(library)
-    escape = "Write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%"
+    escape = (
+        "Put the cell's code between {% raw %} and {% endraw %}, inside <repl>…</repl>"
+    )
     with pytest.raises(LibraryError, match=re.escape(problem)) as refused:
         change(library, add_decomposition, ROOT, text)
     assert escape in str(refused.value)
@@ -2019,6 +2029,18 @@ def test_a_namespace_granting_a_tool_root_grants_says_it_grants_it_here(library)
     ]
 
 
+@pytest.mark.parametrize(
+    ("text", "hint"),
+    [
+        ('<think>Total.</think>\n<repl>print(f"{{{total}}}")</repl>', CELL_ESCAPE),
+        ("What is {{ total }}?", ESCAPE),
+    ],
+    ids=["in-a-cell", "in-a-task"],
+)
+def test_a_template_refused_says_how_to_keep_its_braces_where_they_are(text, hint):
+    assert template_problem("Turn 1", text, template_names({})).endswith(hint)
+
+
 def test_the_names_a_template_may_read_are_those_the_engine_fills_in():
     assert set(FILLED_IN) == set(_render_context([], {}, "a task"))
 
@@ -2044,6 +2066,41 @@ WRITTEN_TEMPLATES = {
     ),
 }
 TICKETS = "open tickets"
+LOOPING = "{{% for i in 'x' * 3000 %}}{{% for j in 'x' * 3000 %}}{body}{{% endfor %}}{{% endfor %}}"
+# Refused as it passes the limit, so long before it would have made it all.
+REFUSED_S = 2
+# Templates that would make a text, list or number a few times past the limit, each a
+# different way; unbounded, each renders in about a second.
+PAST_THE_LIMIT_TEMPLATES = {
+    "a text multiplied": "{{ 'ab' * 3000000 }}",
+    "a list multiplied": "{{ ([1] * 3000000)|length }}",
+    "a power": "{{ 10 ** 3000000 }}",
+    "a number squared and squared": (
+        "{% set ns = namespace(n=2) %}{% for _ in 'x' * 23 %}"
+        "{% set ns.n = ns.n * ns.n %}{% endfor %}{{ ns.n > 1 }}"
+    ),
+    "loops rendering": LOOPING.format(body="ab"),
+    "loops in a macro": (
+        f"{{% macro m() %}}{LOOPING.format(body='ab')}{{% endmacro %}}{{{{ m()|length }}}}"
+    ),
+    "loops in a set block": (
+        f"{{% set x %}}{LOOPING.format(body='ab')}{{% endset %}}{{{{ x|length }}}}"
+    ),
+    "a text doubled in a namespace": (
+        "{% set ns = namespace(s='ab') %}{% for _ in 'x' * 23 %}"
+        "{% set ns.s = ns.s ~ ns.s %}{% endfor %}{{ ns.s|length }}"
+    ),
+    "a text doubled by a macro calling itself": (
+        "{% macro m(s, n) %}{% if n %}{{ m(s ~ s, n - 1)|length }}{% endif %}"
+        "{% endmacro %}{{ m('ab', 23) }}"
+    ),
+    "a list doubled in place": (
+        "{% set l = ['ab'] %}{% for _ in 'x' * 23 %}{{ l.extend(l) }}{% endfor %}"
+        "{{ l|length }}"
+    ),
+    "a method": "{{ 'x'.ljust(3000000)|length }}",
+    "a filter": "{{ ('a' * 999999)|replace('a', 'aaa')|length }}",
+}
 
 
 def test_each_worked_example_a_run_renders_renders_the_same_sandboxed(
@@ -2076,6 +2133,22 @@ def test_each_worked_example_a_run_renders_renders_the_same_sandboxed(
     assert rendered() == unsandboxed
     for name, (_, expected) in WRITTEN_TEMPLATES.items():
         assert unsandboxed[ROOT, name] == [("user", expected)]
+
+
+@pytest.mark.parametrize(
+    "template", PAST_THE_LIMIT_TEMPLATES.values(), ids=PAST_THE_LIMIT_TEMPLATES
+)
+def test_a_run_refuses_a_template_making_anything_past_the_limit(template):
+    started = time.monotonic()
+    with pytest.raises(SecurityError, match=re.escape(PAST_THE_LIMIT)):
+        SANDBOXED().from_string(template).render()
+    assert time.monotonic() - started < REFUSED_S
+
+
+def test_a_template_making_as_much_as_the_limit_renders():
+    template = "{{ 'ab' * HALF }}{% for _ in 'x' %}{% endfor %}"
+    rendered = SANDBOXED().from_string(template).render(HALF=MAX_RENDERED_CHARS // 2)
+    assert len(rendered) == MAX_RENDERED_CHARS
 
 
 def test_a_reasoner_the_engine_doesnt_know_elsewhere_holds_up_no_other_change(library):

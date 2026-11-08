@@ -349,3 +349,14 @@ test("a cell that raised or was stopped before its FinalAnswer gave one reads as
   assert.equal(stepLabel({ ...cell, output: null, status: "stopped" }), "Python(FinalAnswer('it's))");
   assert.equal(stepLabel({ ...cell, output: "FinalAnswer: 'x'", status: "done" }), "Final answer");
 });
+
+test("a worked example left out says which, where and why, each field as text", () => {
+  const step = { kind: "left_out", name: "<b>tally</b>", namespace: { odd: 1 }, why: "ZeroDivisionError: division by zero" };
+  const el = renderStep(step, false);
+  assert.deepEqual(parts(el), ["line", "out"]);
+  assert.equal(el.children[0].textContent, '◆Left out worked example "<b>tally</b>" in {"odd":1}');
+  assert.equal(el.children[1].textContent, "⎿ZeroDivisionError: division by zero");
+  assert.equal(stepLabel(step), 'Left out worked example "<b>tally</b>"');
+  const long = renderStep({ ...step, why: "x".repeat(10_000) }, false);
+  assert.equal(long.children[1].textContent, `⎿${"x".repeat(299)}…`);
+});

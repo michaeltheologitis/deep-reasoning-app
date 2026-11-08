@@ -7,6 +7,9 @@ const MORE_ROWS = 100;
 const SECONDS_PER_MINUTE = 60;
 const MS_PER_SECOND = 1000;
 const FROM_NEXT = "from the next message";
+const LEFT_OUT = "Left out";
+// as the worker cuts why it left a worked example out; a shared file's record may hold more
+const WHY_CHARS = 300;
 const UNKNOWN_COST = "N/A";
 // no-break spaces keep a cost whole where its line wraps
 const COST_NA = `cost\u00a0${UNKNOWN_COST}`;
@@ -180,6 +183,7 @@ function describe(step) {
   if (step.kind === "think") return { text: step.text };
   if (step.kind === "change") return { text: `Library: ${changeText(step)}` };
   if (step.kind === "page") return { text: `page: ${asText(step.title)}` };
+  if (step.kind === "left_out") return { text: `${LEFT_OUT} worked example "${asText(step.name)}"` };
   const count = step.agents.length;
   if (count) return { text: count === 1 ? "Delegated to a sub-agent" : `Delegated to ${plural(count, "sub-agent")}` };
   if (isFinal(step)) return { text: "Final answer" };
@@ -377,10 +381,17 @@ function renderPage(step) {
   return element("div", { class: "cell page-step" }, pageLink(step, { class: "line" }, element("span"), decor("◆", { class: "glyph" }), head));
 }
 
+// A worked example the agent wasn't shown, as it couldn't be rendered, and why: each field from the run's record shows as text.
+function renderLeftOut(step) {
+  const head = element("span", { class: "head" }, element("b", {}, LEFT_OUT), ` worked example "${asText(step.name)}" in ${asText(step.namespace)}`);
+  return element("div", { class: "cell left-out" }, element("div", { class: "line" }, element("span"), decor("◆", { class: "glyph" }), head), out(clip(asText(step.why), WHY_CHARS), { tone: "warn", full: true }));
+}
+
 function stepView(step, root) {
   if (step.kind === "think") return renderThink(step);
   if (step.kind === "change") return renderChange(step);
   if (step.kind === "page") return renderPage(step);
+  if (step.kind === "left_out") return renderLeftOut(step);
   return renderCell(step, root);
 }
 
