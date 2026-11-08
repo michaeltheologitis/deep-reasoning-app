@@ -301,9 +301,28 @@ DEFAULT_SETTINGS = yaml.safe_load(SYSTEM_PROMPT_FILE.read_text(encoding="utf-8")
 # Each chat picks its model, and the provider that serves it; a Library made before that
 # may still hold these, which are left unread.
 CHATS_DECIDE = {"model", "client"}
+# What an import reads but doesn't store as a run setting: the content, and its own path.
+CONTENT = {"namespaces", "namespaces_dir", "decompositions", "tools", "config_path"}
+# Left to the Library, not a config: content (own tables), per-run paths, and the model and
+# its key. A shared file's run setting of these is left out.
+NOT_RUN_SETTINGS = CONTENT | {
+    "task",
+    "task_id",
+    "run_prefix",
+    "log_dir",
+    "load_dotenv",
+    "model",
+    "planner_model",
+    "models",
+    "llm_kwargs",
+    "client",
+    "reasoner",
+}
 # Every run has one, so the Library is checked and shown as a run sees it: with the llm
 # tool a model brings.
 A_MODEL = {"model": "the chat's model"}
+# The tools a run declares as it has a model, a Library row of theirs or not: the llm.
+BROUGHT_BY_A_MODEL = frozenset(declared_tool_names(V2Config.model_validate(A_MODEL)))
 # A tool of this factory, or a reasoner of this type, runs on the user's subscription.
 CLAUDE_CODE = "claude_code"
 ENTRY_NAMESPACE = "entry_namespace"
@@ -546,6 +565,17 @@ UNREAD_SETTING = "set in the Library; the engine doesn't read it"
 BACKBONES = (DeepReasoner.backbone_type, ClaudeDeepReasoner.backbone_type)
 # As the library tool's limit; past 64 MiB, a change event would end the run that wrote it.
 MAX_YAML_CHARS = 1_000_000
+# Why a shared file's row is left out, when it is none the app could have written. A row
+# is read only within MAX_ROW_BYTES, as UTF-8 takes at most 4 bytes a character.
+MAX_ROW_BYTES = 4 * MAX_YAML_CHARS
+TOO_LONG_ROW = f"It is longer than the {MAX_YAML_CHARS:,} characters the Library holds."
+YAML_NOT_TEXT = "Its YAML isn't text."
+GRANT_IGNORED = "Runs ignore its grants until it is fixed or deleted."
+NAME_NOT_TEXT = "Its name isn't text."
+NOT_A_RUN_SETTING = "The Library never holds it: each chat or run sets it, or the Library's own tables do."
+# What heads the problems of a decomposition the engine can't read.
+UNREAD_DECOMPOSITION = "Agents aren't shown it: the engine can't read it."
+FIELDS_MAPPING = 'The YAML should be a mapping of fields, like "tools: [llm]".'
 # A var named as one of these hides it from the agent's code, as max: 10 breaks max(numbers).
 BUILTIN_NAMES = frozenset(dir(builtins))
 # Characters that don't show: controls and formats, such as a zero-width space.
@@ -588,6 +618,10 @@ class LibraryError(ValueError):
 
 class ChangedMeanwhile(LibraryError):
     """A save or delete refused because what it was opened on changed since."""
+
+
+# What a change nobody opened in the panel, as the librarian's, is checked against: nothing.
+NOT_OPENED = object()
 
 
 BY_WHOM = "(by the librarian, another tab or an import)"
@@ -775,44 +809,291 @@ def tool_text(name, text, source):
     return f"{text}# {tool_file(name)}\n{source}"
 
 
+def fitting(column):
+    """SQL reading *column* only when its bytes could hold MAX_YAML_CHARS characters, then
+    its size in bytes, NULL for NULL: length() of text would stop at a NUL."""
+    size = f"length(CAST({column} AS BLOB))"
+    return f"CASE WHEN {size} <= {MAX_ROW_BYTES} THEN {column} END, {size}"
+
+
+def row_text(text, size):
+    """A row's *text*, *size* bytes, as fitting() read it; a LibraryError saying why it
+    can't be read."""
+    if type(text) is str and len(text) <= MAX_YAML_CHARS:
+        return text
+    if type(text) is str or text is None and size is not None:
+        raise LibraryError(TOO_LONG_ROW)
+    raise LibraryError(YAML_NOT_TEXT)
+
+
+def shown_text(text, size):
+    """A row's text as the panel shows it, from what fitting() read: None for one too long
+    or not text."""
+    try:
+        return row_text(text, size)
+    except LibraryError:
+        return None
+
+
+def warn_left_out(table, key, why):
+    """*why* the row *key* of *table* is left out, logged."""
+    log.warning("library.row_left_out", table=table, row=repr(key), why=why)
+    return why
+
+
+def left_out_note(why):
+    """What a change logs as the before of a row the engine can't read, in place of its
+    text, which may be too long or not text: why, as YAML comments."""
+    return "".join(f"# {line}\n" for line in f"Left out: {why}".splitlines())
+
+
+def unreadable(error):
+    """A ValidationError of the engine's config model as a LibraryError, in its words."""
+    first = error.errors()[0]
+    where = ".".join(map(str, first["loc"]))
+    return LibraryError(f"The engine can't read it ({where}: {first['msg']}).")
+
+
+def setting_value(key, text):
+    """Run setting *key*'s value, from its YAML *text*, if the engine reads it so; else a
+    LibraryError saying why not."""
+    if key in NOT_RUN_SETTINGS:
+        raise LibraryError(NOT_A_RUN_SETTING)
+    value = loaded(text)
+    try:
+        V2Config.model_validate({key: value})
+    except ValidationError as error:
+        raise unreadable(error) from error
+    return value
+
+
+def read_run_settings(connection, namespaces):
+    """The run settings that load, as {key: value}, and those left out, as {key: why}.
+    Each chat picks its model and client, so an older file's go unread. An
+    entry_namespace naming neither root nor one of *namespaces*, those the engine reads,
+    is left out too, as the engine would refuse every run and every write."""
+    settings, left = {}, {}
+    query = f"SELECT key, {fitting('yaml')} FROM settings ORDER BY rowid"
+    for key, text, size in connection.execute(query):
+        if type(key) is not str:
+            warn_left_out("settings", key, NAME_NOT_TEXT)
+            continue
+        if key in CHATS_DECIDE:
+            continue
+        try:
+            settings[key] = setting_value(key, row_text(text, size))
+        except LibraryError as error:
+            left[key] = warn_left_out("settings", key, str(error))
+    entry = settings.get(ENTRY_NAMESPACE, ROOT)
+    if entry != ROOT and entry not in namespaces:
+        del settings[ENTRY_NAMESPACE]
+        why = f'It names namespace "{entry}", which the engine doesn\'t read.'
+        left[ENTRY_NAMESPACE] = warn_left_out("settings", ENTRY_NAMESPACE, why)
+    return settings, left
+
+
 def stored_settings(connection):
-    rows = connection.execute("SELECT key, yaml FROM settings ORDER BY rowid")
-    return {key: yaml.safe_load(text) for key, text in rows if key not in CHATS_DECIDE}
+    return read_run_settings(connection, read_namespaces(connection)[0])[0]
 
 
-def library_tools(connection):
-    """The Library's own tools, each as its name, YAML and source. A row under an app
-    tool's name, as a shared file may hold, is left out: the app's own takes its place."""
-    rows = connection.execute("SELECT name, yaml, source FROM tools ORDER BY rowid")
-    tools = []
-    for name, text, source in rows:
+def check_tool_block(name, block):
+    """Raise unless tool *name*'s config *block* is one the Library may hold: factory and
+    factory_from text; without factory_from, one of the engine's own factories; with it,
+    a function of the tool's own Python, never named as one of the engine's, so no block
+    reads as one of them (claude_code runs on the user's subscription)."""
+    factory, factory_from = block.get("factory", name), block.get("factory_from")
+    if type(factory) is not str or not isinstance(factory_from, str | None):
+        raise LibraryError(f'Tool "{name}": factory and factory_from should be text.')
+    if factory_from is None and factory not in BUILDERS:
+        raise LibraryError(
+            f'Tool "{name}" names factory "{factory}", which is not built in; give its'
+            " block a factory_from: file."
+        )
+    if factory_from is not None and factory in BUILDERS:
+        raise LibraryError(
+            f'Tool "{name}" names factory "{factory}", one of the engine\'s own'
+            f" ({', '.join(BUILDERS)}), from Python of its own: name that function"
+            " otherwise, so the tool never reads as the engine's."
+        )
+
+
+def tool_block(name, text, source):
+    """Tool *name*'s block, from its YAML *text*, if it is one the app stores: with its
+    Python *source*, or without for one the engine builds; else a LibraryError saying
+    why not."""
+    block = loaded(text)
+    try:
+        V2Config.model_validate({"tools": {name: block}})
+    except ValidationError as error:
+        raise unreadable(error) from error
+    check_tool_block(name, block)
+    if (source is None) != (block.get("factory_from") is None):
+        raise LibraryError(
+            "A tool holds Python exactly when its block names a file for it"
+            " (factory_from); this one has one without the other."
+        )
+    if not isinstance(block.get("description", ""), str):
+        raise LibraryError("Its description should be text.")
+    return block
+
+
+def read_tools(connection):
+    """The Library's own tools that load, as {name: (block, source)}, and those left out,
+    as {name: why}. A row under an app tool's name, as a shared file may hold, is left
+    out too: the app's own takes its place."""
+    query = (
+        f"SELECT name, {fitting('yaml')}, {fitting('source')} FROM tools ORDER BY rowid"
+    )
+    tools, left = {}, {}
+    for name, text, size, source, source_size in connection.execute(query):
+        if type(name) is not str:
+            warn_left_out("tools", name, NAME_NOT_TEXT)
+            continue
         if name in APP_TOOLS:
             log.warning("library.tool_shadowed", tool=name)
             continue
-        tools.append((name, text, source))
-    return tools
+        try:
+            source = None if source_size is None else row_text(source, source_size)
+            tools[name] = tool_block(name, row_text(text, size), source), source
+        except LibraryError as error:
+            left[name] = warn_left_out("tools", name, str(error))
+    return tools, left
 
 
-def stored_config(connection):
-    """The Library as a plain dict in the engine's config shape, the app's tools after its
-    own; a custom tool's factory_from names its stored file."""
-    tools = {name: yaml.safe_load(text) for name, text, _ in library_tools(connection)}
+def library_tools(connection):
+    return read_tools(connection)[0]
+
+
+def own_fields(name, text):
+    """Namespace *name*'s own fields, from its YAML *text*, if the engine reads them so;
+    else a LibraryError saying why not. Its name and decompositions are the app's to put
+    in."""
+    data = fields_in(text)
+    fields = {key: value for key, value in data.items() if key not in NAMED_ELSEWHERE}
+    try:
+        NamespaceConfig.model_validate(fields | {"name": name})
+    except ValidationError as error:
+        raise LibraryError("\n".join(map(namespace_problem, error.errors()))) from error
+    return fields
+
+
+def read_namespaces(connection):
+    """The namespaces that load, as {name: own fields}; those left out, as {name: why};
+    and each one's own YAML as the panel shows it, None for one too long or not text.
+    One under a namespace left out or not there goes too, as the engine can't resolve
+    it; root's stay, as the engine supplies a bare root for a file without one."""
+    query = f"SELECT name, {fitting('yaml')} FROM namespaces ORDER BY rowid"
+    namespaces, left, shown = {}, {}, {}
+    for name, text, size in connection.execute(query):
+        if type(name) is not str:
+            warn_left_out("namespaces", name, NAME_NOT_TEXT)
+            continue
+        shown[name] = None
+        try:
+            shown[name] = row_text(text, size)
+            namespaces[name] = own_fields(name, shown[name])
+        except LibraryError as error:
+            left[name] = warn_left_out("namespaces", name, str(error))
+    # Parents first, as each has a dot fewer.
+    for name in sorted(namespaces, key=lambda each: each.count(".")):
+        parent = parent_of(name)
+        if parent in (None, ROOT) or parent in namespaces:
+            continue
+        del namespaces[name]
+        gone = "is left out" if parent in left else "is not in the Library"
+        why = f'The namespace it goes under, "{parent}", {gone}.'
+        left[name] = warn_left_out("namespaces", name, why)
+    return namespaces, left, shown
+
+
+def read_decompositions(connection):
+    """Each decomposition row, in the order they were added, as {namespace, name, yaml,
+    decomposition, why}: yaml None for one the panel can't show, and decomposition, as
+    the engine's model reads it, None for one left out, with why."""
+    query = (
+        f"SELECT namespace, name, {fitting('yaml')} FROM decompositions ORDER BY rowid"
+    )
+    rows = []
+    for namespace, name, text, size in connection.execute(query):
+        if type(namespace) is not str or type(name) is not str:
+            warn_left_out("decompositions", (namespace, name), NAME_NOT_TEXT)
+            continue
+        row = {"namespace": namespace, "name": name, "yaml": None}
+        row |= {"decomposition": None, "why": None}
+        try:
+            row["yaml"] = row_text(text, size)
+            row["decomposition"] = decomposition_in(row["yaml"])
+        except LibraryError as error:
+            row["why"] = warn_left_out("decompositions", (namespace, name), str(error))
+        rows.append(row)
+    return rows
+
+
+def read_library(connection):
+    """Every row of the Library's tables as the readers above check it, read once: what
+    loads, and what is left out with why, by table."""
+    namespaces, namespaces_left, namespace_yaml = read_namespaces(connection)
+    settings, settings_left = read_run_settings(connection, namespaces)
+    tools, tools_left = read_tools(connection)
+    return {
+        "settings": settings,
+        "settings_left": settings_left,
+        "tools": tools,
+        "tools_left": tools_left,
+        "namespaces": namespaces,
+        "namespaces_left": namespaces_left,
+        "namespace_yaml": namespace_yaml,
+        "decompositions": read_decompositions(connection),
+    }
+
+
+def config_of(read):
+    """The Library *read* (read_library()) as a plain dict in the engine's config shape,
+    the app's tools after its own; a custom tool's factory_from names its stored file.
+    A grant of a tool left out is left out too, with a warning, as the engine would
+    refuse every run and every write; the llm a model brings stays granted."""
+    tools = {name: block for name, (block, _) in read["tools"].items()}
     tools |= {
         name: {"factory_from": str(APP_TOOLS_FILE), "factory": factory}
         for name, (factory, _) in APP_TOOLS.items()
     }
     decompositions = defaultdict(list)
-    rows = connection.execute(
-        "SELECT namespace, yaml FROM decompositions ORDER BY rowid"
-    )
-    for namespace, text in rows:
-        decompositions[namespace].append(yaml.safe_load(text))
-    rows = connection.execute("SELECT name, yaml FROM namespaces ORDER BY rowid")
+    for row in read["decompositions"]:
+        if row["decomposition"] is not None:
+            decompositions[row["namespace"]].append(row["decomposition"].model_dump())
+    ignored = read["tools_left"].keys() - BROUGHT_BY_A_MODEL
     namespaces = {
-        name: {**(yaml.safe_load(text) or {}), "decompositions": decompositions[name]}
-        for name, text in rows
+        name: without_grants(name, fields, ignored)
+        | {"decompositions": decompositions[name]}
+        for name, fields in read["namespaces"].items()
     }
-    return {**stored_settings(connection), "tools": tools, "namespaces": namespaces}
+    return {**read["settings"], "tools": tools, "namespaces": namespaces}
+
+
+def without_grants(name, fields, ignored):
+    """Namespace *name*'s own *fields* but for its grants of the tools *ignored*, each
+    logged."""
+    tools = fields.get("tools", [])
+    for tool in set(tools) & ignored:
+        log.warning("library.grant_ignored", namespace=name, tool=tool)
+    if not set(tools) & ignored:
+        return fields
+    return fields | {"tools": [tool for tool in tools if tool not in ignored]}
+
+
+def stored_config(connection):
+    """The Library as a plain dict in the engine's config shape (config_of()), every row
+    the engine can't read, as a shared file may hold, left out."""
+    return config_of(read_library(connection))
+
+
+def grants_of(namespaces, tool):
+    """Those of *namespaces*, by name their own fields, that grant *tool* themselves, each
+    after the ones above it: as stored, a grant config_of() ignores included."""
+    granting = [
+        name for name, fields in namespaces.items() if tool in fields.get("tools", [])
+    ]
+    return sorted(granting, key=chain_of)
 
 
 def granted(namespaces):
@@ -1000,13 +1281,13 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     tools_dir = Path(tools_dir).resolve()
     tools_dir.mkdir(parents=True, exist_ok=True)
     with closing(open_library(library_path)) as connection:
-        config = stored_config(connection)
-        tools = library_tools(connection)
+        read = read_library(connection)
+    config = config_of(read)
     grants = granted(config["namespaces"])
     config["tools"] = {
         name: block for name, block in config["tools"].items() if name in grants
     }
-    for name, _, source in tools:
+    for name, (_, source) in read["tools"].items():
         if source is None or name not in config["tools"]:
             continue
         file = tools_dir / tool_file(name)
@@ -1049,12 +1330,11 @@ def has_namespace(connection, name):
 
 
 def namespace_yaml(connection, name):
-    """Namespace *name*'s own YAML as stored; None when the Library has no namespace
-    *name*."""
-    found = connection.execute(
-        "SELECT yaml FROM namespaces WHERE name = ?", (name,)
-    ).fetchone()
-    return None if found is None else found[0]
+    """Namespace *name*'s own YAML, as a change starts from it and logs it as its before:
+    for one the engine can't read, as a shared file may hold, a note saying why; None
+    when the Library has no namespace *name*."""
+    _, left, shown = read_namespaces(connection)
+    return left_out_note(left[name]) if name in left else shown.get(name)
 
 
 def check_namespace(connection, name):
@@ -1180,19 +1460,38 @@ def loaded(text):
         raise LibraryError(
             f"The YAML doesn't parse ({where}{reason}). Check the indentation and quoting on that line."
         ) from error
+    except RecursionError as error:
+        raise LibraryError("The YAML is nested too deeply to read.") from error
 
 
-def parsed(text):
-    """The decomposition the YAML *text* describes, checked by the engine's own model."""
+def fields_in(text):
+    """The fields a namespace's YAML *text* sets, none when it is blank; a LibraryError
+    when it isn't a mapping of them."""
+    data = loaded(text)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise LibraryError(FIELDS_MAPPING)
+    return data
+
+
+def decomposition_in(text):
+    """The decomposition the YAML *text* describes, as the engine's own model reads it."""
     data = loaded(text)
     if not isinstance(data, dict):
         raise LibraryError(
             "The YAML should be a mapping: a name: line, then messages:, as in the template."
         )
     try:
-        decomposition = Decomposition.model_validate(data)
+        return Decomposition.model_validate(data)
     except ValidationError as error:
         raise LibraryError("\n".join(map(problem, error.errors()))) from error
+
+
+def parsed(text):
+    """The decomposition the YAML *text* describes, checked by the engine's own model, its
+    name as the panel saves one."""
+    decomposition = decomposition_in(text)
     name = decomposition.name
     if not name.strip():
         raise LibraryError(BLANK_NAME)
@@ -1210,12 +1509,12 @@ def parsed(text):
     return decomposition
 
 
-def checked_text(text):
-    """Raise unless *text* is short enough to be a decomposition's YAML."""
+def checked_text(text, what="A decomposition's"):
+    """Raise unless *text* is short enough to be *what* YAML."""
     if len(text) > MAX_YAML_CHARS:
         raise LibraryError(
-            f"A decomposition's YAML may be at most {MAX_YAML_CHARS:,} characters; this"
-            f" has {len(text):,}."
+            f"{what} YAML may be at most {MAX_YAML_CHARS:,} characters; this has"
+            f" {len(text):,}."
         )
 
 
@@ -1418,17 +1717,6 @@ def decomposition_problems(decomposition, names):
     return example_problems(decomposition) + template_problems(decomposition, names)
 
 
-def stored_problems(text, names):
-    """The problems of the decomposition stored as YAML *text*: its shape's, as a shared
-    file may hold anything, or else its turns', as a worked example and as templates
-    reading only *names*."""
-    try:
-        decomposition = parsed(text)
-    except LibraryError as error:
-        return str(error).splitlines()
-    return decomposition_problems(decomposition, names)
-
-
 def add_decomposition(connection, namespace, text, replace=False, allowed=None):
     """Store the decomposition written as YAML *text* under *namespace*, or raise
     LibraryError saying why not: one of its name there is refused, or with *replace* put in
@@ -1453,13 +1741,28 @@ def add_decomposition(connection, namespace, text, replace=False, allowed=None):
     return stored | {"problems": problems}, found
 
 
-def stored_decomposition(connection, namespace, name):
-    """The YAML of *namespace*'s decomposition *name*, None when it has none."""
-    found = connection.execute(
-        "SELECT yaml FROM decompositions WHERE namespace = ? AND name = ?",
+def decomposition_row(connection, namespace, name):
+    """*namespace*'s decomposition *name* as fitting() reads it, (text, size); None when it
+    has none."""
+    return connection.execute(
+        f"SELECT {fitting('yaml')} FROM decompositions WHERE namespace = ? AND name = ?",
         (namespace, name),
     ).fetchone()
-    return None if found is None else found[0]
+
+
+def stored_decomposition(connection, namespace, name):
+    """*namespace*'s decomposition *name*, as a change logs it as its before: its YAML, or
+    for one the engine can't read, as a shared file may hold, a note saying why; None
+    when it has none."""
+    found = decomposition_row(connection, namespace, name)
+    if found is None:
+        return None
+    try:
+        text = row_text(*found)
+        decomposition_in(text)
+    except LibraryError as error:
+        return left_out_note(str(error))
+    return text
 
 
 def already_has(namespace, name):
@@ -1492,15 +1795,16 @@ def edit_decomposition(connection, namespace, name, was, text):
 
 
 def delete_decomposition(connection, namespace, name, was):
-    """Delete *namespace*'s decomposition *name*, which the person was shown as *was*;
-    ChangedMeanwhile if it is no longer stored so, or at all."""
+    """Delete *namespace*'s decomposition *name*, which the person was shown as *was*, or
+    as None for one too long to show; ChangedMeanwhile if it is no longer stored so, or at
+    all."""
     with writing(connection):
-        found = stored_decomposition(connection, namespace, name)
+        found = decomposition_row(connection, namespace, name)
         if found is None:
             raise ChangedMeanwhile(
                 f'"{name}" in {namespace} was already deleted or renamed {BY_WHOM}.'
             )
-        if found != was:
+        if shown_text(*found) != was:
             raise ChangedMeanwhile(
                 f'"{name}" in {namespace} was changed after you opened it {BY_WHOM}, so'
                 " it wasn't deleted. Look at it as it is now, then delete it again if"
@@ -1527,13 +1831,8 @@ def namespace_problem(error):
 def authored(name, text):
     """Namespace *name* as its YAML *text* describes it, checked by the engine's own model,
     and the YAML to store for it."""
-    data = loaded(text)
-    if data is None:
-        data = {}
-    if not isinstance(data, dict):
-        raise LibraryError(
-            'The YAML should be a mapping of fields, like "tools: [llm]".'
-        )
+    checked_text(text, "A namespace's")
+    data = fields_in(text)
     problems = [NAMED_ELSEWHERE[key] for key in NAMED_ELSEWHERE if key in data]
     fields = {key: value for key, value in data.items() if key not in NAMED_ELSEWHERE}
     try:
@@ -1554,11 +1853,10 @@ def own_yaml(text):
 
 
 def accepted(connection):
-    """Raise unless the engine accepts the Library, in words for the panel; check's answer.
-    A row that isn't YAML, as a shared file may hold, is the engine's to refuse too."""
+    """Raise unless the engine accepts the Library, in words for the panel; check's answer."""
     try:
         return check(connection)
-    except (ValueError, yaml.YAMLError) as error:
+    except ValueError as error:
         raise LibraryError(f"The engine refuses it: {error}") from error
 
 
@@ -1656,6 +1954,8 @@ def write_namespace(connection, namespace, text):
     check_fields(connection, namespace)
     connection.execute(UPSERT_NAMESPACE, (namespace.name, text))
     _, registry = accepted(connection)
+    if namespace.name not in registry.names:
+        raise LibraryError(read_namespaces(connection)[1][namespace.name])
     below = [each for each in registry.names if namespace.name in registry.chain(each)]
     check_backbones(registry, below)
     hidden_vars(registry, below)
@@ -1701,7 +2001,7 @@ def fields_of(text):
     YAML, as a change a cell logged may not be."""
     try:
         fields = loaded(text) if type(text) is str else None
-    except (LibraryError, RecursionError):
+    except LibraryError:
         return {}
     return fields if isinstance(fields, dict) else {}
 
@@ -1710,13 +2010,7 @@ def merged(before, text):
     """A namespace's own YAML *before* with each field the YAML *text* sets in place of
     its own, and each it sets to null taken out; the rest kept, as typed when none
     changes."""
-    given = loaded(text)
-    if given is None:
-        given = {}
-    if not isinstance(given, dict):
-        raise LibraryError(
-            'The YAML should be a mapping of fields, like "tools: [llm]".'
-        )
+    given = fields_in(text)
     own = fields_of(before)
     fields = dict(own)
     for key, value in given.items():
@@ -1735,12 +2029,12 @@ def merged(before, text):
     return together
 
 
-def change_namespace(connection, name, text, allowed=None, was=None, merge=False):
+def change_namespace(connection, name, text, allowed=None, was=NOT_OPENED, merge=False):
     """Give namespace *name* the fields its YAML *text* gives in place of its own, keeping
     its decompositions, or raise LibraryError saying why not; with *merge*, only those
     fields, keeping the rest. *allowed* as add_namespace takes it. Given *was*, the YAML
-    the person opened it on, ChangedMeanwhile unless it is still stored so. The YAML it
-    replaced, and the YAML stored."""
+    the person opened it on, None for one too long to show, ChangedMeanwhile unless it is
+    still stored so. The YAML it replaced (namespace_yaml()), and the YAML stored."""
     with writing(connection):
         if merge:
             text = merged(namespace_yaml(connection, name) or "", text)
@@ -1748,7 +2042,8 @@ def change_namespace(connection, name, text, allowed=None, was=None, merge=False
         if allowed is not None:
             allowed(connection, namespace)
         before = check_namespace(connection, name)
-        if was is not None and own_yaml(before) != was:
+        shown = read_namespaces(connection)[2][name]
+        if was is not NOT_OPENED and own_yaml(shown) != was:
             raise changed_meanwhile(f"Namespace {name}")
         write_namespace(connection, namespace, stored)
     return before, stored
@@ -1758,24 +2053,26 @@ def store_tool(connection, name, block, source, allowed=None):
     """Store tool *name* as its config *block* and Python *source*, in place of one of its
     name, inside a transaction that keeps it only if the engine accepts the Library;
     *allowed*, given the connection under the write lock first, raises to refuse. The row
-    it replaced, as its block's YAML and its source; None when it is new."""
+    it replaced as a change logs it (tool_text()), or for one the engine can't read a note
+    saying why; None when it is new."""
     with writing(connection):
         if allowed is not None:
             allowed(connection)
-        found = connection.execute(
-            "SELECT yaml, source FROM tools WHERE name = ?", (name,)
-        ).fetchone()
+        tools, left = read_tools(connection)
+        before = left_out_note(left[name]) if name in left else None
+        if name in tools:
+            before = tool_text(name, dump(tools[name][0]), tools[name][1])
         connection.execute(UPSERT_TOOL, (name, dump(block), source))
         accepted(connection)
-    return found
+    return before
 
 
 def delete_tool(connection, name):
     """Delete the Library's tool *name*, or raise LibraryError saying why not: a
     namespace grants it, or the Library holds no row for it."""
     with writing(connection):
-        _, registry = config_and_registry(connection)
-        granting = granted_in(registry, in_chain_order(registry), name)
+        # As stored: a grant of a tool left out, which runs ignore, still holds it.
+        granting = grants_of(read_namespaces(connection)[0], name)
         stored = connection.execute("SELECT 1 FROM tools WHERE name = ?", (name,))
         refusal = tool_refusal(name, granting, stored.fetchone() is not None)
         if refusal:
@@ -1795,13 +2092,15 @@ def tool_refusal(name, granting, stored):
 
 
 def delete_setting(connection, key):
-    """Delete run setting *key*, or raise LibraryError saying why not: the engine reads it."""
-    if key in ENGINE_SETTINGS:
-        raise LibraryError(
-            f"{key} is a run setting the engine reads, so it stays; only one it doesn't"
-            " read can be deleted."
-        )
+    """Delete run setting *key*, or raise LibraryError saying why not: the engine reads it,
+    as it does each it knows but one left out."""
     with writing(connection):
+        left = read_run_settings(connection, read_namespaces(connection)[0])[1]
+        if key in ENGINE_SETTINGS and key not in left:
+            raise LibraryError(
+                f"{key} is a run setting the engine reads, so it stays; only one it"
+                " doesn't read can be deleted."
+            )
         found = connection.execute("SELECT 1 FROM settings WHERE key = ?", (key,))
         if found.fetchone() is None:
             raise LibraryError(f'The Library holds no run setting "{key}".')
@@ -1812,10 +2111,11 @@ def delete_namespace(connection, name, decompositions):
     """Delete namespace *name* and its decompositions, as many as the caller was told it
     has, or raise LibraryError saying why not; if new chats started there, they start in root."""
     with writing(connection):
-        if namespace_yaml(connection, name) is None:
+        if not has_namespace(connection, name):
             raise LibraryError(f'The Library has no namespace "{name}" to delete.')
         _, registry = config_and_registry(connection)
-        refusal = namespace_refusal(own_spawns(registry), name)
+        spawns = own_spawns(registry, read_namespaces(connection)[1])
+        refusal = namespace_refusal(spawns, name)
         if refusal:
             raise LibraryError(refusal)
         held = connection.execute(
@@ -1826,18 +2126,22 @@ def delete_namespace(connection, name, decompositions):
                 f"{name} has {count(held, 'decomposition')} now, not {decompositions};"
                 " look again before deleting it."
             )
+        # Read first: once it is gone, an entry_namespace naming it reads as left out.
+        entry = stored_settings(connection).get(ENTRY_NAMESPACE)
         connection.execute("DELETE FROM decompositions WHERE namespace = ?", (name,))
         connection.execute("DELETE FROM namespaces WHERE name = ?", (name,))
-        if stored_settings(connection).get(ENTRY_NAMESPACE) == name:
+        if entry == name:
             connection.execute("DELETE FROM settings WHERE key = ?", (ENTRY_NAMESPACE,))
         accepted(connection)
 
 
-def own_spawns(registry):
-    """Each namespace's own spawn list, by name, each after the ones above it."""
-    return {
-        name: registry.config(name).spawn or [] for name in in_chain_order(registry)
-    }
+def own_spawns(registry, left_out=()):
+    """Each namespace's own spawn list, by name, each after the ones above it; each
+    namespace *left_out*, as a shared file may hold, spawns nowhere, as no agent runs
+    there."""
+    spawns = {name: registry.config(name).spawn or [] for name in registry.names}
+    spawns |= {name: [] for name in left_out if name not in spawns}
+    return dict(sorted(spawns.items(), key=lambda each: chain_of(each[0])))
 
 
 def namespace_refusal(spawns, name):
@@ -1995,16 +2299,24 @@ def cant_hand_off(registry, name, target, why, how_many):
     return located(value, registry.resolve(name).sources.spawn, name)
 
 
-def run_settings(connection):
-    stored = stored_settings(connection)
+def run_settings(read):
+    """The run settings of the Library *read* (read_library()) as the panel lists them,
+    each with where its value comes from; one left out reads as unset, says why, and may
+    be deleted."""
+    stored, left = read["settings"], read["settings_left"]
     defaults = V2Config().model_dump(mode="json")
     rows = []
-    for key in dict.fromkeys([*SHOWN_SETTINGS, *stored]):
+    for key in dict.fromkeys([*SHOWN_SETTINGS, *stored, *left]):
         unread = key not in ENGINE_SETTINGS
-        source = "set in the Library" if key in stored else "the engine's default"
+        if key in left:
+            source = f"the Library's is left out, so it reads as unset. {left[key]}"
+        elif unread:
+            source = UNREAD_SETTING
+        else:
+            source = "set in the Library" if key in stored else "the engine's default"
         value = shown(stored.get(key, defaults.get(key)))
-        item = {"value": value, "source": UNREAD_SETTING if unread else source}
-        rows.append({"label": key, "items": [item], "removable": unread})
+        item = {"value": value, "source": source}
+        rows.append({"label": key, "items": [item], "removable": unread or key in left})
     return rows
 
 
@@ -2105,25 +2417,42 @@ def granted_in(registry, names, tool):
     return [each for each in names if tool in registry.config(each).tools]
 
 
+def listed_tool(name, granting, stored, **shown):
+    """Tool *name* as the panel lists it, granted in *granting*, and held by the Library
+    (*stored*, so deletable) or by the engine or the app; *shown* gives what one left out,
+    as a shared file may hold, lacks."""
+    return {
+        "name": name,
+        "factory": None,
+        "file": None,
+        "defined_in": "the Library",
+        "badge": None,
+        "granted_in": granting,
+        "description": None,
+        "config": None,
+        "stored": stored,
+        "refusal": tool_refusal(name, granting, stored),
+        "source": None,
+        "problems": [],
+    } | shown
+
+
 def tool_rows(config, registry, names, sources):
     rows = []
     for name in declared_tool_names(config):
         block = config.tools.get(name, {})
         factory = block.get("factory", name)
         made, description = origin(name, factory, block, sources.get(name))
-        granting = granted_in(registry, names, name)
-        row = {
-            "name": name,
-            "factory": factory,
+        row = listed_tool(
+            name,
+            granted_in(registry, names, name),
+            name in sources,
+            factory=factory,
             **made,
-            "granted_in": granting,
-            "description": block.get("description") or description,
-            "config": dump({name: block}).rstrip() if block else None,
-            # Deletable: the Library holds it, not the engine or the app.
-            "stored": name in sources,
-            "refusal": tool_refusal(name, granting, name in sources),
-            "source": sources.get(name),
-        }
+            description=block.get("description") or description,
+            config=dump({name: block}).rstrip() if block else None,
+            source=sources.get(name),
+        )
         rows.append(row)
     return rows
 
@@ -2148,39 +2477,58 @@ def shape(rows):
     )
 
 
+def parent_of(name):
+    """The namespace *name* goes under, as the engine reads its name: root's is None."""
+    if name == ROOT:
+        return None
+    head, dot, _ = name.rpartition(".")
+    return head if dot else ROOT
+
+
+def chain_of(name):
+    """The namespaces *name* goes under, root first, then *name*."""
+    chain = [name]
+    while (parent := parent_of(chain[-1])) is not None:
+        chain.append(parent)
+    return chain[::-1]
+
+
 def in_chain_order(registry):
     """The namespaces' names, each after the ones above it."""
-    return sorted(registry.names, key=registry.chain)
+    return sorted(registry.names, key=chain_of)
 
 
-def namespace_rows(connection, config, registry):
-    """Each namespace as the panel shows it: its depth, its fields as the engine resolves
-    them, its own decompositions (each with its problems as a worked example), its own
-    YAML, and how many worked examples elsewhere hand off to it. *config* and *registry*
-    are read in the same read (reading()) as its rows."""
+def namespace_rows(read, config, registry):
+    """Each namespace of the Library *read* (read_library()) as the panel shows it: its
+    depth, its fields as the engine resolves them, its own decompositions (each with its
+    problems as a worked example), its own YAML (blank for one that sets nothing), how
+    many worked examples elsewhere hand off to it, whether a chat may run there, and,
+    for one the engine can't read, as a shared file may hold, why (problems). *config*
+    and *registry* are as config_of(*read*) makes them."""
     decompositions = defaultdict(list)
-    rows = connection.execute(
-        "SELECT namespace, name, yaml FROM decompositions ORDER BY rowid"
-    )
-    for namespace, name, text in rows:
-        decompositions[namespace].append({"name": name, "yaml": text})
-    # What each one's Edit YAML opens on: blank for a namespace that sets nothing.
-    rows = connection.execute("SELECT name, yaml FROM namespaces")
-    own = {name: own_yaml(text) for name, text in rows}
+    for row in read["decompositions"]:
+        decompositions[row["namespace"]].append(row)
+    left = read["namespaces_left"]
     names = template_names(config)
     targets = hand_off_targets(config)
     handed = Counter(hand_offs_made(registry, targets))
-    spawns = own_spawns(registry)
+    readable = set(registry.names)
+    spawns = own_spawns(registry, left)
     return [
         {
             "name": name,
-            "depth": len(registry.chain(name)) - 1,
-            "fields": namespace_fields(registry, name, config, targets),
-            "decompositions": checked(
-                decompositions[name], config.namespaces.get(name), names
+            "depth": len(chain_of(name)) - 1,
+            "fields": (
+                namespace_fields(registry, name, config, targets)
+                if name in readable
+                else []
             ),
-            "yaml": own.get(name, ""),
+            "decompositions": checked(decompositions[name], names),
+            "yaml": own_yaml(read["namespace_yaml"].get(name, "")),
             "handed_to": handed[name],
+            # The engine supplies a bare root when the file's is left out.
+            "usable": name == ROOT or name not in left,
+            "problems": left[name].splitlines() if name in left else [],
             "refusal": namespace_refusal(spawns, name),
         }
         for name in spawns
@@ -2198,29 +2546,53 @@ def hand_offs_made(registry, targets):
             yield target
 
 
-def checked(rows, namespace, names):
-    """A namespace's stored decompositions, *rows*, each with its problems as a worked
-    example and as templates reading only *names*, as a shared file may hold one the
-    engine can't render, from *namespace*, the engine's reading of the same rows. Under a
-    root the file lacks, which the engine reads none of, they are parsed here."""
-    if namespace is None:
-        return [row | {"problems": stored_problems(row["yaml"], names)} for row in rows]
-    pairs = zip(rows, namespace.decompositions, strict=True)
+def checked(rows, names):
+    """A namespace's stored decompositions, *rows* as read_decompositions() reads them,
+    each with its problems as a worked example and as templates reading only *names*, as
+    a shared file may hold one the engine can't render; or, for one the engine can't
+    read, why."""
     return [
-        row | {"problems": decomposition_problems(each, names)} for row, each in pairs
+        {"name": row["name"], "yaml": row["yaml"], "problems": problems_of(row, names)}
+        for row in rows
     ]
+
+
+def problems_of(row, names):
+    decomposition = row["decomposition"]
+    if decomposition is None:
+        return [UNREAD_DECOMPOSITION, *row["why"].splitlines()]
+    return decomposition_problems(decomposition, names)
+
+
+def listed_tools(read, config, registry, names):
+    """Each tool of the Library *read* (read_library()) as the panel lists it: those runs
+    declare (tool_rows()), then each left out, saying why and where it is granted, so it
+    can be taken out and the tool deleted. One runs declare all the same, the llm a model
+    brings, is listed once, saying why its own row is left out."""
+    sources = {name: source for name, (_, source) in read["tools"].items()}
+    rows = {row["name"]: row for row in tool_rows(config, registry, names, sources)}
+    for name, why in read["tools_left"].items():
+        granting = grants_of(read["namespaces"], name)
+        problems = why.splitlines()
+        if name in rows:
+            refusal = tool_refusal(name, granting, True)
+            rows[name] |= {"stored": True, "refusal": refusal, "problems": problems}
+            continue
+        ignored = [GRANT_IGNORED] if granting else []
+        rows[name] = listed_tool(name, granting, True, problems=[*problems, *ignored])
+    return list(rows.values())
 
 
 def panel(connection):
     """What the Library panel shows: run settings, namespaces as the engine resolves them, tools, tabular vars."""
     with reading(connection):
-        config, registry = config_and_registry(connection)
+        read = read_library(connection)
+        config, registry = run_config_and_registry(config_of(read))
         names = in_chain_order(registry)
-        sources = {name: source for name, _, source in library_tools(connection)}
         return {
             "default_namespace": config.entry_namespace,
-            "run_settings": run_settings(connection),
-            "namespaces": namespace_rows(connection, config, registry),
-            "tools": tool_rows(config, registry, names, sources),
+            "run_settings": run_settings(read),
+            "namespaces": namespace_rows(read, config, registry),
+            "tools": listed_tools(read, config, registry, names),
             "variables": variables(registry, names),
         }

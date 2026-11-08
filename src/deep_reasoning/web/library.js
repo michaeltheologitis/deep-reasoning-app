@@ -18,6 +18,8 @@ const NAMESPACE_KEYS = ["repl", "reasoner", "tools", "vars", "spawn", "system_su
 // a new namespace's name: plain words, joined by dots for a child
 const NAMESPACE_NAME = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
 const INDENT = "  ";
+// a touch keyboard has no Tab or Esc to speak of, so touch screens get no line about them
+const EDITOR_KEYS = matchMedia("(pointer: coarse)").matches ? null : "tab indents · esc leaves · ctrl/⌘+enter saves";
 const CHECK_DELAY_MS = 300;
 // as the server's limit on a decomposition's YAML; a file of more bytes than 4 a character can't fit
 const MAX_YAML_CHARS = 1_000_000;
@@ -56,8 +58,8 @@ messages:
     FinalAnswer(12)
     </repl>
 `;
-// a namespace's own fields; what it leaves out it inherits, as llm from root
-const NAMESPACE_TEMPLATE = `vars:
+// a namespace's own fields, shown as the empty editor's placeholder; what it leaves out it inherits, as llm from root
+const NAMESPACE_EXAMPLE = `vars:
   topic: machine learning
 system_suffix: |
   Answer in plain words, and say where each fact comes from.
@@ -93,7 +95,12 @@ let sent = 0;
 let applied = 0;
 
 const dot = () => element("span", { class: "lib-dot", "aria-hidden": "true" }, "·");
+// YAML and source keep their lines and scroll sideways, so each takes focus, for the arrows to scroll it, as a data table does
+const sideways = (label, text) => element("pre", { class: "code lib-pre", role: "region", tabindex: "0", "aria-label": `${label}, scrolls sideways` }, text);
 const namespaceNamed = (name) => library.namespaces.find((namespace) => namespace.name === name);
+// one a chat may run in: a shared file's may hold one the engine can't read, listed with why (problems) to fix or delete
+const usable = (name) => Boolean(namespaceNamed(name)?.usable);
+const problemList = (problems) => problems.length > 0 && element("div", { class: "lib-problems lib-warning" }, problems.map((text) => element("p", {}, text)));
 const decompositionKey = (namespace, name) => `d:${namespace}:${name}`;
 const namespaceKey = (name) => `n:${name}`;
 const toolKey = (name) => `t:${name}`;
@@ -102,6 +109,8 @@ const parentOf = (name) => (name.includes(".") ? name.slice(0, name.lastIndexOf(
 
 const body = element("div", { class: "lib-body", id: "library-body", role: "tabpanel" });
 const fileName = element("span", { class: "lib-filename" });
+// while the Library can't be read again, the panel shows the copy it last read, saying so
+const stale = element("p", { class: "lib-note lib-stale", role: "status" });
 const tabButtons = TABS.map((name) =>
   element("button", { type: "button", role: "tab", class: "lib-tab", id: `library-tab-${name.toLowerCase()}`, "aria-controls": body.id, onclick: () => selectTab(name) }, name),
 );
@@ -113,16 +122,29 @@ panel.append(
     element("button", { type: "button", class: "lib-close", "aria-label": "Close the Library", onclick: () => setOpen(false) }, "×"),
   ),
   element("div", { class: "lib-tabs", role: "tablist", "aria-label": "Library", onkeydown: arrowTabs }, tabButtons.flatMap((button, i) => (i ? [dot(), button] : [button]))),
+  stale,
   body,
 );
 
 // A YAML editor its toggle opens, checked as you type; an edit's form keeps what it opened on (was), and stored() reads what is there now.
-function yamlForm({ id, label, action, text, problems, warnings = () => [], save, stored = null, gone = null, opening = null, before = [], beside = null, after = [], first = null }) {
-  const form = { problems, warnings, save, stored, gone, opening, first, was: text, saving: false, timer: null };
+// A quiet form says its problems only once something is typed in it or it is sent, as a blank one's would only nag; they still stop it saving.
+function yamlForm({ id, label, action, text, example = null, quiet = false, problems, warnings = () => [], save, stored = null, gone = null, opening = null, before = [], beside = null, after = [], first = null }) {
+  const form = { problems, warnings, save, stored, gone, opening, first, quiet, typed: false, was: text, saving: false, timer: null };
   form.toggle = element("button", { type: "button", class: "lib-action", "aria-expanded": "false", "aria-controls": id, "data-key": id, onclick: () => (form.el.hidden ? openForm(form) : closeForm(form)) }, label);
   form.editor = element(
     "textarea",
-    { id: `${id}-yaml`, class: "lib-yaml", wrap: "off", spellcheck: "false", autocapitalize: "off", "aria-describedby": `${id}-problems`, oninput: () => edited(form), onkeydown: indentOnTab },
+    {
+      id: `${id}-yaml`,
+      class: "lib-yaml",
+      wrap: "off",
+      spellcheck: "false",
+      autocapitalize: "off",
+      placeholder: example,
+      rows: example?.trimEnd().split("\n").length,
+      "aria-describedby": [EDITOR_KEYS && `${id}-keys`, `${id}-problems`].filter(Boolean).join(" "),
+      oninput: () => edited(form),
+      onkeydown: (e) => editorKey(form, e),
+    },
     text,
   );
   form.problemList = element("div", { id: `${id}-problems`, class: "lib-problems", "aria-live": "polite" });
@@ -134,6 +156,7 @@ function yamlForm({ id, label, action, text, problems, warnings = () => [], save
     before,
     element("div", { class: "lib-form-line" }, element("label", { for: form.editor.id }, "YAML"), beside),
     form.editor,
+    EDITOR_KEYS && element("div", { id: `${id}-keys`, class: "lib-keys" }, EDITOR_KEYS),
     after,
     form.problemList,
     form.newer,
@@ -149,6 +172,7 @@ function openForm(form) {
   clearSaid();
   form.opening?.();
   form.el.hidden = false;
+  form.typed = false;
   form.toggle.setAttribute("aria-expanded", "true");
   fitEditor(form.editor);
   check(form);
@@ -167,6 +191,7 @@ function closeForm(form) {
 }
 
 function edited(form) {
+  form.typed = true;
   fitEditor(form.editor);
   clearTimeout(form.timer);
   form.timer = setTimeout(() => check(form), CHECK_DELAY_MS);
@@ -178,18 +203,31 @@ function fitEditor(editor) {
   editor.style.height = `${editor.scrollHeight + editor.offsetHeight - editor.clientHeight}px`;
 }
 
-// Tab indents; Shift+Tab still leaves the editor, and Esc closes the panel with the draft kept.
-function indentOnTab(e) {
-  if (e.key !== "Tab" || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
-  e.preventDefault();
-  document.execCommand("insertText", false, INDENT);
+// YAML wants Tab to indent, so Esc is the way out of the editor, to Save, or to the toggle while Save is disabled and can't take focus;
+// a Delete asking is taken back first, as anywhere in the panel. Saving from the editor spares the trip.
+function editorKey(form, e) {
+  if (e.isComposing) return;
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    if (deleting && !deleting.refusal) {
+      deleting = null;
+      render();
+    } else (form.submit.disabled ? form.toggle : form.submit).focus();
+  } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    form.el.requestSubmit();
+  } else if (e.key === "Tab" && !(e.shiftKey || e.altKey || e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    document.execCommand("insertText", false, INDENT);
+  }
 }
 
 // Problems stop the form; warnings, read only once there are none, don't.
 function check(form) {
   clearTimeout(form.timer);
   const found = form.problems(form.editor.value);
-  showProblems(form, found, found.length ? [] : form.warnings(form.editor.value));
+  if (form.quiet && !form.typed) showProblems(form, []);
+  else showProblems(form, found, found.length ? [] : form.warnings(form.editor.value));
   form.submit.disabled = form.saving || found.length > 0;
   return found;
 }
@@ -203,6 +241,7 @@ function showProblems(form, found, warned = []) {
 // save() sends the YAML and says what was done, which row to show if any, and where to say it when not under the form (where()).
 async function submit(form, e) {
   e.preventDefault();
+  form.typed = true;
   if (form.saving || check(form).length) return;
   clearSaid();
   form.saving = form.submit.disabled = true;
@@ -226,13 +265,14 @@ async function submit(form, e) {
 async function showNewer(form) {
   await load();
   const now = form.stored();
-  if (now == null) {
+  // undefined once it is gone; null for one too long to show
+  if (now === undefined) {
     editForms.delete(form.key);
     form.gone?.(form);
     return;
   }
   form.was = now;
-  form.newer.replaceChildren(element("p", { class: "lib-note" }, "Stored now, which Save replaces with yours:"), element("pre", { class: "code lib-pre" }, now || "(blank: it sets nothing)"));
+  form.newer.replaceChildren(element("p", { class: "lib-note" }, "Stored now, which Save replaces with yours:"), sideways("What is stored now", now === null ? "(too long to show)" : now || "(blank: it sets nothing)"));
 }
 
 function say(where, text) {
@@ -271,12 +311,27 @@ const decompositionForm = yamlForm({
   after: element("div", { class: "lib-form-line" }, element("label", { for: picker.id }, "namespace"), picker),
 });
 
-const nameInput = element("input", { id: "lib-ns-name", class: "set-input", autocomplete: "off", spellcheck: "false", autocapitalize: "off", placeholder: "research", "aria-describedby": "lib-ns-form-problems", oninput: () => check(namespaceForm) });
+// checked at once, not after a pause as the YAML is, so Add is ready as soon as the name is
+const nameInput = element("input", {
+  id: "lib-ns-name",
+  class: "set-input",
+  autocomplete: "off",
+  spellcheck: "false",
+  autocapitalize: "off",
+  placeholder: "research",
+  "aria-describedby": "lib-ns-form-problems",
+  oninput: () => {
+    namespaceForm.typed = true;
+    check(namespaceForm);
+  },
+});
 const namespaceForm = yamlForm({
   id: "lib-ns-form",
   label: "+ Add namespace",
   action: "Add",
-  text: NAMESPACE_TEMPLATE,
+  text: "",
+  example: NAMESPACE_EXAMPLE,
+  quiet: true,
   problems: (text) => [newNamespaceProblem(nameInput.value.trim()), ...namespaceProblems(text, nameInput.value.trim())].filter(Boolean),
   save: addNamespace,
   before: element("div", { class: "lib-form-line" }, element("label", { for: nameInput.id }, "name"), nameInput),
@@ -334,7 +389,11 @@ const saveNamespace = (name) => async (text, form) => {
 function editFormFor(key, stored, build) {
   if (!editForms.has(key)) editForms.set(key, Object.assign(yamlForm({ id: `lib-edit-${++editFormCount}`, text: stored, ...build() }), { key }));
   const form = editForms.get(key);
-  if (form.el.hidden) form.editor.defaultValue = form.was = stored;
+  // one too long to show (null) opens on a blank draft, which Save puts in its place
+  if (form.el.hidden) {
+    form.editor.defaultValue = stored ?? "";
+    form.was = stored;
+  }
   return form;
 }
 
@@ -390,7 +449,7 @@ function moveToAdd(draft, namespace, name) {
 // Each read: a closed edit form whose row went is dropped, and an open one hands its draft on; one saving is its save's to settle.
 function pruneForms() {
   for (const [key, form] of editForms) {
-    if (form.saving || form.stored() != null) continue;
+    if (form.saving || form.stored() !== undefined) continue;
     editForms.delete(key);
     if (!form.el.hidden) form.gone?.(form);
   }
@@ -637,6 +696,7 @@ function decompositionRow(namespace, decomposition) {
   const { name, yaml, problems } = decomposition;
   const key = decompositionKey(namespace, name);
   const head = [element("span", { class: "lib-name" }, name), checkMark(problems)];
+  // one too long to show is shown no YAML, and deleted as that (null)
   const remove = async () => {
     await changeLibrary("DELETE", ADD_URL, { namespace, name, was: yaml });
     opened.delete(key);
@@ -647,9 +707,9 @@ function decompositionRow(namespace, decomposition) {
     const form = decompositionEdit(namespace, decomposition);
     const question = `Delete "${name}" from ${namespace}? Agents in ${reach(namespace)} stop seeing it from the next message.`;
     return [
-      problems.length > 0 && element("div", { class: "lib-problems lib-warning" }, problems.map((text) => element("p", {}, text))),
-      element("pre", { class: "code lib-pre" }, yaml),
-      deletable(key, form.toggle, { question, remove, said: decompositionForm.confirmation, stored: () => storedDecomposition(namespace, name) != null }),
+      problemList(problems),
+      yaml != null && sideways(`${name}'s YAML`, yaml),
+      deletable(key, yaml == null ? [] : form.toggle, { question, remove, said: decompositionForm.confirmation, stored: () => storedDecomposition(namespace, name) != null }),
       form.el,
       form.confirmation,
     ];
@@ -678,7 +738,7 @@ function chain(name) {
 function decompositionsField(name) {
   const levels = new Map();
   for (const level of chain(name)) {
-    for (const each of namespaceNamed(level).decompositions) levels.set(each.name, level);
+    for (const each of namespaceNamed(level)?.decompositions ?? []) levels.set(each.name, level);
   }
   const items = [...levels].map(([value, level]) => ({ value, source: level === name ? "attached here" : `inherited from ${level}`, here: level === name }));
   return { label: "Decompositions", items };
@@ -687,8 +747,8 @@ function decompositionsField(name) {
 function renderNamespaces() {
   const tree = library.namespaces.map((namespace) => {
     const star = namespace.name === library.default_namespace && element("span", { class: "lib-star" }, "★ new chats start here");
-    const head = [element("span", { class: "lib-name" }, namespace.name), star];
-    const content = () => [namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
+    const head = [element("span", { class: "lib-name" }, namespace.name), star, namespace.problems.length > 0 && checkMark(namespace.problems)];
+    const content = () => [problemList(namespace.problems), namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
     return element("div", { style: `--depth: ${namespace.depth}` }, disclosure(namespaceKey(namespace.name), head, content));
   });
   const run = disclosure("run-settings", element("span", { class: "lib-name" }, "Run settings"), runSettings);
@@ -718,18 +778,16 @@ function renderTool(tool) {
     return { text: `Deleted tool "${tool.name}"` };
   };
   const stored = () => library.tools.some((each) => each.name === tool.name && each.stored);
-  const granted = tool.granted_in.join(", ");
+  const granted = ["Granted in", tool.granted_in.join(", ") || "no namespace"];
+  const made = [["Factory", tool.factory], ["File", tool.file], ["Defined in", tool.defined_in ?? "the deep_reasoner package"]];
   return [
-    fields([
-      ["Factory", tool.factory],
-      ["File", tool.file],
-      ["Defined in", tool.defined_in ?? "the deep_reasoner package"],
-      ["Granted in", granted || "no namespace"],
-    ]),
-    tool.config && element("pre", { class: "code lib-pre" }, tool.config),
+    // one the engine can't read, as a shared file may hold, says why instead
+    problemList(tool.problems),
+    fields(tool.problems.length ? [granted] : [...made, granted]),
+    tool.config && sideways(`${tool.name}'s settings`, tool.config),
     // What the agent is told it does, for a custom tool as far as its source says; it wraps, as one may run long.
     tool.description && element("pre", { class: "code lib-doc" }, tool.description),
-    tool.source != null && [element("p", { class: "lib-note" }, `Its Python, ${tool.file}:`), element("pre", { class: "code lib-pre" }, tool.source)],
+    tool.source != null && [element("p", { class: "lib-note" }, `Its Python, ${tool.file}:`), sideways(`${tool.name}'s Python`, tool.source)],
     tool.stored && deletable(toolKey(tool.name), [], { question: `Delete tool ${tool.name}?`, refusal: () => tool.refusal, remove, said: toolsSaid, stored }),
   ];
 }
@@ -737,7 +795,7 @@ function renderTool(tool) {
 function renderTools() {
   const rows = library.tools.map((tool) => {
     const granted = tool.granted_in.length ? `granted in ${tool.granted_in.join(", ")}` : "not granted";
-    return disclosure(toolKey(tool.name), rowHead(tool.name, granted, tool.badge), () => renderTool(tool));
+    return disclosure(toolKey(tool.name), rowHead(tool.name, granted, tool.problems.length ? checkMark(tool.problems) : tool.badge), () => renderTool(tool));
   });
   return [element("div", { class: "lib-rows" }, toolsSaid, rows)];
 }
@@ -761,7 +819,11 @@ const RENDERERS = { Decompositions: renderDecompositions, Namespaces: renderName
 
 // A field being typed in when the agent's change redraws the panel is drawn again as itself, so it keeps focus and caret.
 function render() {
-  for (const button of tabButtons) button.setAttribute("aria-selected", String(button.textContent === tab));
+  // one Tab stop for the tabs, the selected one; arrows move between them
+  for (const button of tabButtons) {
+    button.setAttribute("aria-selected", String(button.textContent === tab));
+    button.tabIndex = button.textContent === tab ? 0 : -1;
+  }
   body.setAttribute("aria-labelledby", `library-tab-${tab.toLowerCase()}`);
   const active = document.activeElement;
   const { selectionStart, selectionEnd } = active ?? {};
@@ -792,9 +854,11 @@ function selectTab(name) {
 }
 
 function arrowTabs(e) {
-  const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
-  if (!step) return;
-  selectTab(TABS[(TABS.indexOf(tab) + step + TABS.length) % TABS.length]);
+  const at = TABS.indexOf(tab);
+  const next = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: TABS.length - 1 }[e.key];
+  if (next === undefined) return;
+  e.preventDefault();
+  selectTab(TABS[(next + TABS.length) % TABS.length]);
   tabButtons[TABS.indexOf(tab)].focus();
 }
 
@@ -814,15 +878,16 @@ function setOpen(open) {
 
 // where the chat on screen runs, else where new chats start, else root
 function startingNamespace() {
-  return [chatNamespace(), library.default_namespace].find((name) => name && namespaceNamed(name)) ?? ROOT;
+  return [chatNamespace(), library.default_namespace].find((name) => name && usable(name)) ?? ROOT;
 }
 
 // The decomposition form's picker keeps its pick while that namespace is there.
 function useLibrary(found) {
   library = found;
+  stale.textContent = "";
   fileName.textContent = ` · ${library.file}`;
-  const picked = namespaceNamed(picker.value) ? picker.value : startingNamespace();
-  picker.replaceChildren(...library.namespaces.map(({ name }) => element("option", { value: name }, name)));
+  const picked = usable(picker.value) ? picker.value : startingNamespace();
+  picker.replaceChildren(...library.namespaces.filter((namespace) => namespace.usable).map(({ name }) => element("option", { value: name }, name)));
   picker.value = picked;
   pruneForms();
 }
@@ -835,9 +900,11 @@ async function load() {
     found = await request("GET", LIBRARY_URL);
   } catch (error) {
     if (!library) problem = `Could not load the Library (${error.message}).`;
+    else if (asked > applied) stale.textContent = `Showing the Library as last read: ${error.message}`;
   }
   if (found && asked > applied) {
     applied = asked;
+    stale.textContent = "";
     // as it was: nothing to redraw, so focusing the window costs nothing
     if (!problem && JSON.stringify(found) === JSON.stringify(library)) return;
     problem = null;

@@ -74,10 +74,10 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   are kept in the Library file and deleted with their chat. A new Library grants `page` in `historian`, beside
   `history`, with worked examples of showing an earlier answer or an error on a page, and of making none when
   there is nothing to show, so asking to be shown how an answer was reached goes there too.
-- Each chat has its own model, namespace and working folder, picked under the message box; a change applies from
-  the next message.
-- Light and dark themes; works at phone width, where the chats are a drawer (☰; Esc shuts it), and with no internet:
-  the page loads nothing but the app.
+- Each chat has its own model, namespace and working folder, picked under the message box (typing in the model or
+  namespace menu filters it); a change applies from the next message.
+- Light and dark themes, each with text at WCAG AA contrast; works at phone width, where the chats are a drawer
+  (☰; Esc shuts it), and with no internet: the page loads nothing but the app.
 
 **Models and keys**, in **settings** (bottom left)
 - Vendors and their key variables: OpenAI `OPENAI_API_KEY`, OpenRouter `OPENROUTER_API_KEY`, Anthropic
@@ -117,7 +117,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   `<observation>` it printed; `FinalAnswer` last), and opening a ✗ says why. The form warns as you type but still
   saves it, so a draft can be saved; from the next message, agents in its namespace and those under it are shown
   it as it is, so a new one starts in the namespace of the chat on screen, not root. The code isn't run, so an
-  observation isn't checked against it.
+  observation isn't checked against it. In its YAML editors Tab indents, Esc leaves the editor (a second closes
+  the panel), and Ctrl+Enter or Cmd+Enter saves.
 - Saving refuses what would make every run there fail: a decomposition holding `{{` or `{%` (which the engine reads
   as a Jinja template) whose template doesn't parse, names anything but what the engine fills in (`task`, `vars`,
   `funcs`, `coroutines` and the run settings' `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`),
@@ -131,12 +132,18 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   the check, as a shared Library may hold, is marked ✗ with why. Runs render templates sandboxed, so a shared
   Library's templates reach no Python internals: a worked example that tries fails the run, naming it, and a system prompt or
   suffix that tries is shown to the model as written.
+- A shared Library file may hold a decomposition, namespace, tool or run setting the engine can't read (YAML that
+  doesn't parse or has the wrong shape, or over 1,000,000 characters). It is left out, so it reads as unset and the
+  rest works. The panel marks it ✗ with why and can delete it; Edit fixes a decomposition short enough to show, or a
+  namespace (one too long to show from a blank draft). Runs ignore a grant of a tool left out until it is fixed or
+  deleted. A namespace under one left out is left out too, and chats can't pick either until it is fixed; root still
+  runs, on the engine's bare root.
 - A save or delete in the panel is refused if what you opened was changed meanwhile (by the librarian, another tab
   or an import): your draft stays, beside what is stored now, and saving again replaces it. One deleted meanwhile
   says so, and its row goes. A delete the panel can tell would be refused (a tool a namespace grants, a namespace
   with namespaces under it or that another's `spawn` names) says why at once, without asking first. The panel, and
   the namespace menu under the message box, read the Library again whenever you open the panel or come back to the
-  window.
+  window. While the app isn't answering, the panel shows the Library as it last read it, and says so.
 - The Tools tab shows each tool, with what agents are told it does (for one of the Library's own, as far as its
   Python says without running it) and the Python of the Library's own, and deletes one of the Library's that no
   namespace grants. Run settings can't be changed in the panel, but one the engine doesn't read, as an import may
