@@ -34,7 +34,7 @@ import structlog
 import yaml
 
 from deep_reasoning.folders import remove_unless_kept
-from deep_reasoning.library import LibraryError, open_library, writing
+from deep_reasoning.library import RUN_ID, RUN_ID_FORMAT, open_library, writing
 
 log = structlog.get_logger()
 
@@ -57,9 +57,6 @@ ORPHANS = (
 ORPHAN_PAGES = "NOT EXISTS (SELECT 1 FROM chats WHERE chats.id = pages.chat)"
 # libyaml's where PyYAML has it: the pure-Python one takes ~0.6 s a MiB, on the loop.
 YAML_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
-RUN_ID = r"^\d{8}-\d{6}-\d{6}$"
-# What a run id holds: when the run began, in UTC.
-RUN_ID_FORMAT = "%Y%m%d-%H%M%S-%f"
 STOP_GRACE_S = 5.0
 MIB = 1024 * 1024
 LINE_LIMIT = 64 * MIB
@@ -70,7 +67,10 @@ TOO_LONG = (
 # Never handed to a run: with it set, Claude Code bills that key instead of the subscription.
 WITHHELD = "ANTHROPIC_API_KEY"
 SHUT_DOWN = "Deep Reasoning shut down while the run was going."
-LOST = "Deep Reasoning stopped while the run was going, so the run was lost."
+LOST = (
+    "The run's end wasn't saved: the app stopped while it was going, or the Library file"
+    " refused its events."
+)
 LOST_END = {"kind": "turn.end", "outcome": "failed", "answer": None, "detail": LOST}
 NOT_SAVED = "The app couldn't save the run in the Library file, so it ended the run"
 # A run whose chat was deleted while it went: only the streams still open on it see this.
@@ -288,17 +288,14 @@ def ended(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [*events, lost_end(events, events[-1]["seq"] + 1)]
 
 
-def read_turn(
-    connection: sqlite3.Connection, run: str, held: Sequence[dict[str, Any]] = ()
-) -> Turn | None:
-    """An ended run's message and how it ended, from its first and last events that load,
-    or from *held*, its events as the app holds them when the file refused some; None for
-    a run that didn't start, as one in a file from someone else may not have."""
-    start = held[0] if held else first_loaded(connection, run, FORWARD)
+def read_turn(connection: sqlite3.Connection, run: str) -> Turn | None:
+    """An ended run's message and how it ended, from its first and last events that load;
+    None for a run that didn't start, as one in a file from someone else may not have."""
+    start = first_loaded(connection, run, FORWARD)
     if not started(start):
         log.warning("runs.turn_left_out", run=run)
         return None
-    end = held[-1] if held else first_loaded(connection, run, BACKWARD)
+    end = first_loaded(connection, run, BACKWARD)
     if not has_ended(end):
         end = LOST_END
     return Turn(
@@ -320,18 +317,14 @@ def chat_runs(connection: sqlite3.Connection, chat: str) -> list[str]:
 
 
 def chat_turns(
-    connection: sqlite3.Connection,
-    chat: str,
-    going: str | None = None,
-    held: dict[str, list[dict[str, Any]]] | None = None,
+    connection: sqlite3.Connection, chat: str, going: str | None = None
 ) -> list[dict[str, Any]]:
-    """The chat's turns as the page reads them: each run's events, oldest run first, or
-    those *held* for it, as the app holds them when the file refused some. A run that
-    isn't *going* and has no turn.end, as one the app stopped under, ends failed; one with
-    no turn.start, as a file from someone else may hold, is left out."""
+    """The chat's turns as the page reads them: each run's events, oldest run first. A run
+    that isn't *going* and has no turn.end, as one whose end the app couldn't save, ends
+    failed; one with no turn.start, as a file from someone else may hold, is left out."""
     turns = []
     for run in chat_runs(connection, chat):
-        events = (held or {}).get(run) or read_events(connection, run)
+        events = read_events(connection, run)
         if not started(events[0] if events else None):
             log.warning("runs.turn_left_out", run=run)
             continue
@@ -351,20 +344,6 @@ def delete_runs(connection: sqlite3.Connection, chat: str) -> list[str]:
         connection.execute("DELETE FROM runs WHERE chat = ?", (chat,))
         connection.execute("DELETE FROM pages WHERE chat = ?", (chat,))
     return runs
-
-
-def save_missing(
-    connection: sqlite3.Connection, run: str, events: Sequence[dict[str, Any]]
-) -> None:
-    """Save the run's *events* that the app file lacks: those after its highest seq, as
-    the file refused them."""
-    with writing(connection):
-        top = connection.execute(
-            "SELECT coalesce(max(seq), 0) FROM events WHERE run = ?", (run,)
-        ).fetchone()[0]
-        for event in events:
-            if event["seq"] > top:
-                connection.execute(ADD_EVENT, (run, event["seq"], json.dumps(event)))
 
 
 def delete_orphans(connection: sqlite3.Connection) -> None:
@@ -488,15 +467,6 @@ def new_run_id() -> str:
     return datetime.now(UTC).strftime(RUN_ID_FORMAT)
 
 
-def run_started(run: str) -> float | None:
-    """When the run *run* names began, as a Unix time; None for an id naming no time, as
-    one in a file from someone else may."""
-    try:
-        return datetime.strptime(run, RUN_ID_FORMAT).replace(tzinfo=UTC).timestamp()
-    except (TypeError, ValueError):
-        return None
-
-
 def worker_env(keys: dict[str, str]) -> dict[str, str]:
     """The app's environment with the run's *keys* added, and never ANTHROPIC_API_KEY."""
     return {
@@ -524,14 +494,6 @@ class Runs:
         self.home = home
         self._stop_grace_s = stop_grace_s
         self._live: dict[str, _Live] = {}
-        # Ended runs whose events the file refused, by id, until it takes them.
-        self._held: dict[str, _Live] = {}
-
-    @property
-    def held(self) -> dict[str, list[dict[str, Any]]]:
-        """The events of each ended run the file refused some of, as the run sent them,
-        by its id: until the file takes them, these are the run's record."""
-        return {run: live.events for run, live in self._held.items()}
 
     def live(self, chat: str) -> str | None:
         """The chat's run that is going, if one is: one whose turn has not ended."""
@@ -569,7 +531,6 @@ class Runs:
         run going."""
         if self.live(chat) is not None:
             raise RunInProgress(chat)
-        self._save_held()
         run = new_run_id()
         run_folder = self.home / RUNS / run
         run_folder.mkdir(parents=True)
@@ -627,7 +588,7 @@ class Runs:
         live = self._live.get(run)
         if live is None:
             with closing(open_library(self.library)) as connection:
-                events = self.held.get(run) or ended(read_events(connection, run))
+                events = ended(read_events(connection, run))
             for event in events:
                 if event["seq"] > after:
                     yield event
@@ -662,8 +623,6 @@ class Runs:
                 workers.append(live.pump)
         if workers:
             await asyncio.wait(workers)
-        for run in [run for run, live in self._held.items() if live.chat == chat]:
-            del self._held[run]
         with closing(open_library(self.library)) as connection:
             runs = delete_runs(connection, chat)
         for run in runs:
@@ -679,20 +638,6 @@ class Runs:
             else:
                 kill_group(live.process.pid)
         await asyncio.gather(*(live.pump for live in lives), return_exceptions=True)
-        self._save_held()
-
-    def _save_held(self) -> None:
-        """Save what the file refused of each ended run, as it may take it now: while it
-        doesn't, the run's events stay held, and when the app stops holding them, the
-        next start ends the run as lost."""
-        for run, live in list(self._held.items()):
-            try:
-                with closing(open_library(self.library)) as connection:
-                    save_missing(connection, run, live.events)
-            except (sqlite3.Error, LibraryError) as error:
-                log.warning("runs.still_not_saved", run=run, error=str(error))
-                continue
-            del self._held[run]
 
     def _ask_to_stop(self, live: _Live) -> None:
         process = live.process
@@ -786,10 +731,8 @@ class Runs:
             if not live.ended:
                 self._record(run, live, self._turn_end(run, live))
         except sqlite3.Error:
-            # Its streams saw the turn.end; the run is read from what is held until the
-            # file takes it.
+            # Its streams saw the turn.end; the file gets one when the app next starts.
             log.exception("runs.end_not_saved", run=run)
-            self._held[run] = live
         finally:
             live.db.close()
             del self._live[run]

@@ -2,6 +2,7 @@ import json
 import re
 import time
 from contextlib import closing
+from itertools import count
 
 import pytest
 from deep_reasoner.namespaces import ROOT
@@ -148,6 +149,41 @@ def test_chats_made_in_the_same_clock_tick_are_listed_newest_first(
     monkeypatch.setattr(time, "time", lambda: NOW)
     first, second = create_chat(library), create_chat(library)
     assert list_chats(library) == [second, first]
+
+
+def test_chats_are_listed_by_their_latest_run_else_when_made(library, monkeypatch):
+    clock = count(NOW)
+    monkeypatch.setattr(time, "time", lambda: next(clock))
+    used, older, newer = (
+        create_chat(library),
+        create_chat(library),
+        create_chat(library),
+    )
+    run = "20330101-000000-000000"  # after all three were made
+    with closing(open_library(library)) as connection:
+        connection.execute("INSERT INTO runs VALUES (?, ?)", (run, used["id"]))
+    listed = [(chat["id"], chat["last_run"]) for chat in list_chats(library)]
+    assert listed == [(used["id"], run), (newer["id"], None), (older["id"], None)]
+
+
+def test_a_run_id_the_app_could_not_have_made_is_ignored(library, monkeypatch):
+    clock = count(NOW)
+    monkeypatch.setattr(time, "time", lambda: next(clock))
+    dateless, shapeless = create_chat(library), create_chat(library)
+    with closing(open_library(library)) as connection:
+        for run, chat in [
+            ("99999999-not-a-run", shapeless),
+            (b"20330101-000000-000000", shapeless),
+            # its shape, so chat_runs lists it, but month 13: no date to order it by
+            ("20331301-000000-000000", dateless),
+        ]:
+            connection.execute("INSERT INTO runs VALUES (?, ?)", (run, chat["id"]))
+    listed = [(chat["id"], chat["last_run"]) for chat in list_chats(library)]
+    assert listed == [
+        (shapeless["id"], None),
+        (dateless["id"], "20331301-000000-000000"),
+    ]
+    assert find_chat(library, shapeless["id"])["last_run"] is None
 
 
 def test_ids_are_readable_url_safe_and_unique(library):

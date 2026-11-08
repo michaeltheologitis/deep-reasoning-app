@@ -40,11 +40,11 @@ const TRAIL_PARTS = 3;
 const CONFLICT = 409;
 const NOT_FOUND = 404;
 const NEW_TITLE = "New chat";
-// as the server cuts a title
-const TITLE_CHARS = 200;
-// while a hint says the app isn't answering, how often the page asks again
+// while the app isn't answering, how often the page asks again
 const RETRY_MS = 2000;
-const RUN_ELSEWHERE = "this chat has a run going, started in another tab; it shows above now";
+// focus and visibilitychange often both fire on one return to the tab
+const COME_BACK_MS = 500;
+const RUN_FROM_OTHER_TAB = "this chat has a run going, started in another tab; it shows above now";
 // the width at which the chat list is a drawer, as style.css has it
 const PHONE = matchMedia("(max-width: 720px)");
 const SCRATCH_NAME = "scratch";
@@ -64,16 +64,17 @@ const OUTCOME = {
 };
 
 const byId = (id) => document.getElementById(id);
-// problem: a hint in red; notice: one in plain words, such as a chat another tab deleted
-const state = { chats: [], current: null, live: null, sending: false, problem: null, notice: null };
+// sending: the chat whose message is on its way; problem shows in red, notice in plain words
+const state = { chats: [], current: null, live: null, sending: null, problem: null, problemWhileDown: false, notice: null };
 const ui = { renaming: null, deleting: null };
-// Each chat's unsent message, by its id, so a draft stays with its chat.
 const drafts = new Map();
-// What this page sent that changes the chats: a list read while one is on its way may predate it.
+// this page's changes on their way: a list read meanwhile may predate them
 const inflight = new Set();
 let changes = 0;
 let refreshing = null;
+let notAnswering = false;
 let retrying = 0;
+let cameBack = -COME_BACK_MS;
 const library = { namespaces: null, defaultNamespace: null };
 const HOME_FOLDER = "~";
 let popover = null;
@@ -171,7 +172,6 @@ function renderRename(chat) {
     class: "rename",
     id: "rename",
     value: chat.title,
-    maxlength: TITLE_CHARS,
     "aria-label": "Chat name",
     onkeydown: (e) => {
       e.stopPropagation();
@@ -189,8 +189,7 @@ function renderRename(chat) {
   return element("li", { class: "chat current" }, input);
 }
 
-// The confirm takes the row's place with Keep focused, as the Library panel's do; Keep or Esc goes back to its ✕.
-// The chat's scratch folder goes with it: one holding files says so, as what the agent wrote there goes too.
+// Keep is focused, as in the Library panel's confirms.
 function renderConfirmDelete(chat) {
   const question = chat.scratch_files ? "Delete this chat? Its scratch folder, with the files the agent wrote there, goes too." : "Delete this chat?";
   return element(
@@ -221,7 +220,6 @@ function renderChat(chat) {
   );
 }
 
-// Redrawn whole, focus stays on the row it was on.
 function renderList() {
   const focused = document.activeElement?.dataset?.key;
   byId("chats").replaceChildren(...state.chats.map(renderChat));
@@ -230,9 +228,20 @@ function renderList() {
 
 const focusRow = (chat, kind = "chat") => chat && refocus(`${kind}:${chat.id}`);
 
-function askDelete(chat) {
+// The scratch folder goes with the chat, so the question names it once the server says it holds files.
+async function askDelete(chat) {
+  chat.scratch_files = false;
   setUi({ deleting: chat });
   focusRow(chat, "chat-keep");
+  let scratch;
+  try {
+    scratch = await request("GET", `api/chats/${chat.id}/scratch`);
+  } catch (error) {
+    lostWith(error, chat);
+    return;
+  }
+  chat.scratch_files = scratch.files;
+  if (ui.deleting === chat && scratch.files) renderList();
 }
 
 function keep(chat) {
@@ -240,14 +249,13 @@ function keep(chat) {
   focusRow(chat, "chat-delete");
 }
 
-// The chat on screen, in view in the list, as after a new chat or a reload.
 function revealCurrent() {
   byId("chats").querySelector("[aria-current]")?.scrollIntoView({ block: "nearest" });
 }
 
 const drawerOpen = () => PHONE.matches && byId("app").classList.contains("list-open");
 
-// At phone width the list is a drawer: shut, it is out of the Tab order; opened, focus goes to the chat on screen.
+// Only at phone width is the list a drawer.
 function setDrawer(open) {
   const was = drawerOpen();
   byId("app").classList.toggle("list-open", open);
@@ -272,14 +280,13 @@ function logOf(chat) {
 
 function renderLog(scroll) {
   const chat = state.current;
-  if (!chat) return;
+  byId("title").textContent = chat?.title ?? "";
+  if (!chat) return byId("log").replaceChildren();
   const focused = document.activeElement?.dataset?.key;
-  byId("title").textContent = chat.title;
   keepScroll(scroll, () => byId("log").replaceChildren(...logOf(chat)));
   refocus(focused);
 }
 
-// One run at a time: a message sent meanwhile is kept, and the hint says how to go on.
 const runElsewhere = (live) => `a run is going in “${live.chat.title}”: wait for it, or open it and press Esc to stop it`;
 
 function usualHint(live, here) {
@@ -297,19 +304,8 @@ function renderComposer() {
   hint.classList.toggle("err", state.problem != null);
   // the hint is a live region: setting the same text again would announce it again
   if (hint.textContent !== text) hint.textContent = text;
-  watchForAnswer();
   renderTotal(state.current?.turns ?? []);
   renderChoices(state.current);
-}
-
-// While a hint says the app isn't answering, the page asks again now and then, so the hint goes once it answers.
-function watchForAnswer() {
-  const down = state.problem?.endsWith(NOT_ANSWERING) ?? false;
-  if (down && !retrying) retrying = setInterval(refresh, RETRY_MS);
-  if (!down && retrying) {
-    clearInterval(retrying);
-    retrying = 0;
-  }
 }
 
 // What the chat's turns cost, with N/A when any turn's is unknown.
@@ -679,8 +675,7 @@ function setUi(change) {
 }
 
 function report(problem) {
-  state.problem = problem;
-  state.notice = null;
+  Object.assign(state, { problem, problemWhileDown: problem != null && notAnswering, notice: null });
   renderComposer();
 }
 
@@ -703,18 +698,31 @@ async function answered(method, url, body) {
   try {
     response = await fetch(url, options);
   } catch {
+    answering(false);
     throw new Error(NOT_ANSWERING);
   }
-  if (state.problem?.endsWith(NOT_ANSWERING)) report(null);
+  answering(true);
   const answer = await response.json().catch(() => ({}));
   if (response.ok) return answer;
   const problem = typeof answer.detail === "string" ? answer.detail : `${url} answered ${response.status}`;
   throw Object.assign(new Error(problem), { status: response.status });
 }
 
-// What other tabs changed: the chats, and the open chat's runs and picks. Read when this window comes back, when the chat
-// on screen changes, after a change in settings or the Library, and when a message is refused; on a timer only while the
-// app isn't answering.
+// While the app isn't answering, the page asks again, and a hint shown meanwhile goes once it answers.
+function answering(up) {
+  if (notAnswering === !up) return;
+  notAnswering = !up;
+  if (notAnswering) {
+    retrying = setInterval(refresh, RETRY_MS);
+    return;
+  }
+  clearInterval(retrying);
+  if (!state.problemWhileDown) return;
+  Object.assign(state, { problem: null, problemWhileDown: false });
+  renderComposer();
+}
+
+// What other tabs changed: the chats, and the open chat's turns when another tab ran in it.
 function refresh(scroll = "follow") {
   refreshing ??= readAll(scroll).finally(() => {
     refreshing = null;
@@ -722,27 +730,27 @@ function refresh(scroll = "follow") {
   return refreshing;
 }
 
-// Only what the list says is redrawn unless the chat on screen changed, so a selection in it survives the window's focus.
+// The log redraws only when its chat was read, so a selection in it survives a focus.
 async function readAll(scroll) {
   try {
     await readChats();
-  } catch {
-    return;
-  }
-  const chat = state.current;
-  if (!chat || !stale(chat)) {
-    if (!ui.renaming) renderList();
-    if (chat) byId("title").textContent = chat.title;
-    renderComposer();
-    return;
-  }
-  try {
-    await readTurns(chat);
   } catch (error) {
-    if (!lostWith(error, chat) && state.current === chat) report(`Could not open this chat: ${error.message}`);
+    report(error.message);
     return;
   }
-  if (state.current === chat) render(scroll);
+  if (!ui.renaming) renderList();
+  // a click, or a chat deleted elsewhere, may put another chat on screen while one is read
+  for (let chat = state.current; chat && stale(chat); chat = state.current) {
+    try {
+      await readTurns(chat);
+    } catch (error) {
+      if (!lostWith(error, chat) && state.current === chat) return report(`Could not open this chat: ${error.message}`);
+      continue;
+    }
+    if (state.current === chat) return render(scroll);
+  }
+  byId("title").textContent = state.current?.title ?? "";
+  renderComposer();
 }
 
 // The list, the one used last first, read again while what this page sent may have changed it meanwhile.
@@ -800,12 +808,12 @@ function lose(chat) {
     state.live = null;
   }
   if (ui.renaming === chat || ui.deleting === chat) Object.assign(ui, { renaming: null, deleting: null });
+  state.notice = `“${chat.title}” was deleted in another tab.`;
   if (state.current === chat) {
     state.current = null;
     if (state.chats.length) select(state.chats[0], { focus: null });
-    else newChat();
+    else newChat({ focus: null });
   }
-  state.notice = `“${chat.title}” was deleted in another tab.`;
   render();
 }
 
@@ -818,12 +826,12 @@ function showDraft(chat) {
   grow();
 }
 
-// focus: "input" for the message box, which shuts the drawer; "row" for the chat's row in the list; null to leave it.
+// focus: "input" (shutting the drawer), "row", or null when the page picked it, leaving focus and the notice.
 async function select(chat, { focus = "input" } = {}) {
   keepDraft();
   state.current = chat;
   state.problem = null;
-  state.notice = null;
+  if (focus) state.notice = null;
   ui.deleting = null;
   showDraft(chat);
   if (focus === "input") setDrawer(false);
@@ -835,11 +843,11 @@ async function select(chat, { focus = "input" } = {}) {
 }
 
 // A chat with no messages and its first title is reused, so clicking "+ New chat" never piles up empty ones.
-const isEmpty = (chat) => chat.last_run == null && chat.live == null && chat.title === NEW_TITLE;
+const isEmpty = (chat) => chat.last_run == null && chat.live == null && chat.title === NEW_TITLE && chat !== state.sending;
 
-async function newChat() {
+async function newChat(how) {
   const empty = state.chats.find(isEmpty);
-  if (empty) return select(empty);
+  if (empty) return select(empty, how);
   let made;
   try {
     made = await request("POST", "api/chats");
@@ -850,7 +858,7 @@ async function newChat() {
   // a list read meanwhile may have it already
   const chat = state.chats.find(({ id }) => id === made.id) ?? Object.assign(made, { turns: [], read_run: null });
   if (!state.chats.includes(chat)) state.chats.unshift(chat);
-  select(chat);
+  select(chat, how);
 }
 
 // The list drops the chat at once and focus goes to the next row; the server may take a few seconds, stopping a run that is going first.
@@ -879,7 +887,7 @@ async function remove(chat) {
     if (error.status === NOT_FOUND) return;
     // back in the list, read afresh when next opened
     state.chats.splice(Math.min(index, state.chats.length), 0, Object.assign(chat, { turns: null }));
-    state.problem = `Not deleted: ${error.message}`;
+    report(`Not deleted: ${error.message}`);
     render();
   }
 }
@@ -893,14 +901,20 @@ async function finishRename(chat, typed, backToRow) {
   render();
   if (backToRow) focusRow(chat);
   if (chat.title === before) return;
+  let renamed;
   try {
-    await request("PATCH", `api/chats/${chat.id}`, { title });
+    renamed = await request("PATCH", `api/chats/${chat.id}`, { title });
   } catch (error) {
     if (lostWith(error, chat)) return;
     chat.title = before;
-    state.problem = `Not renamed: ${error.message}`;
+    report(`Not renamed: ${error.message}`);
     render();
+    return;
   }
+  // the server cuts a long one
+  if (renamed.title === chat.title) return;
+  chat.title = renamed.title;
+  render();
 }
 
 function follow(chat, run, fold) {
@@ -935,15 +949,14 @@ function drawLive(live) {
   });
 }
 
-// The stream closes after turn.end; left open, EventSource would reconnect to it. The list is read again, as the run
-// may have written files in the chat's scratch folder.
+// The stream closes after turn.end; left open, EventSource would reconnect to it.
 function finish(live) {
   live.source.close();
   live.chat.live = null;
+  // a list read while the run went on would show it going again
   changes += 1;
   if (state.live === live) state.live = null;
   render("follow");
-  refresh();
 }
 
 // EventSource retries a dropped stream itself; it gives up only when refused (a run deleted meanwhile), so the chat is read afresh.
@@ -966,25 +979,24 @@ async function send() {
     report(`Not sent: ${state.live.chat === chat ? "this chat's run is going: wait for it, or press Esc to stop it" : runElsewhere(state.live)}.`);
     return;
   }
-  state.sending = true;
-  let run;
+  state.sending = chat;
+  let run, title;
   try {
-    ({ run } = await request("POST", `api/chats/${chat.id}/runs`, { prompt }));
+    ({ run, title } = await request("POST", `api/chats/${chat.id}/runs`, { prompt }));
   } catch (error) {
     if (lostWith(error, chat)) return;
     if (error.status !== CONFLICT) return report(`Not sent: ${error.message}`);
-    report(`Not sent: ${RUN_ELSEWHERE}.`);
+    report(`Not sent: ${RUN_FROM_OTHER_TAB}.`);
     // read again, so the page follows the run another tab started
     refresh("bottom");
     return;
   } finally {
-    state.sending = false;
+    state.sending = null;
   }
   if (state.current === chat && input.value.trim() === prompt) input.value = "";
   if (drafts.get(chat.id)?.trim() === prompt) drafts.delete(chat.id);
   grow();
-  // as the server titles it
-  if (!chat.turns.length && chat.title === NEW_TITLE) chat.title = [...prompt.split("\n")[0].trim()].slice(0, TITLE_CHARS).join("").trimEnd();
+  chat.title = title;
   // used last, so first in the list
   if (state.chats.includes(chat)) state.chats.unshift(...state.chats.splice(state.chats.indexOf(chat), 1));
   Object.assign(chat, { last_run: run, read_run: run });
@@ -1044,7 +1056,7 @@ function wire() {
   labelTheme();
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", labelTheme);
   byId("theme").addEventListener("click", toggleTheme);
-  byId("new-chat").addEventListener("click", newChat);
+  byId("new-chat").addEventListener("click", () => newChat());
   byId("stop").addEventListener("click", stop);
   byId("namespace").addEventListener("click", pickNamespace);
   byId("model").addEventListener("click", pickModel);
@@ -1059,12 +1071,6 @@ function wire() {
   });
   PHONE.addEventListener("change", () => setDrawer(false));
   setDrawer(false);
-  // back in this window, or this tab shown again: another tab, the librarian or an import may have changed the chats or
-  // the Library, whose namespaces the menu under the message box lists
-  const comeBack = () => {
-    byId("library").dispatchEvent(new Event(LIBRARY_CHANGED));
-    refresh();
-  };
   window.addEventListener("focus", comeBack);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) comeBack();
@@ -1094,6 +1100,25 @@ function wire() {
   setInterval(() => {
     if (state.live) tick();
   }, SPIN_MS);
+}
+
+// Another tab, the librarian or an import may have changed the chats or the Library.
+function comeBack() {
+  const now = performance.now();
+  if (now - cameBack < COME_BACK_MS) return;
+  cameBack = now;
+  if (byId("library").hidden) readNamespaces();
+  else byId("library").dispatchEvent(new Event(LIBRARY_CHANGED));
+  refresh();
+}
+
+async function readNamespaces() {
+  try {
+    useLibrary(await request("GET", "api/namespaces"));
+  } catch {
+    return;
+  }
+  renderComposer();
 }
 
 // The namespaces a chat can pick, and the default one new chats start in, as the Library panel reads them.

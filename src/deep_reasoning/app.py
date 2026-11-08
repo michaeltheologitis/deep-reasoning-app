@@ -48,6 +48,7 @@ from deep_reasoning.library import (
     add_namespace,
     change_namespace,
     check_namespace,
+    config_and_registry,
     default_namespace,
     delete_decomposition,
     delete_namespace,
@@ -56,8 +57,10 @@ from deep_reasoning.library import (
     edit_decomposition,
     engine_config,
     has_namespace,
+    in_chain_order,
     open_library,
     panel,
+    reading,
 )
 from deep_reasoning.pages import page_exists, page_text
 from deep_reasoning.runs import (
@@ -69,7 +72,6 @@ from deep_reasoning.runs import (
     delete_orphans,
     end_unfinished,
     read_turn,
-    run_started,
 )
 from deep_reasoning.settings import (
     Provider,
@@ -140,15 +142,6 @@ class Web(StaticFiles):
 def shown_folder(folder):
     """A folder kept as an absolute path, as the page shows it; None stays None."""
     return None if folder is None else short_path(Path(folder))
-
-
-def last_used(chat):
-    """When the chat was last used: its latest run's start, else when it was made."""
-    started = run_started(chat["last_run"])
-    if started is not None:
-        return started
-    created = chat["created"]
-    return created if isinstance(created, int | float) else 0.0
 
 
 def same_origin(
@@ -263,6 +256,14 @@ def create_app(library, home):
         with closing(open_library(library)) as connection:
             delete_decomposition(connection, namespace, name, was)
             return library_panel(connection)
+
+    # What the namespace menu under the message box lists, lighter than the whole panel.
+    @app.get("/api/namespaces")
+    def read_namespaces():
+        with closing(open_library(library)) as connection, reading(connection):
+            config, registry = config_and_registry(connection)
+        names = [{"name": name} for name in in_chain_order(registry)]
+        return {"namespaces": names, "default_namespace": config.entry_namespace}
 
     # An imported namespace's, tool's or setting's name may hold a /, hence :path.
     @app.post("/api/namespaces", status_code=HTTPStatus.CREATED)
@@ -381,12 +382,10 @@ def create_app(library, home):
 
     def shown(chat, starts):
         """A chat as the API gives it: with the id of its run that is going, if one is, its
-        latest run's, the namespace and model its next message runs on, and whether its
-        scratch folder, which goes with it, holds files."""
+        latest run's, and the namespace and model its next message runs on."""
         namespace, model = starts
         if chat["model"] is not None:
             model = {"provider": chat["provider"], "name": chat["model"]}
-        scratch = scratch_folder(data, chat["id"])
         return {
             "id": chat["id"],
             "title": chat["title"],
@@ -396,8 +395,7 @@ def create_app(library, home):
             "namespace": chat["namespace"] or namespace,
             "model": model,
             "folder": shown_folder(chat["folder"]),
-            "scratch_folder": short_path(scratch),
-            "scratch_files": holds_files(scratch),
+            "scratch_folder": short_path(scratch_folder(data, chat["id"])),
         }
 
     # The chat routes are coroutines, so they run on the event loop with the runs: what
@@ -410,12 +408,10 @@ def create_app(library, home):
 
     KnownChat = Annotated[dict, Depends(known_chat)]
 
-    # The chat used last first, so a reload opens it.
     @app.get("/api/chats")
     async def read_chats():
         starts = starting_points()
-        chats = sorted(list_chats(library), key=last_used, reverse=True)
-        return [shown(chat, starts) for chat in chats]
+        return [shown(chat, starts) for chat in list_chats(library)]
 
     @app.post("/api/chats", status_code=HTTPStatus.CREATED)
     async def post_chat():
@@ -426,8 +422,13 @@ def create_app(library, home):
     async def read_chat(chat: KnownChat):
         going = runs.live(chat["id"])
         with closing(open_library(library)) as connection:
-            turns = chat_turns(connection, chat["id"], going, runs.held)
+            turns = chat_turns(connection, chat["id"], going)
         return shown(chat, starting_points()) | {"turns": turns}
+
+    # Asked as the delete confirm opens: the scratch folder goes with the chat.
+    @app.get("/api/chats/{chat}/scratch")
+    async def read_scratch(chat: KnownChat):
+        return {"files": holds_files(scratch_folder(data, chat["id"]))}
 
     @app.patch("/api/chats/{chat}")
     async def patch_chat(chat: KnownChat, change: ChatChange):
@@ -477,10 +478,8 @@ def create_app(library, home):
                 raise LibraryError(
                     f"This chat's namespace {namespace} no longer exists — pick another."
                 )
-            held = runs.held
             turns = [
-                read_turn(connection, run, held.get(run, ()))
-                for run in chat_runs(connection, chat["id"])
+                read_turn(connection, run) for run in chat_runs(connection, chat["id"])
             ]
         earlier = [turn for turn in turns if turn is not None]
         if model is None:
@@ -515,9 +514,8 @@ def create_app(library, home):
             names,
         )
         choose(library, chat["id"], namespace, provider.name, model["name"])
-        if not earlier:
-            title_new_chat(library, chat["id"], prompt)
-        return {"run": run}
+        titled = None if earlier else title_new_chat(library, chat["id"], prompt)
+        return {"run": run, "title": titled or chat["title"]}
 
     def known_run(run: Annotated[str, InPath(pattern=RUN_ID)]):
         if not runs.exists(run):

@@ -186,6 +186,15 @@ def namespaces(client):
     }
 
 
+def test_the_namespace_menu_reads_the_panels_namespaces_and_default(client):
+    panel = client.get("/api/library").json()
+    menu = client.get("/api/namespaces").json()
+    assert menu == {
+        "namespaces": [{"name": each["name"]} for each in panel["namespaces"]],
+        "default_namespace": panel["default_namespace"],
+    }
+
+
 def field(namespace, label):
     return next(each["items"] for each in namespace["fields"] if each["label"] == label)
 
@@ -2046,8 +2055,12 @@ async def test_the_first_message_titles_a_chat_cut_past_the_longest_kept(
     with FakeOpenAI(scripted(PLAN)) as fake:
         async with connect(library_on(fake)) as api:
             chat = await new_chat(api)
-            await run_events(api, await send(api, chat, prompt))
+            first = await api.post(f"/api/chats/{chat}/runs", json={"prompt": prompt})
+            await run_events(api, first.json()["run"])
+            later = await api.post(f"/api/chats/{chat}/runs", json={"prompt": "Hi."})
+            await run_events(api, later.json()["run"])
             title = await title_of(api, chat)
+    assert title == first.json()["title"] == later.json()["title"]
     assert title == prompt[:TITLE_CHARS]
 
 
@@ -3094,12 +3107,14 @@ async def test_a_chat_without_a_folder_works_in_its_scratch_folder_across_messag
         async with connect(library_on(fake)) as api:
             chat = await new_chat(api)
             before = (data / "work" / chat).exists()
-            empty = (await api.get(f"/api/chats/{chat}")).json()["scratch_files"]
+            empty = (await api.get(f"/api/chats/{chat}/scratch")).json()
             first = await run_events(api, await send(api, chat, "Write a note."))
             second = await run_events(api, await send(api, chat, "Read the note."))
             read = (await api.get(f"/api/chats/{chat}")).json()
+            written = (await api.get(f"/api/chats/{chat}/scratch")).json()
     scratch = data / "work" / chat
-    assert not before and not empty and read["scratch_files"]
+    assert not before
+    assert (empty, written) == ({"files": False}, {"files": True})
     assert (read["folder"], read["scratch_folder"]) == (
         None,
         f"~/files/{data.name}/work/{chat}",
