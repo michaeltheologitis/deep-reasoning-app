@@ -290,7 +290,8 @@ def test_a_historian_with_no_examples_of_its_own_reads_the_record_in_place_of_ha
         assert running_code(turn) == "print(history.turns())"
         assert "I answer it here and never hand it on" in turn
     [item] = hand_offs_field(panel_rows(library)[HISTORIAN])
-    assert "Its agents answer themselves what 5 worked examples" in item["value"]
+    instead = f"Its agents answer themselves what {len(HAND_OFFS)} worked examples"
+    assert instead in item["value"]
 
 
 def test_with_the_historian_deleted_no_namespace_hands_off_to_it(library, tmp_path):
