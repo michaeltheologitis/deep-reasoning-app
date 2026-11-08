@@ -119,10 +119,11 @@ def run_config(library, tmp_path, namespace=ROOT):
     )
 
 
-def import_into(library, config):
-    """What importing *config* into *library* changed, as the lines it says."""
+def import_into(library, config, within=None):
+    """What importing *config* into *library*, reading within *within*, changed, as the
+    lines it says."""
     with closing(open_library(library)) as connection:
-        return import_config(connection, config)["changes"]
+        return import_config(connection, config, within=within)["changes"]
 
 
 def dumped(library):
@@ -347,8 +348,10 @@ def test_an_import_may_not_give_a_tool_an_app_tools_name(library, tmp_path, tool
         assert connection.execute("SELECT count(*) FROM tools").fetchone() == (0,)
 
 
-def test_import_says_each_setting_namespace_and_tool_it_changed(library, waitlist):
-    said = import_into(library, waitlist)
+def test_import_says_each_setting_namespace_and_tool_it_changed(
+    library, waitlist, configs
+):
+    said = import_into(library, waitlist, within=configs)
     assert said == [
         "Run settings, for every chat:",
         (
@@ -813,12 +816,13 @@ ANSWERS = (
 )
 
 
-def refused_unchanged(library, config, said):
-    """Import *config*, which must be refused saying *said*, leaving *library* as it was."""
+def refused_unchanged(library, config, said, within=None):
+    """Import *config*, reading within *within*, which must be refused saying *said*,
+    leaving *library* as it was."""
     open_library(library).close()
     before = dumped(library)
     with pytest.raises(LibraryError) as refused:
-        import_into(library, config)
+        import_into(library, config, within)
     assert said in str(refused.value)
     assert dumped(library) == before
 
@@ -1071,6 +1075,133 @@ def test_import_blames_a_file_it_composes_that_is_not_a_config(library, tmp_path
     config = config_file(tmp_path, "_compose: [list.yaml]\n")
     said = f"{tmp_path / 'list.yaml'} {NOT_A_MAPPING}"
     refused_unchanged(library, config, said)
+
+
+# A setting a file outside the config's folder holds, which an import never reads.
+OUTSIDE_SETTING = "max_iter: 7\n"
+# Where a config in cfg/ under tmp_path names a file outside that folder: the files
+# laid out (lay_out()), the config, and how the refusal names it.
+OUTSIDE_PLACES = {
+    "an absolute path": ({}, "_compose: [{outside}]\n", "{outside},"),
+    "a path up out of its folder": (
+        {},
+        "_compose: [../outside.yaml]\n",
+        "../outside.yaml, which is {outside},",
+    ),
+    "a file it composes, composing one outside": (
+        {"cfg/parts/base.yaml": "_compose: [../../outside.yaml]\n"},
+        "_compose: [parts/base.yaml]\n",
+        "base.yaml composes ../../outside.yaml, which is {outside},",
+    ),
+    "a link to a file outside": (
+        {"cfg/link.yaml": "->outside.yaml"},
+        "_compose: [link.yaml]\n",
+        "link.yaml, which is {outside},",
+    ),
+    "its namespaces_dir up out of its folder": (
+        {"names/research.yaml": "system_suffix: hi\n"},
+        "namespaces_dir: ../names\n",
+        "Its namespaces_dir is ../names, which is {tmp}/names,",
+    ),
+    "a link in its namespaces_dir to a file outside": (
+        {"cfg/names/research.yaml": "->outside.yaml"},
+        "namespaces_dir: names\n",
+        "Its namespaces_dir holds {tmp}/cfg/names/research.yaml, which is {outside},",
+    ),
+    "a tool's factory_from up out of its folder": (
+        {"tally.py": "def build(client, params): ...\n"},
+        "tools:\n  tally: {factory: build, factory_from: ../tally.py}\n",
+        'Tool "tally" names factory_from ../tally.py, which is {tmp}/tally.py,',
+    ),
+}
+
+
+def lay_out(tmp_path, files):
+    """Each of *files* under *tmp_path*, by path, its text; one of "->target" a link to
+    *target*, from tmp_path."""
+    for name, text in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if text.startswith("->"):
+            path.symlink_to(tmp_path / text.removeprefix("->"))
+        else:
+            path.write_text(text)
+
+
+@pytest.mark.parametrize("place", OUTSIDE_PLACES)
+def test_import_refuses_a_file_outside_the_configs_folder_naming_it(
+    library, tmp_path, place
+):
+    files, text, named = OUTSIDE_PLACES[place]
+    outside = tmp_path / "outside.yaml"
+    lay_out(tmp_path, {"outside.yaml": OUTSIDE_SETTING, **files})
+    (tmp_path / "cfg").mkdir(exist_ok=True)
+    config = config_file(tmp_path / "cfg", text.replace("{outside}", str(outside)))
+    said = (
+        f"{named.format(outside=outside, tmp=tmp_path)} outside {tmp_path / 'cfg'};"
+        " an import reads only files in the config's folder and below: copy the file"
+        " in, or pass --within with a folder holding both."
+    )
+    refused_unchanged(library, config, said)
+
+
+def test_import_refuses_a_namespaces_dir_of_the_whole_disk_without_reading_it(
+    library, tmp_path
+):
+    started = time.monotonic()
+    config = config_file(tmp_path, "namespaces_dir: /\n")
+    refused_unchanged(library, config, f"Its namespaces_dir is /, outside {tmp_path};")
+    assert time.monotonic() - started < BOMB_SECONDS
+
+
+def test_import_reads_nested_composes_and_a_namespaces_dir_in_its_folder(
+    library, tmp_path
+):
+    lay_out(
+        tmp_path,
+        {
+            "parts/base.yaml": "_compose: [limits.yaml]\nmax_depth: 2\n",
+            "parts/limits.yaml": "max_iter: 7\n",
+            "names/research/papers.yaml": "system_suffix: Cite each paper.\n",
+            "names/research.yaml": "system_suffix: Look it up.\n",
+            "names/linked.yaml": "->parts/linked.yaml",
+            "parts/linked.yaml": "system_suffix: Linked.\n",
+        },
+    )
+    config = config_file(
+        tmp_path, "_compose: [parts/base.yaml]\nnamespaces_dir: names\n"
+    )
+    import_into(library, config)
+    with closing(open_library(library)) as connection:
+        stored = stored_config(connection)
+    assert (stored["max_iter"], stored["max_depth"]) == (7, 2)
+    assert {"linked", "research", "research.papers"} <= stored["namespaces"].keys()
+
+
+def test_within_a_folder_holding_the_config_an_import_reads_from_above_it(
+    library, tmp_path
+):
+    lay_out(
+        tmp_path,
+        {
+            "shared/limits.yaml": "max_iter: 7\n",
+            "cfg/config.yaml": "_compose: [../shared/limits.yaml]\n",
+        },
+    )
+    config = tmp_path / "cfg" / "config.yaml"
+    import_into(library, config, within=tmp_path)
+    with closing(open_library(library)) as connection:
+        assert stored_config(connection)["max_iter"] == 7
+
+
+@pytest.mark.parametrize("within", ["elsewhere", "cfg/config.yaml"])
+def test_within_must_be_a_folder_holding_the_config(library, tmp_path, within):
+    lay_out(tmp_path, {"cfg/config.yaml": "max_iter: 7\n", "elsewhere/x": ""})
+    config = tmp_path / "cfg" / "config.yaml"
+    said = (
+        f"--within {tmp_path / within} should be a folder holding the config, {config}."
+    )
+    refused_unchanged(library, config, said, within=tmp_path / within)
 
 
 def test_import_refuses_yaml_nested_too_deeply_in_words(library, tmp_path):

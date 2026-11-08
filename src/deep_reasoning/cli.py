@@ -167,14 +167,15 @@ def take(lock, library, refused):
         )
 
 
-def import_or_exit(library, config, home):
-    """Import *config* into *library*, saying what it changed or why it didn't; a Library
-    that wasn't there when the lock was taken is kept only when the import writes it."""
+def import_or_exit(library, config, home, within=None):
+    """Import *config* into *library*, reading only in its folder or *within*, saying what
+    it changed or why it didn't; a Library that wasn't there when the lock was taken is
+    kept only when the import writes it."""
     folder_or_exit(library, home)
     with owning(library, NOT_IMPORTED, read=is_new) as new:
         said = None
         try:
-            said = imported(library, config, home)
+            said = imported(library, config, home, within)
         except (OSError, ValueError, yaml.YAMLError, sqlite3.Error) as error:
             sys.exit(f"Could not import {config}; {unchanged(error)}")
         except KeyboardInterrupt:
@@ -201,12 +202,12 @@ def is_new(library):
     return not os.path.lexists(library)
 
 
-def imported(library, config, home):
+def imported(library, config, home, within):
     """What importing *config* into the Library at *library* changed and left out."""
     with contextlib.closing(open_or_exit(library)) as connection:
         _, secrets = every_key(library, home)
         environment = keyless_environment(library, home)
-        return import_config(connection, config, secrets, environment)
+        return import_config(connection, config, secrets, environment, within)
 
 
 def unchanged(error):
@@ -415,6 +416,14 @@ def main(argv=None):
         description="Read a deep_reasoner config into the Library, replacing same-named items.",
     )
     importer.add_argument("config", type=Path, help="the config's main YAML file")
+    importer.add_argument(
+        "--within",
+        type=Path,
+        help=(
+            "a folder holding the config that the files it reads (_compose,"
+            " namespaces_dir, factory_from) may be in (default: the config's folder)"
+        ),
+    )
     resetter = commands.add_parser(
         "reset",
         help="delete the Library file and its run and scratch folders, after asking",
@@ -435,7 +444,7 @@ def main(argv=None):
     if not 0 <= args.port <= MAX_PORT:
         parser.error(f"--port must be between 0 and {MAX_PORT}")
     if args.command == "import":
-        import_or_exit(args.library, args.config, home)
+        import_or_exit(args.library, args.config, home, args.within)
         return
     if args.command == "reset":
         reset_or_exit(args.library, home, args.yes)

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
-from conflit.config import load_namespaces
+from conflit.config import _parse_compose_entry, load_namespaces, read_yaml_strict
 from deep_reasoner.config import load_cli_config
 from deep_reasoner.namespaces import CONFIG_SOURCE, ROOT
 from deep_reasoner.v2.cli import V2Config, build_namespace_registry
@@ -76,6 +76,11 @@ NOT_CARRIED = (
     " environment."
 )
 NOT_A_MAPPING = 'it should be a mapping of settings, like "max_iter: 20".'
+COMPOSE = "_compose"
+OUTSIDE = (
+    "an import reads only files in the config's folder and below: copy the file in, or"
+    " pass --within with a folder holding both."
+)
 # Past this, a config's YAML is refused before the engine reads it, measured with each
 # alias written out in full, as values plus their text's characters: the engine expands
 # every alias, so a few lines of them can stand for millions of values.
@@ -127,10 +132,10 @@ def yaml_problem(error, path):
     )
 
 
-def tool_row(name, block, config_dir):
+def tool_row(name, block, config_dir, folder):
     """A tool's block as the Library stores it, and for a tool of your own its Python
-    source (None for a built-in's). A tool may take a built-in's name only to give that
-    built-in its settings."""
+    source (None for a built-in's), read only from *folder* (reading_folder()). A tool
+    may take a built-in's name only to give that built-in its settings."""
     if name in APP_TOOLS:
         raise LibraryError(
             f'Tool "{name}" has the name of one of the app\'s own tools; rename yours.'
@@ -151,7 +156,8 @@ def tool_row(name, block, config_dir):
         block = {key: value for key, value in block.items() if key != "model"}
     if factory_from is None:
         return block, None
-    file = config_dir / factory_from
+    named = f'Tool "{name}" names factory_from'
+    file = inside(config_dir / factory_from, factory_from, folder, named)
     try:
         source = file.read_text(encoding="utf-8")
     except OSError as error:
@@ -179,13 +185,18 @@ def config_problem(error):
     return f"{'.'.join(map(str, error['loc']))}: {error['msg']}."
 
 
-def read_config(path):
-    """The deep_reasoner config at *path*, as the engine loads it, or a LibraryError in
-    plain words; a file none of whose keys the engine reads, as a data file, is refused."""
+def read_config(path, folder):
+    """The deep_reasoner config at *path*, as the engine loads it, reading only from
+    *folder* (reading_folder()), or a LibraryError in plain words; a file none of whose
+    keys the engine reads, as a data file, is refused."""
     not_one = f"{path} is not a deep_reasoner config"
     try:
-        check_expanded(path)
+        check_composes_within(Path(path).resolve(), folder)
+        check_expanded(path, [payload for _, payload in load_namespaces(Path(path))])
         config = load_cli_config(path, schema=V2Config)
+        check_expanded(path, namespace_files(config, folder))
+    except LibraryError:
+        raise
     except ValidationError as error:
         raise LibraryError("\n".join(map(config_problem, error.errors()))) from error
     except OSError as error:
@@ -297,20 +308,61 @@ def expanded_size(data, cap):
     return size
 
 
-def check_expanded(path):
-    """Raise if the config at *path*, with the files conflit composes into it and those
-    in its namespaces_dir, found as conflit and the engine find them, passes MAX_EXPANDED
-    with each alias written out, before the engine writes them out."""
-    composed = load_namespaces(Path(path))
-    files = [payload for _, payload in composed]
-    folders = [each.get("namespaces_dir") for at, each in composed if at == "."]
-    folder = next((each for each in reversed(folders) if isinstance(each, str)), None)
-    if folder:
-        found = (Path(path).resolve().parent / folder).resolve()
-        files += [
-            yaml.safe_load(file.read_text(encoding="utf-8"))
-            for file in sorted(found.glob("**/*.yaml"))
-        ]
+def reading_folder(path, within=None):
+    """The folder an import of the config at *path* reads in, as its real path: the
+    config's own, or *within*, a folder holding it; a LibraryError for one that isn't."""
+    config = Path(path).resolve()
+    if within is None:
+        return config.parent
+    folder = Path(within).resolve()
+    if not folder.is_dir() or not config.is_relative_to(folder):
+        raise LibraryError(
+            f"--within {within} should be a folder holding the config, {config}."
+        )
+    return folder
+
+
+def inside(path, given, folder, named):
+    """The real path of *path*, which the config gives as *given*, *named* saying where;
+    a LibraryError, before anything reads it, when it is outside *folder*."""
+    found = path.resolve()
+    if not found.is_relative_to(folder):
+        which = "," if str(found) == str(given) else f", which is {found},"
+        raise LibraryError(f"{named} {given}{which} outside {folder}; {OUTSIDE}")
+    return found
+
+
+def check_composes_within(path, folder, stack=()):
+    """Raise unless each file the config at *path*, a real path, composes, and each they
+    compose, as conflit finds them, is in *folder*, each checked before it is read; what
+    conflit refuses, such as a cycle, is left to it."""
+    composed = read_yaml_strict(path).get(COMPOSE)
+    for entry in composed if isinstance(composed, list) else []:
+        given, _ = _parse_compose_entry(entry, COMPOSE)
+        found = inside(path.parent / given, given, folder, f"{path} composes")
+        if found not in (*stack, path):
+            check_composes_within(found, folder, (*stack, path))
+
+
+def namespace_files(config, folder):
+    """The data of each file in the *config*'s namespaces_dir, found as the engine finds
+    them: the folder, and each file through a link, refused outside *folder* before it
+    is read."""
+    if config.namespaces_dir is None:
+        return []
+    given = config.namespaces_dir
+    found = inside(config.config_dir / given, given, folder, "Its namespaces_dir is")
+    held = "Its namespaces_dir holds"
+    return [
+        yaml.safe_load(inside(file, file, folder, held).read_text(encoding="utf-8"))
+        for file in sorted(found.glob("**/*.yaml"))
+    ]
+
+
+def check_expanded(path, files):
+    """Raise if *files*, the data of the files the config at *path* reads, passes
+    MAX_EXPANDED with each alias written out, before the engine writes them out: those
+    conflit composes into it, or those in its namespaces_dir."""
     size = 0
     for data in files:
         size += expanded_size(data, MAX_EXPANDED - size)
@@ -521,19 +573,20 @@ def to_build(before, imported, changes):
     ]
 
 
-def import_config(connection, path, secrets=(), environment=None):
+def import_config(connection, path, secrets=(), environment=None, within=None):
     """Read the deep_reasoner config at *path* into the Library, all of it or none, and
     say what it changed and left out, as {"changes": lines, "left_out": lines}. *secrets*
     may not be in it; the tools it newly grants are built with *environment* (none if not
-    given)."""
-    config = read_config(path)
+    given). It reads files only in the config's folder, or *within*, a folder holding it."""
+    folder = reading_folder(path, within)
+    config = read_config(path, folder)
     registry = build_namespace_registry(config)
     unread = NOT_RUN_SETTINGS | set(config.model_extra or {})
     settings = config.model_dump(exclude_unset=True, exclude=unread)
     check_settings(settings)
     check_not_the_apps([*registry.names, settings.get(ENTRY_NAMESPACE)])
     tools = {
-        name: tool_row(name, block, config.config_dir)
+        name: tool_row(name, block, config.config_dir, folder)
         for name, block in config.tools.items()
     }
     check_tools_fit(tools)

@@ -177,9 +177,10 @@ def run_config(library, tmp_path, namespace=ROOT):
 
 
 def import_into(library, config):
-    """What importing *config* into *library* changed, as the lines it says."""
+    """What importing *config*, one of the engine's example configs, into *library*
+    changed, as the lines it says."""
     with closing(open_library(library)) as connection:
-        return import_config(connection, config)["changes"]
+        return import_config(connection, config, within=CONFIGS)["changes"]
 
 
 def dumped(library):

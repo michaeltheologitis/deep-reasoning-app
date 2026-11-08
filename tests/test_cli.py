@@ -343,9 +343,11 @@ def test_ctrl_c_during_an_import_stops_it_saying_so_and_leaves_nothing(tmp_path)
         os.kill(int(started.read_text()), 0)
 
 
-def test_import_says_what_it_changed(tmp_path, capsys, waitlist):
+def test_import_says_what_it_changed(tmp_path, capsys, waitlist, configs):
     library = tmp_path / "lib.sqlite"
-    cli.main(["import", str(waitlist), "--library", str(library)])
+    cli.main(
+        ["import", str(waitlist), "--within", str(configs), "--library", str(library)]
+    )
     said = capsys.readouterr().out.splitlines()
     header = said.index(f"Imported {waitlist} into the Library at {library}.")
     assert "  root: tools [llm] → [waitlist]; the rest of root kept" in said[header:]

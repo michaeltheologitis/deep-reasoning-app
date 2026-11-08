@@ -46,6 +46,13 @@ def waitlist():
 
 
 @pytest.fixture
+def configs():
+    """The engine's example configs, which those in examples/ compose from: what an
+    import of one is given as the folder it reads within."""
+    return CONFIGS
+
+
+@pytest.fixture
 def library(tmp_path):
     return tmp_path / "library.sqlite"
 

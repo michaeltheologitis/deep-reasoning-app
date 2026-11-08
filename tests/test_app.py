@@ -767,10 +767,10 @@ async def test_a_chat_keeps_the_namespace_it_started_in(imported, library_on, co
 
 @pytest.mark.anyio
 async def test_a_run_gets_the_librarys_tools_in_a_folder_of_its_own(
-    waitlist, library, library_on, connect, data
+    waitlist, configs, library, library_on, connect, data
 ):
     with closing(open_library(library)) as connection:
-        import_config(connection, waitlist)
+        import_config(connection, waitlist, within=configs)
     plan = {"Join.": [repl("FinalAnswer(waitlist.join('ada', 'CS101'))")]}
     with FakeOpenAI(scripted(plan)) as fake:
         async with connect(library_on(fake)) as api:
