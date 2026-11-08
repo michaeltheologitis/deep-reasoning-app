@@ -20,7 +20,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 
 **Add a key** in **settings** (bottom left): OpenAI `OPENAI_API_KEY`, OpenRouter `OPENROUTER_API_KEY`, Anthropic
 `DEEP_REASONING_ANTHROPIC_KEY` or Google Gemini `GEMINI_API_KEY`, or add a custom server (any OpenAI-compatible URL:
-vLLM, Ollama, …). A key already set in your shell works too. Then pick a model under the message box.
+vLLM, Ollama, …). A key already set in your shell works too. A new chat starts on the model you picked last, or else
+on a current model of the first provider with a key; pick another under the message box.
 
 ## Concepts in five lines
 
@@ -54,11 +55,20 @@ vLLM, Ollama, …). A key already set in your shell works too. Then pick a model
    to the stats namespace: …". Root isn't told which namespaces you have, so it won't pick yours on its own.
 
 **To change every chat**, edit root's `system_suffix`, which every namespace inherits: in the library panel's
-**Namespaces** tab, open `root`, **Edit YAML**, add a line such as `Answer in British English.`, and Save. It applies
-from the next message. The librarian never changes root; asked to, it says how to do this.
+**Namespaces** tab, open `root`, **Edit YAML**, add a line at the end of the text under `system_suffix: |`, indented
+like the lines above it (unindented, it is no longer part of the text and the YAML is refused), and Save:
+
+```yaml
+system_suffix: |
+  …the lines already there…
+  Answer in British English.
+```
+
+It applies from the next message. The librarian never changes root; asked to, it says how to do this.
 
 **One message at a time:** a tab runs one message at a time, across all its chats. A message sent while another
-chat's run is going stays in the box, and the hint names the chat whose run is going; Esc there stops it.
+chat's run is going stays in the box, and the hint names the chat whose run is going; open that chat and press Esc
+to stop it.
 
 **The agent's Python** runs on your computer by default, unsandboxed, in the chat's working folder, with the app's
 own Python packages: numpy, pandas (with tabulate, so `to_markdown()` works) and requests are there; scipy, sympy
