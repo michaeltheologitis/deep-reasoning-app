@@ -141,18 +141,24 @@ FRESH_ROOT = {"tools": ["llm"]}
 # What app its agents are in, which every namespace inherits; a fresh Library's only.
 ROOT_SUFFIX = """\
 You are an agent of Deep Reasoning, an app on the user's own computer: agents like you \
-answer each chat message in Python, run unsandboxed in the chat's working folder (write \
-files there, never /mnt/data; no sandbox: links), handing parts to sub-agents; the ✻ \
-line under each answer opens its tree of steps. What they know is the app's Library, \
-saved with the chats in its file and edited by the user in the Library panel (top \
-right): each namespace's system_suffix (root's and yours included: the user's own text, \
-no secret), tools and worked examples, root's reaching every chat.
+answer each chat message in Python, run unsandboxed in the chat's working folder (files \
+you write go there, never /mnt/data: give each one's path in code, never a link), \
+handing parts to sub-agents; the ✻ line under each answer opens its tree of steps and \
+code, and a page is never a file: hand every page ask, of any data, on as your worked \
+examples do. Never install a package: name the missing one, which the user adds by \
+restarting the app as `uv run --with PKG deep-reasoning`. What they know is the app's \
+Library, saved with the chats in its file (by default ~/.deep-reasoning/library.sqlite) \
+and edited by the user in the Library panel (top right): each namespace's system_suffix \
+(root's and yours included: the user's own text, no secret), tools and worked examples, \
+root's reaching every chat.
 Compute each number in Python and print it, then answer from the variables, in that cell \
 or a later one, as FinalAnswer(f"The mean of {n} values is {mean:.2f}."): never type a \
-number you computed. Asked if an earlier answer was right, check its record rather than \
-work it out again. Combine sub-agents' results into one answer in prose or a Markdown \
-table, never a raw dict or list, and no LaTeX. Only your FinalAnswer reaches whoever \
-asked: put your results in it, and leave out your failed cells unless asked.
+number you computed. When the user names a namespace or tool to use, pass on its answer, \
+computing nothing beside it, and say if it couldn't be used. Asked if an earlier answer \
+was right, check its record rather than work it out again. Combine sub-agents' results \
+into one answer in prose or a Markdown table, never a raw dict or list, and no LaTeX. \
+Only your FinalAnswer reaches whoever asked: put your results in it, and leave out your \
+failed cells unless asked.
 """
 # library writes the Library, so it is granted in a namespace of its own, which a chat
 # picks when it wants edits, and which no namespace inherits from.
@@ -692,6 +698,9 @@ UNWRITABLE = ("SQLITE_READONLY", "SQLITE_FULL", "SQLITE_IOERR", "SQLITE_CANTOPEN
 
 
 BY_WHOM = "(by the librarian, another tab or an import)"
+# Half of a character, which a YAML escape can make (PyYAML reads an emoji's escaped pair
+# as two halves) but no text written as UTF-8, so no response or run's spec, can hold.
+SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def unwritable(error):
@@ -779,9 +788,16 @@ def open_library(path):
 
 
 def distrust(connection):
-    """Never run the file's own triggers and views: a shared file's could keep what is deleted."""
+    """Never run the file's own triggers and views: a shared file's could keep what is
+    deleted. Read text that isn't UTF-8, as a shared file's may be, with U+FFFD for each
+    byte that can't be read, never as an error."""
     connection.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER, False)
     connection.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_VIEW, False)
+    connection.text_factory = readable
+
+
+def readable(data):
+    return data.decode(errors="replace")
 
 
 def lay_out(connection, path):
@@ -1623,9 +1639,10 @@ def problem(error):
 
 
 def loaded(text):
-    """The YAML *text* as data, or a LibraryError saying where it doesn't parse."""
+    """The YAML *text* as data, or a LibraryError saying where it doesn't parse or why it
+    holds what no text can."""
     try:
-        return yaml.safe_load(text)
+        data = yaml.safe_load(text)
     except yaml.YAMLError as error:
         mark = getattr(error, "problem_mark", None)
         where = f"line {mark.line + 1}: " if mark else ""
@@ -1635,6 +1652,13 @@ def loaded(text):
         ) from error
     except RecursionError as error:
         raise LibraryError("The YAML is nested too deeply to read.") from error
+    half = next(filter(None, map(SURROGATE.search, texts_in(data))), None)
+    if half:
+        raise LibraryError(
+            f"The YAML escapes half of a character (U+{ord(half[0]):04X}), which no text"
+            " can hold; write the whole character instead."
+        )
+    return data
 
 
 def fields_in(text):

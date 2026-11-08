@@ -269,9 +269,15 @@ def settings_in(connection: sqlite3.Connection) -> dict[str, Any]:
     settings = {}
     for key, text in connection.execute("SELECT key, json FROM app_settings"):
         try:
-            settings[key] = json.loads(text)
+            value = json.loads(text)
+            # An escape can make half a character, which no response can carry.
+            json.dumps(value, ensure_ascii=False).encode()
+        except UnicodeEncodeError:
+            log.warning("settings.left_out", key=key, why="half a character")
         except ValueError:
             log.warning("settings.left_out", key=key, why="not JSON")
+        else:
+            settings[key] = value
     return {key: value for key, value in settings.items() if well_shaped(key, value)}
 
 
@@ -283,7 +289,18 @@ def read_settings(library: Path) -> dict[str, Any]:
 def write_setting(library: Path, key: str, value: Any) -> None:
     """Set one of the app's settings: one statement, so it lands whole or not at all."""
     with closing(open_library(library)) as connection:
+        save_setting(connection, key, value)
+
+
+def save_setting(connection: sqlite3.Connection, key: str, value: Any) -> None:
+    """Save *value* as setting *key*. A refusal, as a shared file's own constraints may
+    make, is a SettingsError."""
+    try:
         connection.execute(UPSERT_APP_SETTING, (key, json.dumps(value)))
+    except sqlite3.IntegrityError as error:
+        raise SettingsError(
+            f"The Library file refused the setting: {error}."
+        ) from error
 
 
 @contextmanager
@@ -293,7 +310,7 @@ def changing_servers(library: Path) -> Iterator[list[Any]]:
     with closing(open_library(library)) as connection, writing(connection):
         entries = settings_in(connection).get(SERVERS, [])
         yield entries
-        connection.execute(UPSERT_APP_SETTING, (SERVERS, json.dumps(entries)))
+        save_setting(connection, SERVERS, entries)
 
 
 def env_stem(name: str) -> str:

@@ -301,6 +301,8 @@ def test_server_key_variables_are_derived_from_their_names():
         (DEFAULT_FOLDER, '["/home/me"]'),
         (DEFAULT_FOLDER, '"relative/folder"'),
         (DEFAULT_FOLDER, json.dumps("C:\\Users\\me")),
+        (DEFAULT_FOLDER, json.dumps("/home/me/caf\udce9")),
+        (LAST_MODEL, json.dumps({"provider": "vllm", "name": "qwen\ud800"})),
     ],
 )
 def test_a_setting_this_app_could_not_have_written_reads_as_unset(library, key, text):

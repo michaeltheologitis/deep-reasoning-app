@@ -73,7 +73,8 @@ to stop it.
 **The agent's Python** runs on your computer by default, unsandboxed, in the chat's working folder, with the app's
 own Python packages: numpy, pandas (with tabulate, so `to_markdown()` works) and requests are there; scipy, sympy
 and matplotlib are not. Add packages by starting the app with them: `uv run --with scipy --with sympy
-deep-reasoning`. A module file in the chat's folder imports too.
+deep-reasoning`; the agent never installs one itself, but names the one it lacks. A module file in the chat's folder
+imports too.
 
 ## What it supports
 
@@ -96,13 +97,14 @@ deep-reasoning`. A module file in the chat's folder imports too.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
   its own words after.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,
-  `2*3*4`). Raw HTML shows as text, an image as a link (never loaded), and links open in a new tab. A long prompt or
-  answer shows its first lines with **show all**; a run that ran out of turns says so.
+  `2*3*4`). Raw HTML shows as text, an image as a link (never loaded), and links open in a new tab; a link to a file
+  in the chat's folder, which the app doesn't serve, shows as text with its address. A long prompt or answer shows its
+  first lines with **show all**; a run that ran out of turns says so.
 - Follow-ups see the chat's earlier messages and answers, and can ask how one was worked out, whether it was
   computed, what its sub-agents did or what went wrong: root hands those to the `historian`.
 - The agent can show you a page of its own (Markdown, tables, and steps or sub-agents of earlier messages, drawn as
   the chat draws them), linked under its answer and opening in a new tab; pages are deleted with their chat. A new
-  Library grants this to the historian, so "show me on a page how you got that" goes there.
+  Library grants this to the historian, so "show me on a page how you got that", or a page of new data, goes there.
 - Each chat has its own model, namespace and working folder, picked under the message box (typing filters the
   menus); a change applies from the next message.
 - Light and dark themes with text at WCAG AA contrast; phone width, where the chats are a drawer (☰; Esc shuts it)

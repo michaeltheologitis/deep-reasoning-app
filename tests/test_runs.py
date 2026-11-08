@@ -39,6 +39,7 @@ from deep_reasoning.runs import (
     Turn,
     earlier_messages,
     end_unfinished,
+    escaped,
     new_run_id,
     read_events,
     read_turn,
@@ -960,6 +961,16 @@ def test_an_earlier_answer_shows_as_a_final_answer_cell_that_round_trips_exactly
     argument = cell.removeprefix(head).removesuffix(tail)
     assert "<repl>" not in argument and "</repl>" not in argument
     assert ast.literal_eval(argument) == answer
+
+
+def test_escaped_writes_each_half_of_a_character_as_its_escape_and_copies_nothing_else():
+    whole = [{"role": "user", "content": "Caf\u00e9 \U0001f600"}]
+    assert escaped(whole) is whole
+    halves = [{"role": "user", "content": "caf\udce9"}, {"x\ud800": ["\udfff", 1]}]
+    assert escaped(halves) == [
+        {"role": "user", "content": "caf\\udce9"},
+        {"x\\ud800": ["\\udfff", 1]},
+    ]
 
 
 async def test_a_runs_keys_reach_its_worker_alone_and_anthropics_never(

@@ -17,17 +17,13 @@ from typing import Any
 import structlog
 from coolname import generate_slug
 
+from deep_reasoning.chats import ID_TAKEN, ID_TRIES, ID_WORDS
 from deep_reasoning.library import LibraryError, writing
 from deep_reasoning.runs import NUMBERS, UNREADABLE
 
 log = structlog.get_logger()
 
 PAGE_ID = r"^[A-Za-z0-9_-]{1,100}$"
-# Three words, like "tunneling-easygoing-mosquito": over 300 million ids.
-ID_WORDS = 3
-# A new id is tried this many times before the page is refused; a taken one is rare.
-ID_TRIES = 10
-ID_TAKEN = "SQLITE_CONSTRAINT_PRIMARYKEY"
 NO_FREE_ID = f"The Library file had no free page id in {ID_TRIES} tries; try again."
 PAGE_GONE = "The page is no longer in the Library file, so it wasn't saved again."
 MAX_TITLE_CHARS = 200

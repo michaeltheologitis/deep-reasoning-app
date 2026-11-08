@@ -34,7 +34,14 @@ import structlog
 import yaml
 
 from deep_reasoning.folders import remove_unless_kept
-from deep_reasoning.library import RUN_ID, RUN_ID_FORMAT, open_library, writing
+from deep_reasoning.library import (
+    RUN_ID,
+    RUN_ID_FORMAT,
+    SURROGATE,
+    open_library,
+    texts_in,
+    writing,
+)
 
 log = structlog.get_logger()
 
@@ -87,6 +94,10 @@ FIRST_SEQ = 1
 # What an event row from a file someone else wrote may fail with.
 UNREADABLE = (TypeError, ValueError, RecursionError, OverflowError)
 NOT_ENDED = (*UNREADABLE, KeyError, IndexError, sqlite3.Error)
+# JSON's escape of half a character (a surrogate). An emoji's pair loads as one character;
+# a half alone, as a file from someone else, or from before runs escaped them, may hold,
+# loads as text that can't be written as UTF-8, so no response or run's spec can carry it.
+SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")
 FINAL_ANSWER = "FinalAnswer: "
 TRACEBACK_HEAD = re.compile(
     r"^(?:Traceback|  \+ Exception Group Traceback) \(most recent call last\):$",
@@ -224,6 +235,9 @@ def loaded_event(run: str, seq: Any, data: Any) -> dict[str, Any] | None:
     written, as a file from someone else may hold."""
     try:
         event = json.loads(data, **NUMBERS)
+        # Bytes, which the app never writes, may hold a half unescaped.
+        if type(data) is not str or SURROGATE_ESCAPE.search(data):
+            json.dumps(event, ensure_ascii=False).encode()
     except UNREADABLE:
         event = None
     if well_formed(event, seq):
@@ -427,6 +441,26 @@ def secrets_of(env: dict[str, str], names: Sequence[str]) -> list[str]:
     first, so a key that holds another is withheld whole."""
     values = {env[name] for name in names if len(env.get(name, "")) >= SHORTEST_SECRET}
     return sorted(values, key=len, reverse=True)
+
+
+def escaped(value: Any) -> Any:
+    """*value* with each half of a character in its text, keys included, written as its
+    escape, such as \\udce9: a cell may print one, as a file name that isn't UTF-8 decodes
+    with, and no response, run's spec or model call can carry it. *value* itself, not a
+    copy, when it holds none, as nearly every value does."""
+    if any(map(SURROGATE.search, texts_in(value))):
+        return escaping(value)
+    return value
+
+
+def escaping(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.encode("utf-8", "backslashreplace").decode()
+    if isinstance(value, dict):
+        return {escaping(name): escaping(each) for name, each in value.items()}
+    if isinstance(value, list):
+        return [escaping(each) for each in value]
+    return value
 
 
 def withheld(value: Any, secrets: Sequence[str]) -> Any:
@@ -660,9 +694,10 @@ class Runs:
         )
 
     def _record(self, run: str, live: _Live, event: dict[str, Any]) -> None:
-        """Number and stamp *event*, send it to the run's streams, and save it. Sent
-        first: a run whose event can't be saved ends, and its streams still see it end."""
-        event = {"seq": len(live.events) + FIRST_SEQ, "t": time.time()} | event
+        """Number and stamp *event*, its text escaped, send it to the run's streams, and
+        save it. Sent first: a run whose event can't be saved ends, and its streams still
+        see it end."""
+        event = {"seq": len(live.events) + FIRST_SEQ, "t": time.time()} | escaped(event)
         if event["kind"] == "turn.end":
             event |= totals(live.events, event["t"])
             if live.chat_deleted:
