@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from fake_model import RESEARCH_CHANGED, SPLIT_COUNT, WORD_COUNT
+from fake_model import RESEARCH_CHANGED, SPLIT_COUNT, WORD_COUNT, WORD_COUNT_DOC
 from structlog.testing import capture_logs
 
 from deep_reasoning.app_tools import (
@@ -672,6 +672,11 @@ SHELL_KEY_ENV = "A_PROVIDERS_KEY"
 SHELL_KEY = "sk-a-key-from-the-shell"
 # The key in YAML's double quotes with its "s" escaped: the text never holds it, the data does.
 ESCAPED_KEY = '"\\x73' + SHELL_KEY[1:] + '"'
+# How a namespace whose system_suffix reads a Python internal is refused, after its name.
+SUFFIX_REFUSED = (
+    ", line 1: the engine reads text holding {{ or {% as a Jinja template, and this one"
+    " reaches into Python internals (_x), which a run refuses."
+)
 
 
 # The engine config of the run the library tool is in, as its spec.yaml holds it: a
@@ -800,30 +805,102 @@ def test_a_written_decomposition_is_stored_and_the_result_gives_its_problems(
     assert ("drafts", done["name"]) in stored(fresh)
 
 
-@pytest.mark.parametrize(
-    ("content", "stored_content"),
-    [
-        (
-            "|\n    [repl]\n    FinalAnswer(3)\n    [/repl]\n",
-            "|\n    <repl>\n    FinalAnswer(3)\n    </repl>\n",
-        ),
-        ("[repl]FinalAnswer(3)[/repl]\n", "<repl>FinalAnswer(3)</repl>\n"),
-    ],
-    ids=["block", "one-line"],
-)
 def test_a_decomposition_written_with_repl_placeholders_is_stored_with_the_real_tags(
-    fresh, content, stored_content
+    fresh,
 ):
-    answer = "- role: assistant\n  content: "
+    answer = (
+        "- role: assistant\n  content: |\n    [repl]\n    FinalAnswer(3)\n    [/repl]\n"
+    )
     tool = library_tool(fresh)
-    tool.write_decomposition("drafts", EXAMPLE + answer + content)
+    tool.write_decomposition("drafts", EXAMPLE + answer)
     assert tool.show("drafts")["decompositions"] == [
         {
             "name": "count the tickets",
-            "yaml": EXAMPLE + answer + stored_content,
+            "yaml": EXAMPLE + answer.replace("[", "<").replace("]", ">"),
             "problems": ["Turn 2 (assistant) has no <think>…</think>."],
         }
     ]
+
+
+def test_a_decomposition_with_no_placeholder_tag_is_stored_as_typed(fresh):
+    typed = (
+        "name: count the tickets  # as typed\n"
+        "messages:\n"
+        '- {role: user, content: "How many tickets are open?"}\n'
+    )
+    tool = library_tool(fresh)
+    tool.write_decomposition("drafts", typed)
+    [stored_yaml] = [each["yaml"] for each in tool.show("drafts")["decompositions"]]
+    assert stored_yaml == typed
+
+
+ASKED = "What does tags[repl] return?"
+CELL = "<think>Look it up.</think>\n<repl>\nFinalAnswer(tags[repl])\n</repl>"
+
+
+@pytest.mark.parametrize(
+    ("turns", "contents"),
+    [
+        (
+            (
+                f"- role: user\n  content: {ASKED}\n"
+                "- role: assistant\n  content: |\n    <think>Look it up.</think>\n"
+                "    [repl]\n    FinalAnswer(tags[repl])\n    [/repl]\n"
+            ),
+            [ASKED, f"{CELL}\n"],
+        ),
+        (
+            (
+                f'- {{role: user, content: "{ASKED}"}}\n'
+                "- {role: assistant, content: "
+                '"<think>Look it up.</think>\\n[repl]\\nFinalAnswer(tags[repl])\\n[/repl]"}\n'
+            ),
+            [ASKED, CELL],
+        ),
+        (
+            (
+                "- role: user\n  content: Strip the tags.\n"
+                "- role: assistant\n  content: |\n    <think>t</think>\n    [repl]\n"
+                "    xs = [repl]\n"
+                '    FinalAnswer(text.replace("[repl]", ""))\n'
+                "    [/repl]\n"
+            ),
+            [
+                "Strip the tags.",
+                (
+                    "<think>t</think>\n<repl>\nxs = [repl]\n"
+                    'FinalAnswer(text.replace("[repl]", ""))\n</repl>\n'
+                ),
+            ],
+        ),
+        (
+            (
+                f"- role: user\n  content: &asked {ASKED}\n"
+                "- role: assistant\n  content: &cell |\n    <think>Look it up.</think>\n"
+                "    [repl]\n    FinalAnswer(tags[repl])\n    [/repl]\n"
+                "- role: user\n  content: *asked\n"
+                "- role: assistant\n  content: *cell\n"
+            ),
+            [ASKED, f"{CELL}\n", ASKED, f"{CELL}\n"],
+        ),
+        (
+            (
+                "- role: user\n  content: Answer 3.\n"
+                '- {role: assistant, content: "<think>t</think> [repl]FinalAnswer(3)[/repl]"}\n'
+            ),
+            ["Answer 3.", "<think>t</think> [repl]FinalAnswer(3)[/repl]"],
+        ),
+    ],
+    ids=["block", "quoted", "in-code", "alias", "not-on-a-line-of-its-own"],
+)
+def test_only_an_assistant_turns_placeholder_tags_on_lines_of_their_own_are_written(
+    fresh, turns, contents
+):
+    tool = library_tool(fresh)
+    tool.write_decomposition("drafts", f"name: tags\nmessages:\n{turns}")
+    [stored_yaml] = [each["yaml"] for each in tool.show("drafts")["decompositions"]]
+    stored_turns = yaml.safe_load(stored_yaml)["messages"]
+    assert [turn["content"] for turn in stored_turns] == contents
 
 
 class NeverEqual(str):
@@ -852,7 +929,7 @@ class NeverEqual(str):
             "drafts",
             EXAMPLE.replace("How many tickets are open?", '"{{ open }} open?"'),
             (
-                "Turn 1 (user), line 1: the engine reads a turn holding {{ or {% as a Jinja"
+                "Turn 1 (user), line 1: the engine reads text holding {{ or {% as a Jinja"
                 ' template, and this one names "open"'
             ),
         ),
@@ -1145,6 +1222,17 @@ def test_a_namespace_whose_yaml_spells_a_key_with_an_escape_is_refused(
     before = stored_namespaces(fresh)
     with pytest.raises(LibraryError, match="holds a provider's key"):
         getattr(library_tool(fresh), method)(name, f"system_suffix: {ESCAPED_KEY}\n")
+    assert stored_namespaces(fresh) == before
+
+
+@pytest.mark.parametrize(
+    ("method", "name"), [("add_namespace", "research"), ("change_namespace", "drafts")]
+)
+def test_a_namespace_whose_suffix_no_run_renders_is_refused(fresh, method, name):
+    before = stored_namespaces(fresh)
+    refused = f"The system_suffix of {name}{SUFFIX_REFUSED}"
+    with pytest.raises(LibraryError, match=re.escape(refused)):
+        getattr(library_tool(fresh), method)(name, {"system_suffix": "{{ task._x }}"})
     assert stored_namespaces(fresh) == before
 
 
@@ -1509,7 +1597,7 @@ def test_tools_lists_every_tool_in_brief_and_gives_one_whole(fresh):
         "factory": "build",
         "settings": {"sep": ","},
         "granted_in": ["drafts"],
-        "description": "",
+        "description": WORD_COUNT_DOC,
         "source": f"{long_source[:BRIEF_CHARS]}…(+{len(long_source) - BRIEF_CHARS}"
         " chars)",
     }

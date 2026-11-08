@@ -109,17 +109,26 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   it as it is, so a new one starts in the namespace of the chat on screen, not root. The code isn't run, so an
   observation isn't checked against it.
 - Saving refuses what would make every run there fail: a decomposition holding `{{` or `{%` (which the engine reads
-  as a Jinja template) whose template doesn't parse or names anything but what the engine fills in (`task`, `vars`,
+  as a Jinja template) whose template doesn't parse, names anything but what the engine fills in (`task`, `vars`,
   `funcs`, `coroutines` and the run settings' `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`),
+  includes another template (`{% include %}`, `extends`, `import`, `from`) or reaches into Python internals (an
+  attribute or key starting with `_`, or one such as `mro`),
   one over 1,000,000 characters, or one whose name starts or ends with a space or holds a character you can't see;
-  in a namespace or one under it, a `reasoner` type the engine doesn't know; and a var that isn't a Python name, is
-  a keyword or one of Python's built-ins (`max`, `type`, …), or has the name of a tool its namespace sees. A
+  in a namespace or one under it, a `reasoner` type the engine doesn't know; a `system_suffix` whose template fails
+  as a decomposition's would; and a var that isn't a Python name, starts with `_`, is a keyword or one of Python's
+  built-ins (`max`, `type`, …), or has the name of a tool its namespace sees. A
   template is checked, never run, so whether `vars.x` holds what it reads isn't. A stored decomposition that fails
-  the check, as a shared Library may hold, is marked ✗ with why.
+  the check, as a shared Library may hold, is marked ✗ with why. Runs render templates sandboxed, so a shared
+  Library's templates reach no Python internals: a worked example that tries fails the run, naming it, and a system prompt or
+  suffix that tries is shown to the model as written.
 - A save or delete in the panel is refused if what you opened was changed meanwhile (by the librarian, another tab
-  or an import): your draft stays, beside what is stored now, and saving again replaces it. The panel, and the
-  namespace menu under the message box, read the Library again whenever you open the panel or come back to the window.
-- The Tools tab shows each tool, with the Python of the Library's own, and deletes one of the Library's that no
+  or an import): your draft stays, beside what is stored now, and saving again replaces it. One deleted meanwhile
+  says so, and its row goes. A delete the panel can tell would be refused (a tool a namespace grants, a namespace
+  with namespaces under it or that another's `spawn` names) says why at once, without asking first. The panel, and
+  the namespace menu under the message box, read the Library again whenever you open the panel or come back to the
+  window.
+- The Tools tab shows each tool, with what agents are told it does (for one of the Library's own, as far as its
+  Python says without running it) and the Python of the Library's own, and deletes one of the Library's that no
   namespace grants. Run settings can't be changed in the panel, but one the engine doesn't read, as an import may
   bring, can be deleted.
 - In a chat in the `librarian` namespace, picked under the message box, the agent can add or edit a decomposition in
@@ -147,7 +156,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   run settings into the Library (each chat keeps its own model), replacing items of the same name and the root fields
   it sets, and prints what it changed and what it left out. It refuses, changing nothing, a file that isn't a config,
   the app's `historian` and `librarian` namespaces or one under them, a tool named as a built-in, a key anywhere in
-  it, and a tool a namespace grants that doesn't build: it builds each such tool once to check it, from its own file
+  it, a `system_suffix` the panel would refuse, and a tool a namespace grants that doesn't build: it builds each such tool once to check it, from its own file
   alone and without your keys, so a file or module beside the config isn't carried in. Import only configs you trust.
 - `uv run deep-reasoning reset` starts afresh: it deletes the Library file (`--library PATH` for another), with its
   chats and settings, and its run and scratch folders, after listing them and asking you to type `delete`

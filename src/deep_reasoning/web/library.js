@@ -410,35 +410,44 @@ function keep(key) {
   reveal(`delete:${key}`);
 }
 
-// remove() deletes it and says so: where, what, and which row to show.
-async function confirmDelete(key, remove, button) {
+// remove() deletes it and says what, and which row to show, in said; stored() says whether the Library, read again after a refusal, still holds it, else the refusal is said there too.
+async function confirmDelete(key, { remove, said, stored }, button) {
   button.disabled = true;
-  let said;
+  let done;
   try {
-    said = await remove();
+    done = await remove();
   } catch (error) {
     deleting = { key, refusal: error.message };
     // a refusal may come from a change made elsewhere, so the next confirm asks about what is there now
     await load();
-    render();
-    reveal(`delete:${key}`);
-    return;
+    if (stored()) {
+      render();
+      reveal(`delete:${key}`);
+      return;
+    }
+    // deleted meanwhile, so its row and any closed Edit form go
+    opened.delete(key);
+    editForms.delete(key);
+    done = { text: error.message };
   }
   deleting = null;
   render();
-  if (said.row) reveal(said.row);
-  else tabButtons[TABS.indexOf(tab)].focus();
-  say(said.where, said.text);
+  if (done.row) reveal(done.row);
+  else {
+    tabButtons[TABS.indexOf(tab)].focus();
+    said.scrollIntoView({ block: "nearest" });
+  }
+  say(said, done.text);
 }
 
 // A Delete button beside the row's other actions, or the confirm in their place, as the chat list's; a refusal shows under them.
-function deletable(key, actions, { question, refusal = () => null, remove }) {
+function deletable(key, actions, { question, refusal = () => null, remove, said, stored }) {
   if (deleting?.key === key && !deleting.refusal) {
     return element(
       "div",
       { class: "lib-actions confirm", role: "group", "aria-labelledby": "lib-delete-question" },
       element("span", { id: "lib-delete-question" }, question),
-      element("button", { type: "button", class: "yes", onclick: (e) => confirmDelete(key, remove, e.currentTarget) }, "Delete"),
+      element("button", { type: "button", class: "yes", onclick: (e) => confirmDelete(key, { remove, said, stored }, e.currentTarget) }, "Delete"),
       element("button", { type: "button", class: "no", "data-key": `keep:${key}`, onclick: () => keep(key) }, "Keep"),
     );
   }
@@ -461,21 +470,22 @@ async function deleteNamespace(name) {
   await changeLibrary("DELETE", `${namespaceUrl(name)}?decompositions=${said}`);
   opened.delete(namespaceKey(name));
   editForms.delete(namespaceKey(name));
-  return { where: namespaceForm.confirmation, text: `Deleted namespace "${name}"`, row: namespaceKey(parentOf(name)) };
+  return { text: `Deleted namespace "${name}"`, row: namespaceKey(parentOf(name)) };
 }
 
-// A namespace with namespaces under it is refused at once; anything else the server may refuse is said after the confirm.
+// The server's refusal for the row, as one with namespaces under it or that another's spawn names, is said at once; anything else it may refuse is said after the confirm.
 function namespaceActions(namespace) {
   const { name } = namespace;
   const form = editForm(name);
-  const children = library.namespaces.filter((each) => each.name.startsWith(`${name}.`)).map((each) => each.name);
   const actions =
     name === ROOT
       ? element("div", { class: "lib-actions" }, form.toggle)
       : deletable(namespaceKey(name), form.toggle, {
           question: deleteQuestion(namespace),
-          refusal: () => (children.length ? `Delete its namespaces first: ${children.join(", ")}.` : null),
+          refusal: () => namespace.refusal,
           remove: () => deleteNamespace(name),
+          said: namespaceForm.confirmation,
+          stored: () => namespaceNamed(name) != null,
         });
   return [actions, form.el, form.confirmation];
 }
@@ -574,8 +584,16 @@ function namespaceProblems(text, name) {
     unknown.length > 0 && `Remove ${quoted(unknown)}: a namespace's YAML holds only ${NAMESPACE_KEYS.slice(0, -1).join(", ")} and ${NAMESPACE_KEYS.at(-1)}.`,
     ...misshapen.map((key) => SHAPES[key]),
     ...fitting("tools").filter((tool) => !tools.has(tool)).map((tool) => `The Library has no tool "${tool}"; the Tools tab lists the ones it has.`),
-    ...fitting("spawn").filter((each) => !namespaces.has(each)).map((each) => `spawn names "${each}", which is not a namespace in the Library.`),
+    ...fitting("spawn").filter((spawned) => !namespaces.has(spawned)).map((spawned) => missingSpawn(spawned, name)),
   ].filter(Boolean);
+}
+
+// as the server words it; a namespace being added can't spawn into one to go under it, which needs it first
+function missingSpawn(spawned, name) {
+  if (!namespaceNamed(name) && spawned.startsWith(`${name}.`)) {
+    return `spawn names "${spawned}", which goes under ${name} and isn't in the Library yet: add ${name} without it first, then ${spawned}, then put ${spawned} in the spawn of ${name}.`;
+  }
+  return `spawn names "${spawned}", which is not a namespace in the Library: add ${spawned} first, or take it out of spawn.`;
 }
 
 function disclosure(key, head, content) {
@@ -623,7 +641,7 @@ function decompositionRow(namespace, decomposition) {
     await changeLibrary("DELETE", ADD_URL, { namespace, name, was: yaml });
     opened.delete(key);
     editForms.delete(key);
-    return { where: decompositionForm.confirmation, text: `Deleted "${name}" from ${namespace}`, row: decompositionForm.el.id };
+    return { text: `Deleted "${name}" from ${namespace}`, row: decompositionForm.el.id };
   };
   const content = () => {
     const form = decompositionEdit(namespace, decomposition);
@@ -631,7 +649,7 @@ function decompositionRow(namespace, decomposition) {
     return [
       problems.length > 0 && element("div", { class: "lib-problems lib-warning" }, problems.map((text) => element("p", {}, text))),
       element("pre", { class: "code lib-pre" }, yaml),
-      deletable(key, form.toggle, { question, remove }),
+      deletable(key, form.toggle, { question, remove, said: decompositionForm.confirmation, stored: () => storedDecomposition(namespace, name) != null }),
       form.el,
       form.confirmation,
     ];
@@ -682,34 +700,37 @@ function runSettings() {
   const rows = library.run_settings.map(({ label, items, removable }) => {
     const remove = async () => {
       await changeLibrary("DELETE", `${RUN_SETTINGS_URL}/${encodeURIComponent(label)}`);
-      return { where: namespaceForm.confirmation, text: `Deleted run setting "${label}"`, row: "run-settings" };
+      return { text: `Deleted run setting "${label}"`, row: "run-settings" };
     };
-    return [label, [sourced(items), removable && deletable(settingKey(label), [], { question: `Delete run setting ${label}?`, remove })]];
+    const stored = () => library.run_settings.some((setting) => setting.label === label);
+    return [label, [sourced(items), removable && deletable(settingKey(label), [], { question: `Delete run setting ${label}?`, remove, said: namespaceForm.confirmation, stored })]];
   });
   return fields(rows);
 }
 
 const toolsSaid = element("p", { class: "lib-confirm", role: "status" });
 
-// A tool any namespace grants is built by every run, so the server deletes it only once none does.
+// A tool any namespace grants is built by every run, so the server deletes it only once none does, and its refusal for the row is said at once.
 function renderTool(tool) {
   const remove = async () => {
     await changeLibrary("DELETE", `${TOOLS_URL}/${encodeURIComponent(tool.name)}`);
     opened.delete(toolKey(tool.name));
-    return { where: toolsSaid, text: `Deleted tool "${tool.name}"` };
+    return { text: `Deleted tool "${tool.name}"` };
   };
+  const stored = () => library.tools.some((each) => each.name === tool.name && each.stored);
+  const granted = tool.granted_in.join(", ");
   return [
     fields([
       ["Factory", tool.factory],
       ["File", tool.file],
       ["Defined in", tool.defined_in ?? "the deep_reasoner package"],
-      ["Granted in", tool.granted_in.join(", ") || "no namespace"],
+      ["Granted in", granted || "no namespace"],
     ]),
     tool.config && element("pre", { class: "code lib-pre" }, tool.config),
-    // A tool whose value is a function tells the agent its docstring, which only a build shows; it wraps, as one may run long.
+    // What the agent is told it does, for a custom tool as far as its source says; it wraps, as one may run long.
     tool.description && element("pre", { class: "code lib-doc" }, tool.description),
     tool.source != null && [element("p", { class: "lib-note" }, `Its Python, ${tool.file}:`), element("pre", { class: "code lib-pre" }, tool.source)],
-    tool.stored && deletable(toolKey(tool.name), [], { question: `Delete tool ${tool.name}?`, remove }),
+    tool.stored && deletable(toolKey(tool.name), [], { question: `Delete tool ${tool.name}?`, refusal: () => tool.refusal, remove, said: toolsSaid, stored }),
   ];
 }
 

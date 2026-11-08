@@ -19,8 +19,10 @@ import sys
 import unicodedata
 from collections import Counter, defaultdict
 from contextlib import closing, contextmanager
+from functools import partial
 from pathlib import Path
 
+import deep_reasoner.llm
 import jinja2
 import structlog
 import yaml
@@ -47,7 +49,22 @@ from deep_reasoner.v2.cli import (
     declared_tool_names,
 )
 from deep_reasoner.v2.messages import NoCodeBlock, _has_jinja, code
-from jinja2 import Environment, TemplateError, TemplateSyntaxError, meta, nodes
+from jinja2 import (
+    DictLoader,
+    Environment,
+    TemplateError,
+    TemplateSyntaxError,
+    meta,
+    nodes,
+)
+from jinja2.sandbox import (
+    UNSAFE_ASYNC_GENERATOR_ATTRIBUTES,
+    UNSAFE_COROUTINE_ATTRIBUTES,
+    UNSAFE_FUNCTION_ATTRIBUTES,
+    UNSAFE_GENERATOR_ATTRIBUTES,
+    UNSAFE_METHOD_ATTRIBUTES,
+    SandboxedEnvironment,
+)
 from pydantic import ValidationError
 
 log = structlog.get_logger()
@@ -292,6 +309,11 @@ BETWEEN = {
 NO_TASK = "There is no task: add a user turn holding it."
 # make_tool builds `factory: llm` with v2's own builder, the rest from TOOL_BUILDERS.
 BUILDERS = {**TOOL_BUILDERS, "llm": build_llm_tool}
+# What a custom tool's source is read for: what it defines, and the Func(...) it returns.
+DOCUMENTED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+FUNC = "Func"
+NO_DESCRIPTION = "no description found in its source"
+BUILT_DESCRIPTION = "set when it's built: {}"
 BUILTIN_DESCRIPTIONS = {
     "llm": _DEFAULT_LLM_DESCRIPTION,
     "rag": DEFAULT_RAG_DESCRIPTION,
@@ -374,15 +396,17 @@ list of turns, each a role and content (content: | for several lines): the user'
 then assistant turns, each <think>…</think> and one <repl>…</repl> of Python; after each \
 but the last, a user turn with the <observation>…</observation> its code printed; the \
 last calls FinalAnswer(...). The last <repl> block in your reply is the one that runs, \
-so in your cell write the example's repl tags as [repl] and [/repl], in a raw string \
-(r\"\"\"…\"\"\") so its code keeps the escapes you type; the tool writes the real tags. A \
-yaml that already holds a real <repl> tag, as one from show(name) or changes() does, is \
-written as it is, [repl] and all: to edit a stored decomposition, change its yaml in \
-your cell (with .replace(...)) rather than typing it again. It is stored even when it \
-isn't yet a worked example like that: the result's problems lists each way it isn't \
-(empty when none), and until you write it again without them the Library panel marks it \
-✗. The result's code_problems, when there are any, lists each turn whose code isn't \
-valid Python, which agents copying it would copy too.
+so in your cell write the example's repl tags as [repl] and [/repl], each on a line of \
+its own, in a raw string (r\"\"\"…\"\"\") so its code keeps the escapes you type; in each \
+assistant turn, the tool writes a line that is [repl] or [/repl] alone as the real tag, \
+and leaves any other [repl], in a user's turn or in code, as you typed it. A yaml that \
+already holds a real <repl> tag, as one from show(name) or changes() does, is written \
+as it is, [repl] and all: to edit a stored decomposition, change its yaml in your cell \
+(with .replace(...)) rather than typing it again. It is stored even when it isn't yet \
+a worked example like that: the result's problems lists each way it isn't (empty when \
+none), and until you write it again without them the Library panel marks it ✗. The \
+result's code_problems, when there are any, lists each turn whose code isn't valid \
+Python, which agents copying it would copy too.
   library.add_namespace(name, yaml): adds namespace `name` ("research", or \
 "research.papers" under an existing research) with the fields yaml sets: system_suffix \
 (text added to its agents' system prompt), vars (names and values its agents' Python \
@@ -510,14 +534,28 @@ FILLED_IN = ("task", "vars", "funcs", "coroutines")
 # Never rendered, only parsed and compiled; with no globals, range() is an unknown name.
 JINJA = Environment()
 JINJA.globals.clear()
-TEMPLATE = "the engine reads a turn holding {{ or {% as a Jinja template"
+TEMPLATE = "the engine reads text holding {{ or {% as a Jinja template"
 ESCAPE = (
-    "Write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%, or put the turn between"
+    "Write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%, or put the text between"
     " {% raw %} and {% endraw %}."
 )
 NAMES_ONLY = (
     "a template may name only task, vars, funcs, coroutines and the run settings'"
     " prompt_template_variables, which the engine fills in"
+)
+# An empty loader, so an include fails as a render error the engine words.
+SANDBOXED = partial(SandboxedEnvironment, loader=DictLoader({}))
+INCLUDES = (nodes.Include, nodes.Extends, nodes.Import, nodes.FromImport)
+SCREENED = (*INCLUDES, nodes.Getattr, nodes.Getitem)
+# The names the sandbox refuses that don't start with _.
+UNSAFE_NAMES = frozenset(
+    {"mro"}.union(
+        UNSAFE_FUNCTION_ATTRIBUTES,
+        UNSAFE_METHOD_ATTRIBUTES,
+        UNSAFE_GENERATOR_ATTRIBUTES,
+        UNSAFE_COROUTINE_ATTRIBUTES,
+        UNSAFE_ASYNC_GENERATOR_ATTRIBUTES,
+    )
 )
 # Compiling a template nested too deep raises Python's own errors, not Jinja's.
 TEMPLATE_FAILURES = (TemplateError, SyntaxError, RecursionError, MemoryError)
@@ -531,11 +569,13 @@ class ChangedMeanwhile(LibraryError):
     """A save or delete refused because what it was opened on changed since."""
 
 
+BY_WHOM = "(by the librarian, another tab or an import)"
+
+
 def changed_meanwhile(what):
     return ChangedMeanwhile(
-        f"{what} was changed after you opened it (by the librarian, another tab or an"
-        " import), so nothing was saved: saving would undo that change. Look at it as"
-        " it is now, then save again."
+        f"{what} was changed after you opened it {BY_WHOM}, so nothing was saved:"
+        " saving would undo that change. Look at it as it is now, then save again."
     )
 
 
@@ -1145,6 +1185,12 @@ def checked_text(text):
         )
 
 
+def sandbox_templates():
+    """Make every Jinja render the engine does in this process sandboxed: each process
+    that runs the engine calls it first."""
+    deep_reasoner.llm._JinjaEnv = SANDBOXED
+
+
 def template_names(config):
     """The names a turn's template may read: what the engine fills in, and the run
     settings' prompt_template_variables in *config*."""
@@ -1161,14 +1207,46 @@ def first_use(template, name):
     return min(uses)
 
 
+def internal_read(node):
+    """The Python internal *node* reads by a name it gives, which a run's sandbox
+    refuses; None for none."""
+    if isinstance(node, nodes.Getattr):
+        name = node.attr
+        return name if name.startswith("_") or name in UNSAFE_NAMES else None
+    if isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Const):
+        key = node.arg.value
+        return key if isinstance(key, str) and key.startswith("_") else None
+    return None
+
+
+def refused(node):
+    """Why a run can't render a template holding *node*, in words; None when it can."""
+    if isinstance(node, INCLUDES):
+        return "includes another template, which a run can't"
+    if internal := internal_read(node):
+        return f"reaches into Python internals ({internal}), which a run refuses"
+    return None
+
+
+def first_refused(template):
+    """The line of *template* (parsed) where it first holds what a run can't render, and
+    why; None when it holds none."""
+    found = template.find_all(SCREENED)
+    return next(((n.lineno, why) for n in found if (why := refused(n))), None)
+
+
 def template_problem(label, text, names):
-    """Why the engine couldn't render the turn *text*, *label*, when it reads more than
-    *names* or doesn't parse or compile; None when it holds no template or neither. It is
-    never rendered, so this runs none of its code."""
+    """Why the engine couldn't render the turn *text*, *label*, when it includes another
+    template, reads a Python internal, reads more than *names* or doesn't parse or
+    compile; None when it holds no template or none of these. It is never rendered, so
+    this runs none of its code."""
     if not _has_jinja(text):
         return None
     try:
         template = JINJA.parse(text)
+        if found := first_refused(template):
+            line, why = found
+            return f"{label}, line {line}: {TEMPLATE}, and this one {why}. {ESCAPE}"
         missing = sorted(meta.find_undeclared_variables(template) - names)
         if missing:
             line = first_use(template, missing[0])
@@ -1381,14 +1459,23 @@ def edit_decomposition(connection, namespace, name, was, text):
 
 def delete_decomposition(connection, namespace, name, was):
     """Delete *namespace*'s decomposition *name*, which the person was shown as *was*;
-    ChangedMeanwhile if it is no longer stored so."""
+    ChangedMeanwhile if it is no longer stored so, or at all."""
     with writing(connection):
-        deleted = connection.execute(
-            "DELETE FROM decompositions WHERE namespace = ? AND name = ? AND yaml = ?",
-            (namespace, name, was),
+        found = stored_decomposition(connection, namespace, name)
+        if found is None:
+            raise ChangedMeanwhile(
+                f'"{name}" in {namespace} was already deleted or renamed {BY_WHOM}.'
+            )
+        if found != was:
+            raise ChangedMeanwhile(
+                f'"{name}" in {namespace} was changed after you opened it {BY_WHOM}, so'
+                " it wasn't deleted. Look at it as it is now, then delete it again if"
+                " you still want to."
+            )
+        connection.execute(
+            "DELETE FROM decompositions WHERE namespace = ? AND name = ?",
+            (namespace, name),
         )
-        if deleted.rowcount == 0:
-            raise changed_meanwhile(f'"{name}" in {namespace}')
 
 
 def namespace_problem(error):
@@ -1451,6 +1538,9 @@ def var_problem(name):
         )
     if keyword.iskeyword(name):
         return f'Var "{name}" is a Python keyword; rename it, like "{name}_value".'
+    if name.startswith("_"):
+        plain = name.lstrip("_") or "value"
+        return f'Var "{name}" starts with _, which templates may not read; rename it, like "{plain}".'
     if name in BUILTIN_NAMES:
         return (
             f"Var \"{name}\" would hide Python's own {name}, which the agent's code may"
@@ -1474,25 +1564,54 @@ def hidden_vars(registry, names):
             )
 
 
+def suffix_problem(connection, namespace):
+    """Why the engine couldn't render *namespace*'s system_suffix, as template_problem
+    words it; None when it can."""
+    suffix = namespace.system_suffix or ""
+    if not _has_jinja(suffix):
+        return None
+    config, _ = config_and_registry(connection)
+    label = f"The system_suffix of {namespace.name}"
+    return template_problem(label, suffix, template_names(config))
+
+
 def check_fields(connection, namespace):
-    """Raise unless *namespace*'s vars are well named and every namespace it may spawn
-    into is in the Library, or is itself."""
-    problems = list(filter(None, map(var_problem, namespace.vars)))
+    """Raise unless *namespace*'s vars are well named, its system_suffix renders, and
+    every namespace it may spawn into is in the Library, or is itself."""
+    problems = [
+        *map(var_problem, namespace.vars),
+        suffix_problem(connection, namespace),
+    ]
+    problems = [each for each in problems if each]
     if problems:
         raise LibraryError("\n".join(problems))
     # The engine lets a spawn name no namespace, and fails only when the agent spawns there.
+    name = namespace.name
     missing = [
-        each
-        for each in namespace.spawn or []
-        if each != namespace.name and not has_namespace(connection, each)
+        spawned
+        for spawned in namespace.spawn or []
+        if spawned != name and not has_namespace(connection, spawned)
     ]
     if missing:
+        adding = not has_namespace(connection, name)
         raise LibraryError(
-            "\n".join(
-                f'spawn names "{each}", which is not a namespace in the Library.'
-                for each in missing
-            )
+            "\n".join(missing_spawn(spawned, name, adding) for spawned in missing)
         )
+
+
+def missing_spawn(spawned, name, adding):
+    """Why namespace *name*'s spawn can't name *spawned*, which the Library doesn't hold,
+    and what to do; *adding*, as when *name* is new."""
+    if adding and spawned.startswith(f"{name}."):
+        return (
+            f'spawn names "{spawned}", which goes under {name} and isn\'t in the'
+            f" Library yet: add {name} without it first, then {spawned}, then put"
+            f" {spawned} in the spawn of {name}."
+        )
+    return (
+        f'spawn names "{spawned}", which is not a namespace in the Library: add'
+        f" {spawned} first, or take it out of spawn."
+    )
 
 
 def write_namespace(connection, namespace, text):
@@ -1619,18 +1738,26 @@ def store_tool(connection, name, block, source, allowed=None):
 
 def delete_tool(connection, name):
     """Delete the Library's tool *name*, or raise LibraryError saying why not: a
-    namespace grants it."""
+    namespace grants it, or the Library holds no row for it."""
     with writing(connection):
         _, registry = config_and_registry(connection)
         granting = granted_in(registry, in_chain_order(registry), name)
-        if granting:
-            raise LibraryError(
-                f"{name} is granted in {', '.join(granting)}: take it out of their tools"
-                " first."
-            )
-        deleted = connection.execute("DELETE FROM tools WHERE name = ?", (name,))
-        if deleted.rowcount == 0:
-            raise LibraryError(f'The Library holds no tool "{name}" to delete.')
+        stored = connection.execute("SELECT 1 FROM tools WHERE name = ?", (name,))
+        refusal = tool_refusal(name, granting, stored.fetchone() is not None)
+        if refusal:
+            raise LibraryError(refusal)
+        connection.execute("DELETE FROM tools WHERE name = ?", (name,))
+
+
+def tool_refusal(name, granting, stored):
+    """Why tool *name* can't be deleted, as the namespaces *granting* grant it and the
+    Library holds a row for it or not (*stored*); None when it can."""
+    if granting:
+        return (
+            f"{name} is granted in {', '.join(granting)}: take it out of their tools"
+            " first."
+        )
+    return None if stored else f'The Library holds no tool "{name}" to delete.'
 
 
 def delete_setting(connection, key):
@@ -1650,26 +1777,13 @@ def delete_setting(connection, key):
 def delete_namespace(connection, name, decompositions):
     """Delete namespace *name* and its decompositions, as many as the caller was told it
     has, or raise LibraryError saying why not; if new chats started there, they start in root."""
-    if name == ROOT:
-        raise LibraryError("root can't be deleted: every namespace inherits from it.")
     with writing(connection):
-        check_namespace(connection, name)
-        rows = connection.execute("SELECT name, yaml FROM namespaces")
-        namespaces = {each: yaml.safe_load(text) or {} for each, text in rows}
-        children = [each for each in namespaces if each.startswith(f"{name}.")]
-        if children:
-            raise LibraryError(f"Delete its namespaces first: {', '.join(children)}.")
-        # Else their spawn would name no namespace, which write_namespace refuses.
-        spawners = [
-            each
-            for each, fields in namespaces.items()
-            if each != name and name in (fields.get("spawn") or [])
-        ]
-        if spawners:
-            raise LibraryError(
-                f"First take {name} out of the spawn of {', '.join(spawners)}:"
-                " they may spawn into it."
-            )
+        if namespace_yaml(connection, name) is None:
+            raise LibraryError(f'The Library has no namespace "{name}" to delete.')
+        _, registry = config_and_registry(connection)
+        refusal = namespace_refusal(own_spawns(registry), name)
+        if refusal:
+            raise LibraryError(refusal)
         held = connection.execute(
             "SELECT count(*) FROM decompositions WHERE namespace = ?", (name,)
         ).fetchone()[0]
@@ -1683,6 +1797,35 @@ def delete_namespace(connection, name, decompositions):
         if stored_settings(connection).get(ENTRY_NAMESPACE) == name:
             connection.execute("DELETE FROM settings WHERE key = ?", (ENTRY_NAMESPACE,))
         accepted(connection)
+
+
+def own_spawns(registry):
+    """Each namespace's own spawn list, by name, each after the ones above it."""
+    return {
+        name: registry.config(name).spawn or [] for name in in_chain_order(registry)
+    }
+
+
+def namespace_refusal(spawns, name):
+    """Why namespace *name* can't be deleted, as the namespaces stand, given as each one's
+    own spawn list (*spawns*, as own_spawns() gives them); None when it can."""
+    if name == ROOT:
+        return "root can't be deleted: every namespace inherits from it."
+    children = [child for child in spawns if child.startswith(f"{name}.")]
+    if children:
+        return f"Delete its namespaces first: {', '.join(children)}."
+    # Else their spawn would name no namespace, which write_namespace refuses.
+    spawners = [
+        spawner
+        for spawner, spawned in spawns.items()
+        if spawner != name and name in spawned
+    ]
+    if spawners:
+        return (
+            f"First take {name} out of the spawn of {', '.join(spawners)}: they may"
+            " spawn into it."
+        )
+    return None
 
 
 def shown(value):
@@ -1831,15 +1974,79 @@ def run_settings(connection):
     return rows
 
 
-def class_docstring(source):
-    """The first class's docstring: what the agent is told when a factory returns one and gives no description.
-    Empty for source that doesn't parse, as a shared file may hold, so the panel still lists the tool."""
+def source_description(source, factory):
+    """What the agent is told a custom tool does, as far as its *source* says without
+    running it: the description its *factory* gives Func(...), as text or a module's text
+    constant, else, when it gives none, the docstring of the function or class it wraps.
+    Empty when neither says, or the source doesn't parse, as a shared file may hold."""
     try:
-        body = parsed_python(source).body
+        module = parsed_python(source)
     except LibraryError:
         return ""
-    classes = [node for node in body if isinstance(node, ast.ClassDef)]
-    return (ast.get_docstring(classes[0]) if classes else None) or ""
+    build = top_level(module.body).get(factory)
+    if build is None:
+        return ""
+    texts = {
+        target.id: node.value
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    for call in ast.walk(build):
+        if isinstance(call, ast.Call) and called(call.func) == FUNC:
+            # As Python finds a name in the factory: its own defs, then the module's.
+            scope = top_level(module.body) | top_level(build.body)
+            return func_description(call, scope, texts)
+    return ""
+
+
+def top_level(body):
+    """The functions and classes *body* defines itself, by name, the last of a name winning."""
+    return {node.name: node for node in body if isinstance(node, DOCUMENTED)}
+
+
+def func_description(call, scope, texts):
+    """What the Func(value, description=None) *call* tells the agent: its description,
+    else value's docstring, where value names one of *scope*'s functions or classes."""
+    given = argument(call, "description", 1)
+    if given is not None and not is_none(given):
+        text = literal_text(given, texts)
+        return BUILT_DESCRIPTION.format(ast.unparse(given)) if text is None else text
+    value = argument(call, "value", 0)
+    wrapped = scope.get(called(value)) if value is not None else None
+    return (wrapped and ast.get_docstring(wrapped)) or ""
+
+
+def argument(call, name, position):
+    """The node *call* passes as its parameter *name*, by keyword or at *position*."""
+    given = [keyword.value for keyword in call.keywords if keyword.arg == name]
+    if given:
+        return given[0]
+    return call.args[position] if len(call.args) > position else None
+
+
+def is_none(node):
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def called(node):
+    """The name a call or a reference such as Func, primitives.Func or Counter() gives."""
+    if isinstance(node, ast.Call):
+        node = node.func
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def literal_text(node, texts):
+    """*node*'s text when it is a string literal, or names one the module assigns in
+    *texts*; None otherwise."""
+    if isinstance(node, ast.Name):
+        node = texts.get(node.id)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
 
 
 def origin(name, factory, block, source):
@@ -1856,7 +2063,7 @@ def origin(name, factory, block, source):
         }
         return made, BUILTIN_DESCRIPTIONS[factory]
     made = {"file": block["factory_from"], "defined_in": "the Library", "badge": None}
-    return made, class_docstring(source)
+    return made, source_description(source, factory) or NO_DESCRIPTION
 
 
 def granted_in(registry, names, tool):
@@ -1870,15 +2077,17 @@ def tool_rows(config, registry, names, sources):
         block = config.tools.get(name, {})
         factory = block.get("factory", name)
         made, description = origin(name, factory, block, sources.get(name))
+        granting = granted_in(registry, names, name)
         row = {
             "name": name,
             "factory": factory,
             **made,
-            "granted_in": granted_in(registry, names, name),
+            "granted_in": granting,
             "description": block.get("description") or description,
             "config": dump({name: block}).rstrip() if block else None,
             # Deletable: the Library holds it, not the engine or the app.
             "stored": name in sources,
+            "refusal": tool_refusal(name, granting, name in sources),
             "source": sources.get(name),
         }
         rows.append(row)
@@ -1927,6 +2136,7 @@ def namespace_rows(connection, config, registry):
     names = template_names(config)
     targets = hand_off_targets(config)
     handed = Counter(hand_offs_made(registry, targets))
+    spawns = own_spawns(registry)
     return [
         {
             "name": name,
@@ -1937,8 +2147,9 @@ def namespace_rows(connection, config, registry):
             ),
             "yaml": own.get(name, ""),
             "handed_to": handed[name],
+            "refusal": namespace_refusal(spawns, name),
         }
-        for name in in_chain_order(registry)
+        for name in spawns
     ]
 
 

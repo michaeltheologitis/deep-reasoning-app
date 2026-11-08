@@ -463,6 +463,35 @@ def test_an_import_the_engine_refuses_says_why_in_plain_words(
     assert "pydantic" not in str(refused.value)
 
 
+def test_import_refuses_a_namespace_whose_suffix_no_run_renders(library, tmp_path):
+    written = config_file(
+        tmp_path,
+        "namespaces:\n  research:\n    system_suffix: 'Answer as {{ task.__class__ }}.'\n",
+    )
+    before = dumped(library)
+    refused = (
+        "The system_suffix of research, line 1: the engine reads text holding {{ or {%"
+        " as a Jinja template, and this one reaches into Python internals (__class__),"
+        " which a run refuses."
+    )
+    with pytest.raises(LibraryError, match=re.escape(refused)):
+        import_into(library, written)
+    assert dumped(library) == before
+
+
+def test_an_imported_suffix_may_read_the_configs_own_template_variables(
+    library, tmp_path
+):
+    written = config_file(
+        tmp_path,
+        "prompt_template_variables: {dept: CS}\n"
+        "namespaces:\n  research:\n    system_suffix: 'Answer for {{ dept }}.'\n",
+    )
+    import_into(library, written)
+    namespace = run_config(library, tmp_path).namespaces["research"]
+    assert namespace.system_suffix == "Answer for {{ dept }}."
+
+
 NOT_A_MAPPING = 'is not a deep_reasoner config: it should be a mapping of settings, like "max_iter: 20".'
 
 
