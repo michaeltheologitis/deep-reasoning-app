@@ -51,6 +51,7 @@ from deep_reasoning.library import (
     PAGE_DESCRIPTION,
     ROOT_SUFFIX,
     SHAPES,
+    SPAWN_LINE,
     UNREAD_SETTING,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
@@ -212,11 +213,16 @@ def test_a_fresh_library_grants_llm_at_root_history_and_page_to_the_historian_an
     assert config.namespaces[ROOT].tools == ["llm"]
     assert config.namespaces[HISTORIAN].tools == ["history", "page"]
     assert config.namespaces[HISTORIAN].spawn == []
-    assert config.namespaces[HISTORIAN].system_suffix == HISTORIAN_SUFFIX
     assert config.namespaces[LIBRARIAN].tools == ["library"]
     # It may ask the historian about earlier messages, but never spawn itself.
     assert config.namespaces[LIBRARIAN].spawn == [HISTORIAN]
-    assert config.namespaces[LIBRARIAN].system_suffix == LIBRARIAN_SUFFIX
+    # Each suffix as stored, then where its agents may hand work, for the run only.
+    leaf = SPAWN_LINE.render(allowed=[], above=False, itself=False)
+    to_historian = SPAWN_LINE.render(allowed=[HISTORIAN], above=False, itself=False)
+    assert config.namespaces[HISTORIAN].system_suffix == f"{HISTORIAN_SUFFIX}{leaf}\n"
+    assert config.namespaces[LIBRARIAN].system_suffix == (
+        f"{LIBRARIAN_SUFFIX}{to_historian}\n"
+    )
 
 
 def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_messages(
@@ -275,9 +281,13 @@ def panel_rows(library):
     return {row["name"]: row for row in panel_of(library)["namespaces"]}
 
 
-def hand_offs_field(row):
-    found = [field["items"] for field in row["fields"] if field["label"] == "Hand-offs"]
+def field(row, label):
+    found = [each["items"] for each in row["fields"] if each["label"] == label]
     return found[0] if found else None
+
+
+def hand_offs_field(row):
+    return field(row, "Hand-offs")
 
 
 CANT = "historian namespace, and this namespace's spawn list leaves it out"
@@ -402,6 +412,61 @@ def test_a_spawn_list_the_librarian_restricts_keeps_both_hand_offs(library, tmp_
         add_namespace(connection, "scheduler", "spawn: [historian, librarian]\n")
     shown = shown_hand_offs(library, tmp_path)
     assert shown["scheduler"] == shown[ROOT]
+
+
+def run_suffixes(library, tmp_path):
+    """Each namespace's own system_suffix in a run's config."""
+    namespaces = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)
+    return {
+        name: fields.get("system_suffix")
+        for name, fields in namespaces["namespaces"].items()
+    }
+
+
+def test_a_namespace_that_sets_a_spawn_list_is_told_where_its_agents_can_hand_work(
+    library, tmp_path
+):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "searcher", "spawn: []\nsystem_suffix: Search.\n")
+        add_namespace(connection, "searcher.deep", "")
+        add_namespace(connection, "planner", "spawn: [searcher]\n")
+        add_namespace(connection, "planner.team", "spawn: [planner, searcher]\n")
+    own = run_suffixes(library, tmp_path)
+    assert own["searcher"].startswith("Search.\n")
+    assert "can't hand work to them" in own["searcher"]
+    assert "answer without them" in own["searcher"]
+    # It names where they can, and, as an unnamed sub-agent stays where it is refused,
+    # to name one in the fan-out the system prompt shows.
+    assert "only in searcher or" in own["planner"]
+    assert "without namespace= stays in this namespace and is refused" in own["planner"]
+    assert 'anext(subagent(namespace="searcher").send(t))' in own["planner"]
+    # Within its own list, an unnamed one may stay; below a list, its own holds.
+    assert "only in planner, searcher or" in own["planner.team"]
+    assert "refused" not in own["planner.team"]
+    assert "whatever the line above says" in own["planner.team"]
+    assert "whatever the line above says" not in own["planner"]
+    # One that sets none inherits its parent's line, as it does its spawn list.
+    assert own["searcher.deep"] is None
+    assert own[ROOT] == ROOT_SUFFIX
+    # The Library holds none of it; the panel shows it, as added at run time.
+    rows = panel_rows(library)
+    assert rows["searcher"]["yaml"] == "spawn: []\nsystem_suffix: Search.\n"
+    [*_, line] = field(rows["searcher.deep"], "System suffix")
+    assert line == {
+        "value": own["searcher"].removeprefix("Search.\n").strip(),
+        "source": "added at run time, for searcher's spawn list",
+        "here": False,
+    }
+
+
+def test_a_spawn_list_naming_only_namespaces_that_are_gone_reads_as_a_leaf(
+    library, tmp_path
+):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("lonely", "spawn: [ghost]\n"))
+    assert run_suffixes(library, tmp_path)["lonely"] == (
+        SPAWN_LINE.render(allowed=[], above=False, itself=False) + "\n"
+    )
 
 
 @pytest.mark.parametrize(
