@@ -46,6 +46,7 @@ from deep_reasoning.runs import (
     FINAL_ANSWER,
     PAGE_FIELDS,
     SPEC,
+    escaped,
     raised_error,
 )
 
@@ -454,10 +455,14 @@ def finish(reasoner: Any) -> NoReturn:
 
 def counting_calls(recorder: Recorder) -> None:
     """Tell *recorder* of each chat call the run starts: the engine logs only those that
-    finish."""
+    finish. Each call's messages go with any half of a character escaped: a cell's output
+    may hold one, which the call couldn't send."""
     create = AsyncCompletions.create
 
     async def counted(self: AsyncCompletions, *args: Any, **kwargs: Any) -> Any:
+        # Before the count: a call escaped() raised on was never sent.
+        if "messages" in kwargs:
+            kwargs["messages"] = escaped(kwargs["messages"])
         recorder.call_started()
         return await create(self, *args, **kwargs)
 

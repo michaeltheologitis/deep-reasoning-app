@@ -11,6 +11,7 @@ from structlog.testing import capture_logs
 from deep_reasoning import chats as chats_module
 from deep_reasoning.chats import (
     CHAT_ID,
+    ID_TRIES,
     NEW_TITLE,
     choose,
     choose_folder,
@@ -29,10 +30,12 @@ from deep_reasoning.library import (
     LIBRARIAN,
     LIBRARY_ONLY,
     SCHEMA_VERSION,
+    LibraryError,
     default_namespace,
     open_library,
     schema_version,
     stored_config,
+    writing,
 )
 from deep_reasoning.pages import add_page, read_page
 from deep_reasoning.runs import chat_runs, read_events, save_event
@@ -199,6 +202,30 @@ def test_an_id_already_taken_is_drawn_again(library, monkeypatch):
     first, second = create_chat(library), create_chat(library)
     assert (first["id"], second["id"]) == ("quiet-blue-heron", "brave-red-fox")
     assert list_chats(library) == [second, first]
+
+
+def test_a_chat_whose_every_id_tried_is_taken_is_refused_in_words(library, monkeypatch):
+    taken = create_chat(library)
+    monkeypatch.setattr(chats_module, "generate_slug", lambda words: taken["id"])
+    with pytest.raises(LibraryError, match=f"no free chat id in {ID_TRIES} tries"):
+        create_chat(library)
+    assert list_chats(library) == [taken]
+
+
+def test_a_shared_files_chats_table_that_refuses_every_row_refuses_a_new_chat_in_words(
+    library,
+):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute("DROP TABLE chats")
+        connection.execute(
+            "CREATE TABLE chats (id TEXT PRIMARY KEY, title TEXT NOT NULL,"
+            " created REAL NOT NULL, namespace TEXT, provider TEXT, model TEXT,"
+            " folder TEXT, CHECK (0))"
+        )
+    with pytest.raises(
+        LibraryError, match="refused the new chat: CHECK constraint failed"
+    ):
+        create_chat(library)
 
 
 def test_rename_changes_only_that_chats_title(library):
