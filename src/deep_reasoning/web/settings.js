@@ -178,7 +178,12 @@ async function change(method, url, body, problem, focusName) {
       problem.textContent = error.message;
       return false;
     }
+    // loadProviders never throws, saying what failed in loadProblem: then the form stays open, and the key comes back to it
     await loadProviders();
+    if (loadProblem) {
+      problem.textContent = loadProblem;
+      return false;
+    }
     removedMeanwhile.textContent = `${focusName} was removed in another tab, so nothing was saved.`;
   }
   opened = null;
