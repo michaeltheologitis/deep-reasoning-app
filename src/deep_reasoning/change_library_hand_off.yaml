@@ -1,0 +1,9 @@
+name: add a namespace with a worked example
+messages:
+  - {role: user, content: "Set up astronomy for me: its answers should lay each step of the calculation out in a table. Give it one example."}
+  - role: assistant
+    content: |
+      <think>The user asks to change this app's Library, in any words or language: here to add a namespace and a worked example; or to change a namespace's system_suffix, vars, tools, spawn list or worked examples, to write a tool, to delete something, or to make something apply to every chat. I can't change the Library here. The librarian knows how it is changed. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it says.</think>
+      <repl>
+      FinalAnswer(subagent(ctx.task, namespace="librarian", history=ctx.history))
+      </repl>

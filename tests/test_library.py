@@ -36,11 +36,13 @@ from deep_reasoning.library import (
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
     LIBRARIAN,
+    LIBRARIAN_HAND_OFFS,
     LIBRARIAN_SUFFIX,
     LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
     PAGE_DESCRIPTION,
+    ROOT_SUFFIX,
     UNREAD_SETTING,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
@@ -122,10 +124,16 @@ messages:
 HISTORIANS = [parsed(text) for text in HISTORIANS_EXAMPLES]
 HAND_OFFS = [parsed(hand_off(text)) for text in HISTORIANS_EXAMPLES]
 LIBRARIANS = [parsed(text) for text in LIBRARIANS_EXAMPLES]
-SEEDED_ROWS = [(each.name, []) for each in HAND_OFFS]
-ROUTER_SHOWN = ROUTER_DECOMPOSITIONS + [each.name for each in HAND_OFFS]
+# And root's hand-offs of questions about the Library, each named as one of the librarian's,
+# which come first.
+LIBRARY_HAND_OFFS = [parsed(text) for text in LIBRARIAN_HAND_OFFS]
+ROOTS = [*LIBRARY_HAND_OFFS, *HAND_OFFS]
+SEEDED_ROWS = [(each.name, []) for each in ROOTS]
+ROUTER_SHOWN = ROUTER_DECOMPOSITIONS + [each.name for each in ROOTS]
 # Root spawns a sub-agent into historian, with the user's message and this conversation.
 HAND_OFF = 'FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))'
+# And questions about the Library into librarian.
+TO_LIBRARIAN = HAND_OFF.replace(HISTORIAN, LIBRARIAN)
 # What the app puts in for a chat on OpenAI's gpt-6-luna.
 CHATS_MODEL = {
     "model": "gpt-6-luna",
@@ -201,11 +209,15 @@ def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_mess
 ):
     registry = registry_of(library, tmp_path)
     shown = {name: registry.resolve(name).decompositions for name in registry.names}
-    assert shown == {
-        ROOT: HAND_OFFS,
-        HISTORIAN: HISTORIANS,
-        LIBRARIAN: [*HAND_OFFS, *LIBRARIANS],
-    }
+    assert shown[ROOT] == ROOTS
+    assert shown[HISTORIAN][len(LIBRARY_HAND_OFFS) :] == HISTORIANS
+    # The librarian's own in place of root's hand-offs to it, and its others after.
+    replaced = len(LIBRARY_HAND_OFFS)
+    assert shown[LIBRARIAN] == [
+        *LIBRARIANS[:replaced],
+        *HAND_OFFS,
+        *LIBRARIANS[replaced:],
+    ]
     assert [each.name for each in HAND_OFFS] == [
         "explain an earlier answer",
         "tell a typed answer from a computed one",
@@ -266,9 +278,10 @@ def test_a_namespace_that_may_not_spawn_into_the_historian_says_it_cant_in_place
     for name in (ROOT, LIBRARIAN, "trips.with_history"):
         assert {shown[name][each.name] for each in HAND_OFFS} == {HAND_OFF}, name
     for name in ("trips", "trips.hotels"):
-        assert list(shown[name]) == [each.name for each in HAND_OFFS]
-        for code in shown[name].values():
-            assert "subagent" not in code and CANT in code
+        assert list(shown[name]) == [each.name for each in ROOTS]
+        for each in HAND_OFFS:
+            assert "subagent" not in shown[name][each.name]
+            assert CANT in shown[name][each.name]
     # spawn: null sets nothing, so trips.anywhere inherits trips's spawn list.
     assert shown["trips.anywhere"] == shown["trips"]
     # What is stored is left as it is, and the panel says what trips can't hand off.
@@ -276,16 +289,25 @@ def test_a_namespace_that_may_not_spawn_into_the_historian_says_it_cant_in_place
     assert rows["trips"]["decompositions"] == []
     assert hand_offs_field(rows["trips"]) == [
         {
+            "value": "none to librarian: this namespace's spawn list leaves it out. Its"
+            f" agents try themselves what {len(LIBRARY_HAND_OFFS)} worked examples would"
+            " hand there.",
+            "source": "set here",
+            "here": True,
+        },
+        {
             "value": "none to historian: this namespace's spawn list leaves it out. Its"
             f" agents say they can't answer what {len(HAND_OFFS)} worked examples would"
             " hand there.",
             "source": "set here",
             "here": True,
-        }
+        },
     ]
     assert hand_offs_field(rows["trips.hotels"])[0]["source"] == "inherited from trips"
-    for name in (ROOT, LIBRARIAN, "trips.with_history"):
+    for name in (ROOT, LIBRARIAN):
         assert hand_offs_field(rows[name]) is None
+    [librarians] = hand_offs_field(rows["trips.with_history"])
+    assert librarians["value"].startswith("none to librarian")
 
 
 def test_a_historian_with_no_examples_of_its_own_reads_the_record_in_place_of_handing_off(
@@ -298,11 +320,11 @@ def test_a_historian_with_no_examples_of_its_own_reads_the_record_in_place_of_ha
             "DELETE FROM decompositions WHERE namespace = ?", (HISTORIAN,)
         )
     turns = last_turns(library, tmp_path)[HISTORIAN]
-    assert list(turns) == [each.name for each in HAND_OFFS]
-    for turn in turns.values():
-        assert running_code(turn) == "print(history.turns())"
-        assert "I answer it here and never hand it on" in turn
-    [item] = hand_offs_field(panel_rows(library)[HISTORIAN])
+    assert list(turns) == [each.name for each in ROOTS]
+    for each in HAND_OFFS:
+        assert running_code(turns[each.name]) == "print(history.turns())"
+        assert "I answer it here and never hand it on" in turns[each.name]
+    _, item = hand_offs_field(panel_rows(library)[HISTORIAN])
     instead = f"Its agents answer themselves what {len(HAND_OFFS)} worked examples"
     assert instead in item["value"]
 
@@ -326,6 +348,52 @@ def test_with_the_historian_deleted_no_namespace_hands_off_to_it(library, tmp_pa
         "none to historian: there is no historian namespace"
     )
     assert item["source"] == "not in the Library"
+
+
+def test_root_hands_questions_about_the_library_to_the_librarian_which_answers_them_itself(
+    library, tmp_path
+):
+    own = {each.name: running_code(each.messages[-1].content) for each in LIBRARIANS}
+    for spawn in ("[historian]", "[historian, librarian]"):
+        # A librarian whose spawn list names itself still answers them itself.
+        with closing(open_library(library)) as connection:
+            change_namespace(
+                connection, LIBRARIAN, f"tools: [library]\nspawn: {spawn}\n"
+            )
+        shown = shown_hand_offs(library, tmp_path)
+        for example in LIBRARY_HAND_OFFS:
+            assert shown[ROOT][example.name] == TO_LIBRARIAN
+            assert shown[LIBRARIAN][example.name] == own[example.name]
+            assert "subagent" not in shown[HISTORIAN][example.name]
+
+
+@pytest.mark.parametrize(
+    ("cut_off", "why"),
+    [
+        (
+            lambda connection: add_namespace(connection, "trips", "spawn: [trips]\n"),
+            "but this namespace's spawn list leaves it out",
+        ),
+        (
+            lambda connection: delete_namespace(connection, LIBRARIAN, len(LIBRARIANS)),
+            "but there is no librarian namespace now",
+        ),
+    ],
+    ids=["spawn-list", "deleted"],
+)
+def test_a_namespace_that_cant_reach_the_librarian_answers_library_questions_itself(
+    library, tmp_path, cut_off, why
+):
+    with closing(open_library(library)) as connection:
+        cut_off(connection)
+    turns = last_turns(library, tmp_path)
+    name = "trips" if "trips" in turns else ROOT
+    for example in LIBRARY_HAND_OFFS:
+        turn = turns[name][example.name]
+        assert running_code(turn) == "print(ctx.task)"
+        assert f"Questions like this go to the librarian namespace, {why}" in turn
+    # Root's suffix names no librarian, so it holds with none.
+    assert LIBRARIAN not in ROOT_SUFFIX
 
 
 def ending_in(name, code):
@@ -405,13 +473,16 @@ def test_a_run_config_holds_an_example_only_where_what_a_namespace_inherits_diff
         for name, fields in namespaces.items()
     }
     hand_offs = [each.name for each in HAND_OFFS]
-    # root holds its own; trips the replacements, which trips.hotels inherits as they
-    # are; trips.with_history, which can hand off, the originals back.
+    roots = [each.name for each in ROOTS]
+    to_librarian = [each.name for each in LIBRARY_HAND_OFFS]
+    # root holds its own; the historian the replacements of those to the librarian;
+    # trips the replacements of all, which trips.hotels inherits as they are;
+    # trips.with_history, which can hand off to the historian, the originals back.
     assert held == {
-        ROOT: hand_offs,
-        HISTORIAN: [each.name for each in HISTORIANS],
+        ROOT: roots,
+        HISTORIAN: [*(each.name for each in HISTORIANS), *to_librarian],
         LIBRARIAN: [each.name for each in LIBRARIANS],
-        "trips": hand_offs,
+        "trips": roots,
         "trips.hotels": [],
         "trips.with_history": hand_offs,
     }
@@ -434,9 +505,12 @@ def test_deleting_a_namespace_warns_of_the_hand_offs_to_it_that_could_be_made(li
 def test_root_is_told_to_pass_the_message_as_written_only_in_its_examples(
     library, tmp_path
 ):
-    # In root's suffix, the historian would inherit it, and hand off itself.
+    # In root's suffix, the historian and librarian would inherit it, and hand off
+    # themselves: root's says only what app its agents are in.
     namespaces = run_config(library, tmp_path).namespaces
-    assert namespaces[ROOT].system_suffix is None
+    assert namespaces[ROOT].system_suffix == ROOT_SUFFIX
+    assert "Deep Reasoning" in ROOT_SUFFIX
+    assert "ctx.task" not in ROOT_SUFFIX and "subagent" not in ROOT_SUFFIX
     assert "ctx.task" not in namespaces[HISTORIAN].system_suffix
 
 
@@ -463,7 +537,9 @@ def test_a_library_made_with_an_empty_root_is_given_a_fresh_root_once(
     made_with_an_empty_root(library)
     upgraded = dumped(library)
     assert dumped(library) == upgraded
-    assert run_config(library, tmp_path).namespaces[ROOT].tools == ["llm"]
+    root = run_config(library, tmp_path).namespaces[ROOT]
+    # Its suffix and worked examples are a fresh Library's only.
+    assert (root.tools, root.system_suffix, root.decompositions) == (["llm"], None, [])
 
 
 def test_a_read_only_library_with_an_empty_root_still_opens_as_it_is(
@@ -626,7 +702,7 @@ def test_an_import_reads_back_as_the_engine_loads_the_config(library, tmp_path):
     assert config.namespaces[ROOT].vars["due"] == date(2026, 10, 25)
     assert config.namespaces[ROOT].vars["cap"] == math.inf
     assert config.namespaces[ROOT].decompositions == [
-        *HAND_OFFS,
+        *ROOTS,
         *expected.namespaces[ROOT].decompositions,
     ]
 
@@ -670,7 +746,7 @@ def test_a_configs_run_level_openings_are_left_out(library, tmp_path):
         "    messages: [{role: user, content: '{{ task }}'}]\n"
     )
     assert import_into(library, written)["decompositions"] == 0
-    assert run_config(library, tmp_path).namespaces[ROOT].decompositions == HAND_OFFS
+    assert run_config(library, tmp_path).namespaces[ROOT].decompositions == ROOTS
 
 
 def test_import_replaces_same_named_items_and_keeps_the_rest(imported, tmp_path):
@@ -845,6 +921,8 @@ def test_a_runs_config_tells_each_app_tool_the_app_file_the_chat_and_the_run(
         "tools_dir": str((tmp_path / "tools").resolve()),
         "namespace": ROOT,
         "key_names": [],
+        # The library tool is told the namespaces whose chats may write with it.
+        **({"editors": ["granting", LIBRARIAN]} if tool == "library" else {}),
     }
     with closing(open_library(library)) as connection:
         assert connection.execute("SELECT count(*) FROM tools").fetchone() == (0,)
@@ -899,7 +977,7 @@ def test_the_engine_config_builds_a_registry_and_a_reasoner_without_a_model_call
     )
     lookup = registry.resolve("course_advisor").decompositions
     assert [each.name for each in lookup] == [
-        *(each.name for each in HAND_OFFS),
+        *(each.name for each in ROOTS),
         "catalog lookup",
     ]
     assert registry.resolve("course_advisor").tools == ["llm"]
@@ -936,7 +1014,7 @@ def test_a_namespace_is_added_at_the_top_and_its_child_inherits_from_it(
     assert registry.chain("research.papers") == [ROOT, "research", "research.papers"]
     assert papers.vars == {"topic": "ml", "year": 2026}
     assert papers.sources.vars == {"topic": "research", "year": "research.papers"}
-    assert papers.system_suffix == "Cite each source.\n"
+    assert papers.system_suffix == f"{ROOT_SUFFIX}\n\nCite each source.\n"
 
 
 @pytest.mark.parametrize("text", [f"# why\n{RESEARCH}", "# fill in later\n"])
@@ -1121,8 +1199,8 @@ def test_the_seeded_examples_and_the_engines_own_namespace_examples_pass(library
         for row in namespaces
         for each in row["decompositions"]
     ]
-    # the sixteen seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
-    assert len(rows) == 23
+    # the nineteen seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
+    assert len(rows) == 26
     assert rows == [(name, []) for name, _ in rows]
 
 

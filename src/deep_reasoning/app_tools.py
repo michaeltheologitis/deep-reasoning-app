@@ -41,6 +41,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import jinja2
 import structlog
 import yaml
 from deep_reasoner.namespaces import ROOT, NamespaceConfig, NamespaceRegistry
@@ -121,7 +122,10 @@ ENDED_WITH = ("outcome", "answer", "detail", "cost", "seconds")
 SECONDS_DIGITS = 1
 LOOKUP_FIELDS = ("node", "parent", "cell")
 ROOT_LOCKED = (
-    "root is locked: the library tool never writes it. Write into another namespace."
+    "root is locked: the library tool never writes it. The user edits it in the Library"
+    " panel: its YAML with Edit YAML in the Namespaces tab (its system_suffix for what"
+    " every chat should do), its worked examples in the Decompositions tab. Or write"
+    " into another namespace."
 )
 NOT_THIS_CHAT = (
     "The Library can be changed only in a chat whose namespace grants the library tool;"
@@ -173,6 +177,16 @@ GRANTED = (
 )
 # Any other REPL is a sandbox, and building a tool runs its code outside it.
 LOCAL_REPL = "local"
+# What the library tool's agents are told in a chat whose namespace doesn't grant it, as
+# in a sub-agent a chat in another namespace handed a question to.
+READ_ONLY_HERE = jinja2.Template(
+    "\nIn this chat you may only read the Library: its namespace, {{ namespace }}, doesn't"
+    " grant library, so the tool refuses every write, here and in any sub-agent. Asked"
+    " for a change, don't try it: answer, with FinalAnswer, what you would change, and"
+    " that the user picks {{ editors | join(' or ') }} under the message box and asks"
+    " there.",
+    undefined=jinja2.StrictUndefined,
+)
 NOT_LOCAL = (
     "Writing a tool, or granting a custom tool, works only in a chat whose namespace runs"
     " the local REPL: building the tool to check it runs its code outside any sandbox."
@@ -1251,6 +1265,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     the tools it checks in the run's *tools_dir*."""
     library, chat_namespace = params["library"], params["namespace"]
     key_names, tools_dir = params["key_names"], Path(params["tools_dir"])
+    editors = params["editors"]
 
     def show(name: str | None = None) -> Any:
         """Every namespace in brief, or namespace *name* as the Library panel shows it."""
@@ -1443,4 +1458,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         change_namespace=change,
         write_tool=write_tool,
     )
-    return Func(tool, description=LIBRARY_DESCRIPTION)
+    description = LIBRARY_DESCRIPTION
+    if editors and chat_namespace not in editors:
+        description += READ_ONLY_HERE.render(namespace=chat_namespace, editors=editors)
+    return Func(tool, description=description)

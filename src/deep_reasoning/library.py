@@ -118,28 +118,46 @@ UPSERT_TOOL = (
 )
 # Granted at root, so every namespace below has it, as in the engine's example configs.
 FRESH_ROOT = {"tools": ["llm"]}
+# What app its agents are in, which every namespace inherits; a fresh Library's only.
+ROOT_SUFFIX = """\
+You are an agent of Deep Reasoning, an app where agents like you answer each chat \
+message, reasoning in Python and handing parts to sub-agents. What its agents know (each \
+namespace's instructions, tools and worked examples, root's reaching every chat) is its \
+Library, which the user edits in the Library panel ("decompositions", top right).
+"""
 # library writes the Library, so it is granted in a namespace of its own, which a chat
 # picks when it wants edits, and which no namespace inherits from.
 LIBRARIAN = "librarian"
 LIBRARY_TOOL = "library"
 LIBRARIAN_SUFFIX = """\
 You are the librarian, the namespace the user picks to change this app's Library, \
-which you do with the library tool. Your jobs: add namespaces and change their fields \
-(system_suffix, vars, tools, spawn); write worked examples into them; write custom \
-Python tools, fix them and grant them; and undo the changes made in this chat. Asked \
-what you can do, say these jobs. Read before you write: library.show() lists the \
-namespaces, library.tools() the tools. Write only what the user asked for, and answer by \
-saying what changed, as the tool's result says. A change applies from the user's next \
-message.
+which you do with the library tool. A chat runs in the namespace picked under the \
+message box, whose agents get its system_suffix, vars, tools and worked examples on top \
+of those of the namespaces above it (root, which every namespace builds on, then \
+research for research.papers), so a namespace's own system_suffix holds only what is \
+new. Your jobs: add namespaces and change their fields (system_suffix, vars, tools, \
+spawn); write worked examples into them; write custom Python tools, fix them and grant \
+them; and undo the changes made in this chat. Asked what you can do, say these jobs. \
+Read before you write: library.show() lists the namespaces, library.tools() the tools. \
+Write only what the user asked for: to change a text such as a system_suffix, start \
+from its current text (show(name)) and keep every line they didn't ask to remove; leave \
+spawn unset unless they ask to restrict it, and then keep historian in it, as it \
+answers questions about earlier messages. Answer by saying what changed, as the tool's \
+result says, and anything you removed. The user sees only your answer: quote what they \
+asked to see from a value, or from what an earlier cell printed. A change applies from \
+the user's next message.
 To change a worked example already stored, take its yaml from library.show(name) and \
 edit it with .replace(...) in your cell; never type it out again, as its own repl tags \
 would end your cell and run its code instead. To undo a change, find it with \
 library.changes() and write its before back; never write a before from memory.
-Only the user can change root, a namespace's repl or reasoner, which namespaces grant \
-library, history or page, the system prompt or the run settings, or delete anything (in \
-the Library panel: a namespace in its Namespaces tab, a decomposition in its \
-Decompositions tab, a tool no namespace grants in its Tools tab): say so plainly, and \
-how, as the tool's refusals and description do.
+Only the user can change root (what every chat should do goes in its system_suffix), a \
+namespace's repl or reasoner, or which namespaces grant library, history or page: in \
+the Library panel ("decompositions", top right), a namespace's YAML with Edit YAML in \
+its Namespaces tab, root's worked examples in its Decompositions tab. Only the user can \
+delete anything there (a namespace in the Namespaces tab, a decomposition in the \
+Decompositions tab, a tool no namespace grants in the Tools tab), and change the system \
+prompt or the run settings, by importing a config (deep-reasoning import). Say so \
+plainly, and how, as the tool's refusals and description do.
 """
 # It may hand questions about earlier messages to the historian, but never spawn itself:
 # copying root's hand-off into its own namespace would nest it until max_depth. A
@@ -182,7 +200,7 @@ FRESH_HISTORIAN = {
     "system_suffix": HISTORIAN_SUFFIX,
 }
 FRESH_NAMESPACES = {
-    ROOT: FRESH_ROOT,
+    ROOT: FRESH_ROOT | {"system_suffix": ROOT_SUFFIX},
     HISTORIAN: FRESH_HISTORIAN,
     LIBRARIAN: FRESH_LIBRARIAN,
 }
@@ -205,12 +223,20 @@ HISTORIANS_EXAMPLES = read_examples(
     "wrong_place_example.yaml",
     "nothing_example.yaml",
 )
-# The librarian's: without the first, models write real <repl> tags into the example in
-# their own cell, and the engine runs the example's code instead of the write.
-LIBRARIANS_EXAMPLES = read_examples("worked_example_example.yaml", "undo_example.yaml")
+# The librarian's: without the one writing a worked example, models write real <repl>
+# tags into the example in their own cell, and the engine runs the example's code instead
+# of the write.
+LIBRARIANS_EXAMPLES = read_examples(
+    "read_library_example.yaml", "worked_example_example.yaml", "undo_example.yaml"
+)
 # Root's are those two turns of each, under the same name: every namespace inherits them,
 # but in historian its own take their place.
 HAND_OFF_TURNS = 2
+# Root's hand-offs of questions about the Library, each named as one of the librarian's,
+# so in librarian its own takes its place.
+LIBRARIAN_HAND_OFFS = read_examples(
+    "read_library_hand_off.yaml", "change_library_hand_off.yaml"
+)
 # Why a namespace's agents can't hand a question to *target*, as the panel and the worked
 # example shown in place of the hand-off say.
 CANT_REACH = jinja2.Template(
@@ -370,8 +396,9 @@ description and source (a custom tool's Python, else None), each text cut after 
 characters. tools(name) gives tool `name` whole.
   library.changes(turn=None): what this chat changed in the Library, in each of its \
 messages (this one's so far included) or in message `turn` (numbered from 1, the chat's \
-first): turn, message, what (namespace, decomposition or tool), namespace, name, before \
-(None when it was added) and after, whole; a namespace's with changed (each field it \
+first); what other chats changed is listed under their answers, not here: turn, \
+message, what (namespace, decomposition or tool), namespace, name, before (None when it \
+was added) and after, whole; a namespace's with changed (each field it \
 changed, before and after), and a tool's before and after as {source, factory, \
 settings}. To undo a change, write its before back, from the value changes() returned, \
 never retyped: for a namespace, each field it changed, change_namespace(name, {field: \
@@ -435,10 +462,11 @@ that runs Claude Code (its factory is claude_code), which bills the user's subsc
 a new namespace under one that grants library or runs Claude Code (as its reasoner or a \
 tool); a tool root grants, or one the engine builds from its block alone (no Python of \
 its own); a tool named as a built-in (llm, rag, kg, safe_url, claude_code), one of the \
-app's, a Python keyword or a name the REPL binds itself. The user changes namespaces in \
-the Library panel's Namespaces tab (Edit YAML). There is no method for the system \
-prompt or the run settings: they come from a config the user imports (deep-reasoning \
-import), and only the user can change them.
+app's, a Python keyword or a name the REPL binds itself. The user changes any \
+namespace, root included, in the Library panel's Namespaces tab (Edit YAML): what every \
+chat should do goes in root's system_suffix. There is no method for the system prompt \
+or the run settings (max_iter, max_depth, ...): only the user changes them, by importing \
+a config (deep-reasoning import).
 Each write returns what it did, as {done, what, name} (and namespace, but for a tool); \
 a refusal raises ValueError saying why. One that holds "…(+N chars)", where a brief \
 list cut a text short, is refused: write the whole text."""
@@ -663,7 +691,9 @@ def written_by_an_earlier_version(found, names):
 def seed_new_library(connection):
     for name, fields in FRESH_NAMESPACES.items():
         connection.execute(UPSERT_NAMESPACE, (name, dump(fields)))
-    examples = [(ROOT, hand_off(text)) for text in HISTORIANS_EXAMPLES]
+    # Root's hand-offs to the historian come last: nearer the task, they are followed more.
+    examples = [(ROOT, text) for text in LIBRARIAN_HAND_OFFS]
+    examples += [(ROOT, hand_off(text)) for text in HISTORIANS_EXAMPLES]
     examples += [(HISTORIAN, text) for text in HISTORIANS_EXAMPLES]
     examples += [(LIBRARIAN, text) for text in LIBRARIANS_EXAMPLES]
     rows = [(namespace, parsed(text).name, text) for namespace, text in examples]
@@ -944,7 +974,8 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     grants it. Each Library tool's source is written into
     *tools_dir*, and its factory_from points at that file. Each of the app's tools is told
     the app file, the chat, the run, *tools_dir*, the namespace it enters, and *key_names*,
-    the variables of the worker's environment that hold keys.
+    the variables of the worker's environment that hold keys; the library tool also the
+    namespaces whose chats may write with it (editors).
     """
     tools_dir = Path(tools_dir).resolve()
     tools_dir.mkdir(parents=True, exist_ok=True)
@@ -971,7 +1002,20 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     }
     for name in APP_TOOLS.keys() & config["tools"]:
         config["tools"][name] |= told
+    if LIBRARY_TOOL in config["tools"]:
+        editors = namespaces_seeing(config, LIBRARY_TOOL)
+        config["tools"][LIBRARY_TOOL]["editors"] = editors
     return without_impossible_hand_offs(config) | {"entry_namespace": namespace}
+
+
+def namespaces_seeing(config, tool):
+    """The namespaces whose agents see *tool* in *config*, a plain dict in the engine's
+    shape; none when the engine refuses it, as the worker then does in its own words."""
+    try:
+        _, registry = run_config_and_registry(config)
+    except ValueError:
+        return []
+    return [name for name in registry.names if tool in registry.resolve(name).tools]
 
 
 def default_namespace(library_path):

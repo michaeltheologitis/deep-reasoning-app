@@ -1,0 +1,11 @@
+name: read the Library
+messages:
+  - {role: user, content: "What does the historian's suffix say?"}
+  - role: assistant
+    content: |
+      <think>Read the historian's own YAML as stored, and answer with its system_suffix as the tool returns it, never retyped: the user sees only my answer.</think>
+      <repl>
+      import yaml
+      suffix = yaml.safe_load(library.show("historian")["yaml"])["system_suffix"]
+      FinalAnswer(f"The historian's system_suffix says:\n\n{suffix}")
+      </repl>

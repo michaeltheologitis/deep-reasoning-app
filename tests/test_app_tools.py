@@ -44,7 +44,9 @@ from deep_reasoning.library import (
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
     LIBRARIAN,
+    LIBRARIAN_HAND_OFFS,
     LIBRARIANS_EXAMPLES,
+    LIBRARY_DESCRIPTION,
     UPSERT_TOOL,
     LibraryError,
     add_namespace,
@@ -682,9 +684,9 @@ RUN_CONFIG = {
 }
 
 
-def library_tool(library, namespace="librarian"):
-    """The library tool, as a run of a chat in *namespace* gets it, in a run folder with
-    its spec."""
+def library_func(library, namespace="librarian"):
+    """The library tool, with what its agents are told, as a run of a chat in *namespace*
+    of a fresh Library gets it, in a run folder with its spec."""
     run = library.parent / "run"
     run.mkdir(exist_ok=True)
     (run / SPEC).write_text(yaml.safe_dump({"config": RUN_CONFIG}))
@@ -695,17 +697,26 @@ def library_tool(library, namespace="librarian"):
         "tools_dir": str(run / "tools"),
         "namespace": namespace,
         "key_names": [SHELL_KEY_ENV],
+        "editors": [LIBRARIAN],
     }
-    return build_library(None, told).value
+    return build_library(None, told)
 
 
-# A fresh app file's decompositions: root's hand-offs, then the historian's examples of the
-# same names, then the librarian's.
+def library_tool(library, namespace="librarian"):
+    return library_func(library, namespace).value
+
+
+# A fresh app file's decompositions: root's hand-offs to the librarian, then to the
+# historian, then the historian's examples of the same names, then the librarian's.
 FRESH = [
-    (namespace, parsed(text).name)
-    for namespace in ("root", HISTORIAN)
-    for text in HISTORIANS_EXAMPLES
-] + [(LIBRARIAN, parsed(text).name) for text in LIBRARIANS_EXAMPLES]
+    *[("root", parsed(text).name) for text in LIBRARIAN_HAND_OFFS],
+    *[
+        (namespace, parsed(text).name)
+        for namespace in ("root", HISTORIAN)
+        for text in HISTORIANS_EXAMPLES
+    ],
+    *[(LIBRARIAN, parsed(text).name) for text in LIBRARIANS_EXAMPLES],
+]
 
 
 def stored(library):
@@ -893,6 +904,20 @@ def test_a_chat_whose_namespace_lost_the_grant_mid_run_may_not_write(
     with pytest.raises(LibraryError, match=NOT_THIS_CHAT):
         tool.write_decomposition("drafts", EXAMPLE)
     assert stored(fresh) == before
+
+
+def test_the_tools_agents_are_told_they_may_only_read_in_a_chat_that_cant_write(
+    fresh,
+):
+    assert library_func(fresh).description == LIBRARY_DESCRIPTION
+    told = library_func(fresh, "drafts").description
+    assert told.startswith(LIBRARY_DESCRIPTION)
+    assert told.endswith(
+        "\nIn this chat you may only read the Library: its namespace, drafts, doesn't"
+        " grant library, so the tool refuses every write, here and in any sub-agent."
+        " Asked for a change, don't try it: answer, with FinalAnswer, what you would"
+        " change, and that the user picks librarian under the message box and asks there."
+    )
 
 
 def test_a_busy_app_file_is_a_refusal_in_words(fresh):
