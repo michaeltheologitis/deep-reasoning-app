@@ -48,6 +48,7 @@ from deep_reasoning.app_tools import (
 from deep_reasoning.library import (
     CHANGED_MEANWHILE,
     FIELDS_MAPPING,
+    HERE_LINE,
     HISTORIAN,
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
@@ -56,6 +57,7 @@ from deep_reasoning.library import (
     LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
     MAX_YAML_CHARS,
+    SPAWN_LINE,
     TOO_LONG_ROW,
     UNREAD_DECOMPOSITION,
     UPSERT_DECOMPOSITION,
@@ -1470,6 +1472,72 @@ def test_a_namespace_whose_suffix_no_run_renders_is_refused(fresh, method, name)
     with pytest.raises(LibraryError, match=re.escape(refused)):
         getattr(library_tool(fresh), method)(name, {"system_suffix": "{{ task._x }}"})
     assert stored_namespaces(fresh) == before
+
+
+def run_time_line(tool, name):
+    """The line added at run time after namespace *name*'s own suffix, as show(name)
+    lists it."""
+    [line] = [
+        item["value"]
+        for each in tool.show(name)["fields"]
+        if each["label"] == "System suffix"
+        for item in each["items"]
+        if item["source"] == "added at run time, set here"
+    ]
+    return line
+
+
+@pytest.mark.parametrize(
+    ("method", "name"), [("add_namespace", "research"), ("change_namespace", "drafts")]
+)
+def test_a_suffix_copying_a_line_added_at_run_time_is_refused(fresh, method, name):
+    tool = library_tool(fresh)
+    line = run_time_line(tool, HISTORIAN)
+    before = stored_namespaces(fresh)
+    refusal = "which the app adds at run time: leave it out"
+    with pytest.raises(LibraryError, match=refusal):
+        getattr(tool, method)(name, {"system_suffix": f"Draft.\n\n{line}"})
+    assert stored_namespaces(fresh) == before
+
+
+@pytest.mark.parametrize(
+    ("method", "name", "fields", "line"),
+    [
+        (
+            "add_namespace",
+            "research",
+            {},
+            HERE_LINE.render(name="research", above=False, loops=True),
+        ),
+        (
+            "change_namespace",
+            "drafts",
+            {"spawn": ["drafts"]},
+            SPAWN_LINE.render(allowed=["drafts"], above=False),
+        ),
+    ],
+    ids=["its-own-here-line", "a-spawn-line-it-brings-in"],
+)
+def test_a_suffix_holding_a_line_the_write_itself_brings_in_is_refused(
+    fresh, method, name, fields, line
+):
+    before = stored_namespaces(fresh)
+    with pytest.raises(LibraryError, match="which the app adds at run time"):
+        getattr(library_tool(fresh), method)(
+            name, fields | {"system_suffix": f"Draft.\n\n{line}"}
+        )
+    assert stored_namespaces(fresh) == before
+
+
+def test_a_suffix_the_user_stored_with_a_run_time_line_is_kept_by_a_change(fresh):
+    tool = library_tool(fresh)
+    suffix = f"Draft.\n\n{run_time_line(tool, 'drafts')}"
+    with closing(open_library(fresh)) as connection:
+        change_namespace(connection, "drafts", dump({"system_suffix": suffix}))
+    assert tool.change_namespace("drafts", {"vars": {"term": "fall"}})["done"] == (
+        "changed"
+    )
+    assert own_fields(fresh, "drafts")["system_suffix"] == suffix
 
 
 @pytest.mark.parametrize(

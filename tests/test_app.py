@@ -52,6 +52,7 @@ from deep_reasoning.library import (
     FRESH_NAMESPACES,
     GRANT_IGNORED,
     HAND_OFF_TURNS,
+    HERE_LINE,
     HISTORIAN,
     HISTORIAN_SUFFIX,
     HISTORIANS_EXAMPLES,
@@ -325,7 +326,7 @@ def test_a_fresh_library_shows_llm_granted_at_root_history_and_page_in_the_histo
         {"value": ROOT_SUFFIX.strip(), "source": "inherited from root", "here": False},
         {"value": HISTORIAN_SUFFIX.strip(), "source": "set here", "here": True},
         {
-            "value": NO_SUB_AGENTS,
+            "value": f"{HERE_LINE.render(name=HISTORIAN, above=False, loops=False)} {NO_SUB_AGENTS}",
             "source": "added at run time, set here",
             "here": True,
         },
@@ -2070,8 +2071,8 @@ async def test_root_hands_a_question_about_the_library_to_the_librarian_which_ma
     # Each suffix its agents get, root's first, with where it comes from.
     assert events[-1]["answer"] == (
         f"The historian's agents are told:\n\n{ROOT_SUFFIX.strip()}\n(inherited from"
-        f" root)\n\n{HISTORIAN_SUFFIX.strip()}\n(set here)\n\n{NO_SUB_AGENTS}\n(added"
-        " at run time, set here)"
+        f" root)\n\n{HISTORIAN_SUFFIX.strip()}\n(set here)\n\n"
+        f"{HERE_LINE.render(name=HISTORIAN, above=False, loops=False)} {NO_SUB_AGENTS}\n(added at run time, set here)"
     )
     librarians_prompt = system_prompts(fake.calls[-1:])[0]
     assert "In this chat you may only read the Library: its namespace, root," in (
