@@ -223,7 +223,7 @@ function renderRename(chat) {
 
 // Keep is focused, as in the Library panel's confirms; the row stays a list item, holding the group.
 function renderConfirmDelete(chat) {
-  const scratch = chat.scratch_files ? " Its scratch folder, and any files the agent wrote there, goes too." : "";
+  const scratch = chat.scratch_files ? " Its scratch folder, and any files the agent wrote there, go too." : "";
   return element(
     "li",
     { class: "chat confirm" },
