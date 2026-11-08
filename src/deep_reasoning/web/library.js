@@ -9,6 +9,8 @@ const TOOLS_URL = "api/tools";
 const RUN_SETTINGS_URL = "api/run-settings";
 // the server's answer to a save or delete opened on what has changed since
 const CONFLICT = 409;
+// the server's refusal of what was sent, as against a failure the same text may pass when sent again
+const REFUSED = 400;
 const TABS = ["Decompositions", "Namespaces", "Tools", "Data"];
 const ROOT = "root";
 const ROLES = ["user", "assistant", "system"];
@@ -241,7 +243,7 @@ function editorKey(form, e) {
 }
 
 // Problems stop the form; warnings, read only once there are none, don't. The server's refusal shows until what the form would
-// send changes, and stops it too, but for a conflict, whose save again replaces what is stored now.
+// send changes, and, when it refused the draft itself, stops it too (refusal.stops).
 function check(form) {
   clearTimeout(form.timer);
   const found = form.problems(form.editor.value);
@@ -271,7 +273,8 @@ async function submit(form, e) {
   try {
     saved = await form.save(form.editor.value, form);
   } catch (error) {
-    form.refusal = { problems: error.message.split("\n"), stops: error.status !== CONFLICT };
+    // only a refusal of the draft itself keeps Save off: not a 409, the app not answering, nor a file busy or read only
+    form.refusal = { problems: error.message.split("\n"), stops: error.status === REFUSED && !error.retry };
     // cleared first, so a refusal in the words already shown is said again
     showProblems(form, []);
     showProblems(form, form.refusal.problems);

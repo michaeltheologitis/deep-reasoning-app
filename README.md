@@ -162,7 +162,7 @@ deep-reasoning`. A module file in the chat's folder imports too.
   keyword or built-in, or is a tool's; and a namespace granting a tool of yours that no namespace granted yet, if it
   doesn't build (built first, up to a minute).
 - A save or delete is refused if what you opened changed meanwhile (the librarian, another tab or an import): your
-  draft stays beside what is stored. Any refusal stays shown, and any but that one keeps Save off, until you change
+  draft stays beside what is stored. Any refusal stays shown, and one of what you wrote keeps Save off, until you change
   what you wrote. A delete the panel knows would be refused says why at once. The panel and the
   namespace menu read the Library again when you open the panel or come back to the window.
 - Each run tells the agents of every namespace but root which namespace they are in, so "hand this to stats" reaching

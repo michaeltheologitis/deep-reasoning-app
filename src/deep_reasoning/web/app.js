@@ -851,7 +851,8 @@ async function answered(method, url, body) {
   const answer = await response.json().catch(() => ({}));
   if (response.ok) return answer;
   const problem = typeof answer.detail === "string" ? answer.detail : `${url} answered ${response.status}`;
-  throw Object.assign(new Error(problem), { status: response.status });
+  // retry: the server says the same request may pass later, as when the file was busy
+  throw Object.assign(new Error(problem), { status: response.status, retry: answer.retry === true });
 }
 
 // While the app isn't answering, the page asks again, and a hint shown meanwhile goes once it answers.

@@ -3074,8 +3074,10 @@ def test_a_library_file_that_cannot_be_written_is_refused_in_plain_words(
     added = client.post("/api/chats")
     folder = client.put("/api/default-folder", json={"folder": None})
     assert (added.status_code, folder.status_code) == (400, 400)
+    # retry: the same request may pass once the file can be written, so the page keeps it sendable
     assert added.json() == {
-        "detail": "The Library file can't be written: attempt to write a readonly database."
+        "detail": "The Library file can't be written: attempt to write a readonly database.",
+        "retry": True,
     }
     assert client.get("/api/chats").json() == [chat]
 

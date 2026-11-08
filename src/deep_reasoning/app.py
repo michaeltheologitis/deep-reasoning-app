@@ -212,7 +212,10 @@ def create_app(library, home):
             )
         if not detail:
             raise error
-        return JSONResponse({"detail": detail}, status_code=HTTPStatus.BAD_REQUEST)
+        # The same request may pass once the file can be written, so the page lets it be sent again.
+        return JSONResponse(
+            {"detail": detail, "retry": True}, status_code=HTTPStatus.BAD_REQUEST
+        )
 
     @app.exception_handler(RequestValidationError)
     async def malformed(request, error):
