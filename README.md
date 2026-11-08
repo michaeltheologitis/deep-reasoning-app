@@ -145,7 +145,9 @@ imports too.
   of it but your keys (in `.env`) and the runs' working files and scratch folders.
 - Copy it while the app is stopped (a running app may hold its newest changes in `library.sqlite-wal`), and open a
   copy from a folder you can write to. What a run prints travels with the file: the app withholds providers' keys
-  from it, but can't know other secrets a cell reads from your shell.
+  from it, but can't know other secrets a cell reads from your shell. Keep such a secret (a weather service's API
+  key, say) out of `vars` and tool settings too, which travel with it: set it in the shell that starts the app and
+  read it in a tool with `os.environ`.
 - The library panel's tabs: **Decompositions** adds, edits and deletes worked examples as YAML, root's included;
   **Namespaces** adds, edits (as YAML) and deletes namespaces, showing each field and where it comes from, and the
   run settings, read only (one the engine doesn't read can be deleted); **Tools** shows each tool, what agents are
@@ -204,18 +206,25 @@ imports too.
   `library` tool. A chat in another namespace can't, even through a sub-agent.
 - It changes only what you name, keeps every line of a text you didn't ask to remove (saying what it removed),
   leaves `spawn` unset unless you ask, makes team members siblings rather than children of the planner, unless
-  they should inherit its suffix and worked examples, and says when a worked example disagrees with its namespace's
-  suffix.
+  they should inherit its suffix and worked examples (naming the examples a child inherits), and says when a worked
+  example disagrees with its namespace's suffix. Granting a tool, it says in the namespace's suffix when to use it;
+  changing a var, it names the worked examples that hard-code the old value. What all agents should do it leaves
+  to root's suffix, which you edit in the panel, rather than spreading it over namespaces.
+- It writes a worked example from its steps (the task; each step's reasoning and code; what the code printed), so
+  it never types the tags that would run the example's code in place of its own.
 - Each change shows under its answer and in the tree, opens onto its YAML (or a tool's Python) before and after, and
   applies from your next message; the panel and namespace menu show it at once. Ask it to undo one and it writes the
   before back from the record.
 - A tool it writes, or a tool of yours it grants afresh, is built first as another chat would build it, and refused
-  if it doesn't build; that works only in a chat whose namespace runs the local REPL.
+  if it doesn't build, naming a package the app lacks and how to add it; that works only in a chat whose namespace
+  runs the local REPL.
 - It never changes root, a namespace's REPL or backbone, which namespaces grant `library`, `history` or `page`, the
   system prompt or the run settings; never grants a tool that runs Claude Code (billed to your subscription), or adds
   a namespace under one that grants `library` or runs Claude Code; never replaces a tool root grants or one built
-  into the engine, or names one as a built-in or app tool; never deletes; never writes a key. These limits guard the
-  tool, not the file: the agent's Python isn't sandboxed, and could open the file itself.
+  into the engine, or names one as a built-in or app tool; never deletes; never writes a key, nor a key-shaped
+  value in a var or tool setting named like a secret (`weather_key`, `api_token`; one you stored yourself stays).
+  Asked to, it says why and how you do it in the panel. These limits guard the tool, not the file: the agent's
+  Python isn't sandboxed, and could open the file itself.
 - Any chat can ask about the Library ("what namespaces do I have?", "add a namespace for legal questions"): root hands
   it to a librarian sub-agent, which there only reads, and asked for a change says to pick `librarian` and ask there,
   or how to do it in the panel. A namespace that can't reach `historian` or `librarian` (left out of its `spawn`, or
