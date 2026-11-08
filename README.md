@@ -176,8 +176,9 @@ imports too.
   with `run_all([...])`, as the REPL has no top-level `await`: a worked example calling it that way helps.
 - A tool of yours may not be named as one of Python's built-ins or a module agents' code commonly uses (`len`, `json`,
   `pandas`), which it would hide: the librarian, an import and the panel's grant refuse it. Built to check it (the
-  panel, an import), a tool sees no key: the key variables of the providers a chat can run on hold a placeholder, so
-  one that reads another provider's key is refused, as it would stop every chat.
+  panel, an import), a tool sees no key: only the key variables your shell sets hold a placeholder, as only those
+  reach every chat's run (a key saved in settings goes only to its own provider's chats), so one that reads any
+  other key is refused, as it would stop the chats that lack it.
 - A new Library's root has a `system_suffix`, which every namespace inherits, telling agents about the app and how to
   answer; read, edit or delete it in the panel.
 

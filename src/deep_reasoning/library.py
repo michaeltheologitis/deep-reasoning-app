@@ -393,8 +393,11 @@ DOCUMENTED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 FUNC = "Func"
 NO_DESCRIPTION = "no description found in its source"
 BUILT_DESCRIPTION = "set when it's built: {}"
-# The setting a custom tool's factory may describe it by, as the engine's llm does.
+# The setting a tool's factory may describe it by, as the engine's own do.
 DESCRIBED_BY = "description"
+# The engine's factories that take their own description for an empty one too; the
+# others keep it empty.
+EMPTY_TAKES_DEFAULT = {"kg", "claude_code"}
 BUILTIN_DESCRIPTIONS = {
     "llm": _DEFAULT_LLM_DESCRIPTION,
     "rag": DEFAULT_RAG_DESCRIPTION,
@@ -2686,7 +2689,8 @@ def source_description(source, factory, block):
         for target in node.targets
         if isinstance(target, ast.Name)
     }
-    parameters = [] if isinstance(build, ast.ClassDef) else build.args.args
+    # A class factory's Func(...) is its own instance, which no call here shows.
+    parameters = [] if isinstance(build, ast.ClassDef) else positional(build.args)
     settings = parameters[1].arg if len(parameters) > 1 else None
     for call in ast.walk(build):
         if isinstance(call, ast.Call) and called(call.func) == FUNC:
@@ -2695,6 +2699,11 @@ def source_description(source, factory, block):
             read = partial(read_setting, settings, block)
             return func_description(call, scope, texts, read)
     return ""
+
+
+def positional(arguments):
+    """The parameters a function's *arguments* take by position, in order."""
+    return [*arguments.posonlyargs, *arguments.args]
 
 
 def read_setting(settings, block, node):
@@ -2781,7 +2790,10 @@ def origin(name, factory, block, source):
             "defined_in": None,
             "badge": "built-in",
         }
-        return made, block.get(DESCRIBED_BY) or BUILTIN_DESCRIPTIONS[factory]
+        default = BUILTIN_DESCRIPTIONS[factory]
+        if factory in EMPTY_TAKES_DEFAULT:
+            return made, block.get(DESCRIBED_BY) or default
+        return made, block.get(DESCRIBED_BY, default)
     made = {"file": block["factory_from"], "defined_in": "the Library", "badge": None}
     return made, source_description(source, factory, block) or NO_DESCRIPTION
 

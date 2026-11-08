@@ -14,6 +14,8 @@ import yaml
 from deep_reasoner.config import resolve_api_key
 from deep_reasoner.namespaces import ROOT, build_registry
 from deep_reasoner.tools import load_tool_factory
+from deep_reasoner.tools.base import DEFAULT_CLAUDE_DESCRIPTION
+from deep_reasoner.tools.safe_url import DEFAULT_SAFE_URL_DESCRIPTION
 from deep_reasoner.v2 import DeepReasoner
 from deep_reasoner.v2.agent import _render_context, _rendered_turns
 from deep_reasoner.v2.cli import (
@@ -956,6 +958,20 @@ def build(client, params):
 """
 
 
+# A Func of its own, built by calling the class: no Func(...) call says what it's told.
+CLASS_FACTORY = """from deep_reasoner.primitives import Func
+
+
+def count_words(text):
+    \"\"\"Count the words in text.\"\"\"
+
+
+class build(Func):
+    def __init__(self, client, params):
+        super().__init__(count_words, params.get("description"))
+"""
+
+
 @pytest.mark.parametrize(
     ("source", "description"),
     [
@@ -986,6 +1002,7 @@ def build(client, params):
         (COUNT_WORDS.format(made="Func(lambda text: 0)"), NO_DESCRIPTION),
         (COUNT_WORDS.format(made='Func(params["made"])'), NO_DESCRIPTION),
         (SHADOWED, "Count the words in text."),
+        (CLASS_FACTORY, NO_DESCRIPTION),
         ("def build(client, params):\n    return 1\n", NO_DESCRIPTION),
         ("def build(client, params) 1\n", NO_DESCRIPTION),
     ],
@@ -1000,6 +1017,7 @@ def build(client, params):
         "lambda",
         "unknown-value",
         "shadowed",
+        "a-class-factory",
         "no-func",
         "not-python",
     ],
@@ -1042,17 +1060,46 @@ def test_a_custom_tools_description_is_what_its_source_tells_the_agent(
             {},
             "Counts.",
         ),
+        (
+            'Func(count_words, params.get("description"))',
+            {"description": "Settings say.", "positional_only": True},
+            "Settings say.",
+        ),
     ],
-    ids=["ignored", "read", "got", "got-none", "got-a-default"],
+    ids=["ignored", "read", "got", "got-none", "got-a-default", "positional-only"],
 )
 def test_a_custom_tools_description_is_its_settings_only_when_its_factory_reads_them(
     library, made, settings, description
 ):
+    source = COUNT_WORDS.format(made=made)
+    if settings.pop("positional_only", False):
+        source = source.replace(
+            "def build(client, params):", "def build(client, params, /):"
+        )
     block = {"factory": "build", "factory_from": "count_words.py"} | settings
     with closing(open_library(library)) as connection:
-        store_tool(connection, "count_words", block, COUNT_WORDS.format(made=made))
+        store_tool(connection, "count_words", block, source)
         tools = {tool["name"]: tool for tool in panel(connection)["tools"]}
     assert tools["count_words"]["description"] == description
+
+
+@pytest.mark.parametrize(
+    ("tool", "settings", "description"),
+    [
+        ("safe_url", {"description": ""}, ""),
+        ("safe_url", {}, DEFAULT_SAFE_URL_DESCRIPTION),
+        ("safe_url", {"description": "Fetch a page."}, "Fetch a page."),
+        ("claude_code", {"description": ""}, DEFAULT_CLAUDE_DESCRIPTION),
+    ],
+    ids=["empty", "unset", "set", "empty-where-the-engine-takes-its-own"],
+)
+def test_a_built_in_tools_description_is_its_settings_as_the_engine_reads_them(
+    library, tool, settings, description
+):
+    with closing(open_library(library)) as connection:
+        store_tool(connection, tool, settings, None)
+        tools = {each["name"]: each for each in panel(connection)["tools"]}
+    assert tools[tool]["description"] == description
 
 
 @pytest.mark.parametrize(

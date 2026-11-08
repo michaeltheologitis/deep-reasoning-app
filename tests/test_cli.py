@@ -427,31 +427,37 @@ def test_import_builds_its_tools_with_the_runs_environment_and_no_key_in_it(
     assert not seen.keys() & gone
 
 
-READS_GEMINIS_KEY = """\
+READS_OPENROUTERS_KEY = """\
 import os
 from deep_reasoner.primitives import Func
 
-KEY = os.environ["GEMINI_API_KEY"]
+KEY = os.environ["OPENROUTER_API_KEY"]
 
 def build(client, params):
     return Func(lambda: len(KEY))
 """
 
 
-def test_import_refuses_a_tool_reading_a_key_no_chat_could_run_with(
-    tmp_path, app_home, no_vendor_keys
+def test_import_refuses_a_tool_reading_a_key_only_some_chats_have(
+    tmp_path, app_home, monkeypatch, no_vendor_keys
 ):
-    (tmp_path / "gem.py").write_text(READS_GEMINIS_KEY)
-    config = tmp_path / "gem.yaml"
+    (tmp_path / "router.py").write_text(READS_OPENROUTERS_KEY)
+    config = tmp_path / "router.yaml"
     config.write_text(
-        "tools:\n  ping: {factory: build, factory_from: gem.py}\n"
+        "tools:\n  ping: {factory: build, factory_from: router.py}\n"
         "namespaces:\n  helper: {tools: [ping]}\n"
     )
     import_it = ["import", str(config), "--library", str(tmp_path / "lib.sqlite")]
-    with pytest.raises(SystemExit, match="Tool ping .*KeyError: 'GEMINI_API_KEY'"):
+    refused = "Tool ping .*KeyError: 'OPENROUTER_API_KEY'"
+    with pytest.raises(SystemExit, match=refused):
         cli.main(import_it)
+    # Saved, it reaches only OpenRouter's chats.
     app_home.mkdir()
-    (app_home / ".env").write_text("GEMINI_API_KEY=sk-gemini-saved-here\n")
+    (app_home / ".env").write_text("OPENROUTER_API_KEY=sk-router-saved-here\n")
+    with pytest.raises(SystemExit, match=refused):
+        cli.main(import_it)
+    # In the shell, every chat's run has it.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-router-in-the-shell")
     cli.main(import_it)
 
 

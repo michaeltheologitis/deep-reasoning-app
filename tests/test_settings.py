@@ -192,7 +192,7 @@ def test_a_custom_server_with_no_key_runs_on_a_placeholder(app_home, library):
     assert saved_keys(app_home) == {"DEEP_REASONING_VLLM_URL": LOCAL_URL}
 
 
-def test_a_tool_is_built_keyless_with_the_key_variables_a_run_could_have_and_no_others(
+def test_a_tool_is_built_keyless_with_only_the_key_variables_every_run_has(
     app_home, library, monkeypatch
 ):
     monkeypatch.setenv(OPENAI.key_env, SHELL_KEY)
@@ -200,10 +200,11 @@ def test_a_tool_is_built_keyless_with_the_key_variables_a_run_could_have_and_no_
     save_key(app_home, openrouter, KEY)
     add_server(app_home, library, "vllm", LOCAL_URL, None)
     built_in = keyless_environment(library, app_home)
-    given = [OPENAI.key_env, openrouter.key_env, server_key_env("vllm")]
-    assert {built_in[name] for name in given} == {NOT_A_KEY}
-    # No chat could run with these: a tool reading one would stop every chat.
-    assert not built_in.keys() & {anthropic.key_env, gemini.key_env}
+    assert built_in[OPENAI.key_env] == NOT_A_KEY
+    # A saved key, or a custom server's placeholder, reaches only its own provider's
+    # chats: a tool reading one would stop the others.
+    others = {openrouter.key_env, server_key_env("vllm"), anthropic.key_env}
+    assert not built_in.keys() & (others | {gemini.key_env})
 
 
 def test_a_shell_key_for_a_custom_server_is_used_only_once_saved_for_its_address(
