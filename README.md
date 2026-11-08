@@ -140,7 +140,7 @@ imports too.
   a scratch folder.
 - Each run keeps its own files in `~/.deep-reasoning`, beside the scratch folders, until its chat is deleted: its
   worker's log and what the engine writes. The spec the worker ran, which holds the whole Library and the chat so
-  far, is deleted when the run ends.
+  far, is deleted when the run ends, and any left over when the app starts.
 
 **The Library**
 - One SQLite file holds the namespaces, worked examples, custom tools and run settings, and your chats with their
@@ -162,13 +162,14 @@ imports too.
 - Saving refuses what would fail every run there: a template (`{{` or `{%`) the engine can't render, that names
   anything but what it fills in (`task`, `vars`, `funcs`, `coroutines`, the run settings'
   `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`), includes another or reaches into Python
-  internals; over 1,000,000 characters; YAML whose aliases (`*name`) stand for far more than it holds; text that
-  reads as a line the app adds at run time (below), in a suffix, a var or a worked example, however spaced, cased
-  or split; a name with outer spaces, invisible characters or a word mixing alphabets (a Cyrillic `а` among Latin
-  letters); a namespace named oddly,
-  with a backbone the engine doesn't know, or with a var whose name isn't a Python name, starts with `_`, is a
-  keyword or built-in, or is a tool's; a namespace newly granting a tool marked ✗; and a namespace granting a tool
-  of yours that no namespace granted yet, if it doesn't build (built first, up to a minute).
+  internals; over 1,000,000 characters; YAML whose aliases (`*name`) stand for far more than it holds; a claim
+  shaped like a line the app adds at run time (below) that isn't so there (another namespace, a sandbox it doesn't
+  run in, sub-agents it can't use), in a suffix, a var or a worked example, however spaced, cased or split; a name
+  with outer, doubled or odd spaces, invisible characters or a word mixing Latin letters with Cyrillic or Armenian
+  ones (a Cyrillic `а`); a namespace named oddly, with a backbone the engine doesn't know, or with a var whose name
+  isn't a Python name, starts with `_`, is a keyword or built-in, or is a tool's; a namespace granting a tool marked
+  ✗ or one the Library lacks; and a namespace granting a tool of yours that no namespace granted yet, if it doesn't
+  build (built first, up to a minute).
 - A save or delete is refused if what you opened changed meanwhile (the librarian, another tab or an import): your
   draft stays beside what is stored. Any refusal stays shown, and one of what you wrote keeps Save off, until you change
   what you wrote. A delete the panel knows would be refused says why at once. The panel and the
@@ -176,14 +177,16 @@ imports too.
 - Each run tells the agents of every namespace but root which namespace they are in, so "hand this to stats" reaching
   `stats` is done there; of one whose REPL isn't the one above it (root: the local one), where their Python runs;
   and, when it sets `spawn`, where they can hand work. The panel shows that line under its System suffix, "added by
-  the app at run time", and marks a listed namespace that is gone; no save stores text that reads as one.
-- A shared Library's rows the engine can't read are left out, so the rest works, and so is every row a save would
-  refuse: a worked example with a template or name no save takes, or stored under a name its YAML doesn't give; a
-  namespace or tool named as no save names one (`Root`, `historian `, a tool `my-tool` or `json`); text that reads
-  as a run's own line; YAML whose aliases stand for millions of values. The panel marks each ✗ with why, to fix or
-  delete. Runs ignore a left-out tool's grants, and its Delete takes them out with it; a row named as one of the
-  app's own tools is listed under it, and Delete removes only the row. Its templates run sandboxed, reaching no
-  Python internals.
+  the app at run time", and marks a listed namespace that is gone; no save stores a false one.
+- A shared Library's rows the engine can't read are left out, so the rest works, and so is a row that could pass for
+  another or hides a mismatch: a worked example with a template no save takes, named with a hidden character, odd
+  spaces or mixed alphabets, or stored under a name its YAML doesn't give; a namespace named with a space, a
+  character outside printable ASCII or as root (`Root`, `historian `, `root.stats`); a tool named as no save names
+  one (`my-tool`, `json`); YAML whose aliases stand for millions of values. The panel marks each ✗ with why, to fix
+  or delete; an older Library's other names read as before. A false claim shaped like a run's line stays, marked
+  with a warning. Runs ignore a grant of a tool left out or not there, and the panel warns of it; a left-out tool
+  deletes though granted, its grants left in their YAML, still ignored. A row named as one of the app's own tools
+  is listed under it, and Delete removes only the row. Its templates run sandboxed, reaching no Python internals.
 - Every run builds every tool some namespace grants, whatever its chat's namespace: a granted tool's code runs at the
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never

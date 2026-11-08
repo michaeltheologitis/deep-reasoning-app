@@ -35,16 +35,18 @@ from deep_reasoning.library import (
     UPSERT_TOOL,
     LibraryError,
     accepted,
+    check_decomposition_name,
     check_name,
-    check_saved,
     check_size,
     check_tool_block,
     check_tool_name,
     check_written,
+    claim_refusal,
     config_of,
     decomposition_problems,
     dump,
     expanded_size,
+    false_claims,
     granted,
     granted_in,
     handed_to,
@@ -415,7 +417,7 @@ def check_decompositions(namespaces):
         )
     for name, each in pairs:
         with about(f'Namespace {name}, decomposition "{each.name}"'):
-            check_saved(each)
+            check_decomposition_name(each.name)
             check_size(dump(each.model_dump()), "Its YAML")
 
 
@@ -443,6 +445,19 @@ def check_namespaces(connection, before, changes):
         with about(namespace_named(name)):
             check_size(dump(own), "Its YAML")
             check_written(connection, name, name not in before["namespaces"])
+
+
+def check_claims(changes, registry):
+    """Raise unless each decomposition the import writes makes no claim in the shape of a
+    run's line that isn't so in its namespace, as *registry* resolves it."""
+    for (namespace, name), each in changes["decompositions"].items():
+        if namespace in registry.names and (
+            claims := false_claims(registry, namespace, texts_in(each))
+        ):
+            refusal = claim_refusal("It", claims[0])
+            raise LibraryError(
+                f'Namespace {namespace}, decomposition "{name}": {refusal}'
+            )
 
 
 def check_renders(changes, decompositions, names, stored):
@@ -631,6 +646,7 @@ def import_config(connection, path, secrets=(), environment=None, within=None):
         store_changes(connection, changes)
         later = accepted(connection)
         check_namespaces(connection, before, changes)
+        check_claims(changes, later[1])
         names = template_names(later[0].prompt_template_variables)
         check_renders(changes, decompositions, names, read["decompositions"])
         built = to_build(before, imported, changes)

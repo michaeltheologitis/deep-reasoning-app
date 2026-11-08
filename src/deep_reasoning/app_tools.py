@@ -58,6 +58,7 @@ from deep_reasoning.library import (
     LIBRARY_DESCRIPTION,
     LIBRARY_TOOL,
     LOCAL_REPL,
+    MAX_YAML_CHARS,
     PAGE_DESCRIPTION,
     TAKEN_NAMES,
     LibraryError,
@@ -72,6 +73,7 @@ from deep_reasoning.library import (
     count,
     distrust,
     dump,
+    expanded_size,
     fields_of,
     in_chain_order,
     left_out_note,
@@ -172,8 +174,7 @@ LOCKED_FIELDS = ("repl", "reasoner")
 USERS_CHOICE = "the user's choice, in the Library panel's Namespaces tab (Edit YAML)."
 NOT_A_TOOL = (
     "name, source and factory should be text, and settings a dict of plain values (text,"
-    " numbers, True, False, None, and lists and dicts of them keyed by text, each one"
-    " used once), or None."
+    " numbers, True, False, None, and lists and dicts of them keyed by text), or None."
 )
 PLAIN = (str, int, float, bool, type(None))
 # Deeper settings are refused, as YAML writes them by recursion.
@@ -236,9 +237,8 @@ NESTED_TOO_DEEP = "…(nested too deep)"
 # And all a value holds past this many characters: no run of the app's returns one near
 # it, and a shared file's aliases can make millions of short texts.
 MAX_TOTAL_CHARS = 1_000_000
-# What is said in a list, or under CUT_KEY in a dict, of the items left out past it.
+# What is said in a list, or as a key of a dict, of the items left out past it.
 MORE = "…(+{:,} more items)"
-CUT_KEY = "…"
 # errors and find list at most this many rows, then one saying how many more.
 MAX_FOUND = 50
 # What find shows on each side of a match.
@@ -455,18 +455,21 @@ def agent_row(row: Holder) -> dict[str, Any]:
     }
 
 
-def cut(value: Any, limit: int = MAX_VALUE_CHARS) -> Any:
-    """*value*, copied, with each text past *limit* characters cut there, saying how much
-    is left out, each list or dict past MAX_VALUE_DEPTH levels marked in its place, and,
-    once MAX_TOTAL_CHARS characters are copied, the rest of each list or dict left out,
-    saying how much: aliases in a shared file's YAML can make millions of short texts."""
+def cut(value: Any, limit: int | None = MAX_VALUE_CHARS) -> Any:
+    """*value*, copied, with each text past *limit* characters (unless None) cut there,
+    saying how much is left out, each list or dict past MAX_VALUE_DEPTH levels marked in
+    its place, and, once MAX_TOTAL_CHARS characters are copied, the rest of each list or
+    dict left out, saying how much: aliases in a shared file's YAML can make millions of
+    short texts."""
     left = MAX_TOTAL_CHARS
 
     def copied(each: Any, depth: int) -> Any:
         nonlocal left
         left -= 1
         if isinstance(each, str):
-            text = each if len(each) <= limit else cut_text(each, limit)
+            text = (
+                each if limit is None or len(each) <= limit else cut_text(each, limit)
+            )
             left -= len(text)
             return text
         if not isinstance(each, dict | list):
@@ -483,7 +486,14 @@ def cut(value: Any, limit: int = MAX_VALUE_CHARS) -> Any:
         more = len(items) - len(kept)
         if isinstance(each, list):
             return [item for _, item in kept] + ([MORE.format(more)] if more else [])
-        return dict(kept) | ({CUT_KEY: MORE.format(more)} if more else {})
+        copy = dict(kept)
+        if more:
+            # Keyed by the mark itself, lengthened past any key the dict holds.
+            mark = MORE.format(more)
+            while mark in copy:
+                mark = f"…{mark}"
+            copy[mark] = None
+        return copy
 
     return copied(value, 0)
 
@@ -1031,11 +1041,26 @@ def tag_written(line: str) -> str:
     return line.replace(tag, REAL_TAGS[tag]) if tag in REAL_TAGS else line
 
 
+def written_out(value: Any, what: str) -> str:
+    """*value*, plain (plain()), as YAML text, each list or dict it shares written out
+    where it is; a LibraryError, saying *what* it is, for one too long so, or holding
+    itself, which never ends."""
+    if expanded_size(value, MAX_YAML_CHARS) > MAX_YAML_CHARS:
+        raise LibraryError(
+            f"{what} may be at most {MAX_YAML_CHARS:,} characters; written out, this"
+            " holds more."
+        )
+    try:
+        return dump(value)
+    except RecursionError as error:
+        raise LibraryError(f"{what} nests too deeply to write.") from error
+
+
 def yaml_text(value: Any) -> str:
     """*value*, YAML text or a dict of plain values, as YAML text, from its first line
     that isn't blank."""
     if type(value) is dict and plain(value):
-        return dump(value)
+        return written_out(value, "The YAML")
     # Exactly str: a subclass could compare unequal to "root" and still name it.
     if type(value) is not str:
         raise LibraryError(NOT_TEXT)
@@ -1079,14 +1104,14 @@ def code_problems(text: str) -> list[str]:
 
 def plain(value: Any) -> bool:
     """Whether *value* is text, a number, True, False or None, or a list or dict of them
-    keyed by text, nested at most MAX_NESTING deep, each list and dict in it once (so
-    none holds itself)."""
+    keyed by text, nested at most MAX_NESTING deep; one it shares is read once, and
+    written out (written_out()) wherever it is."""
     stack, seen = [(value, 0)], set()
     while stack:
         each, depth = stack.pop()
-        if type(each) in PLAIN:
+        if type(each) in PLAIN or id(each) in seen:
             continue
-        if type(each) not in (list, dict) or id(each) in seen or depth == MAX_NESTING:
+        if type(each) not in (list, dict) or depth == MAX_NESTING:
             return False
         seen.add(id(each))
         if type(each) is dict and any(type(key) is not str for key in each):
@@ -1117,7 +1142,7 @@ def check_tool(
         raise LibraryError(problem)
     check_tool_block(name, {"factory": factory, "factory_from": tool_file(name)})
     check_size(source, "The source")
-    check_size(dump(settings), "The settings as YAML")
+    check_size(written_out(settings, "The settings as YAML"), "The settings as YAML")
     check_whole([source, *texts_in(settings)])
     # texts holds the source itself.
     check_no_key(
@@ -1413,7 +1438,8 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def show(name: str | None = None, whole: bool = False) -> Any:
         """Every namespace in brief, or namespace *name* in full: its fields as the panel
         shows them, and the decompositions its agents are shown, as a run resolves them,
-        each text cut past SHOWN_CHARS unless *whole*. Not the panel's Delete refusals:
+        each text cut past SHOWN_CHARS unless *whole*, and as a whole past
+        MAX_TOTAL_CHARS either way. Not the panel's Delete refusals:
         an agent that can't delete took them as reasons not to edit."""
         with app_file(library, "ro") as connection, reading(connection):
             read = read_library(connection)
@@ -1429,7 +1455,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         found = in_full(
             named(rows, name, "namespace", "show()"), read, config, registry
         )
-        return found if whole else cut(found, limit=SHOWN_CHARS)
+        return cut(found, limit=None if whole else SHOWN_CHARS)
 
     def tools(name: str | None = None) -> Any:
         """Every tool in brief, or tool *name* whole, with its source."""

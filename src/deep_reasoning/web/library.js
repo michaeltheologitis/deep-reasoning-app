@@ -747,6 +747,13 @@ function checkMark(problems) {
   return element("span", { class: `lib-check ${count ? "failed" : "passed"}`, role: "img", "aria-label": label, title: label }, count ? "✗" : "✓");
 }
 
+// what a namespace agents still run in may need looking at, as a shared file's claim in the shape of a run's line
+function warningMark(warnings) {
+  const count = warnings.length;
+  const label = `${count} warning${count === 1 ? "" : "s"}`;
+  return count > 0 && element("span", { class: "lib-check failed", role: "img", "aria-label": label, title: label }, "!");
+}
+
 function decompositionRow(namespace, decomposition) {
   const { name, yaml, problems } = decomposition;
   const key = decompositionKey(namespace, name);
@@ -805,8 +812,8 @@ function renderNamespaces() {
   const tree = library.namespaces.map((namespace) => {
     const star = namespace.name === library.default_namespace && element("span", { class: "lib-star" }, "★ new chats start here");
     const name = element("span", { class: "lib-name ns-name", title: namespace.name }, nameParts(namespace.name));
-    const head = [name, star, namespace.problems.length > 0 && checkMark(namespace.problems)];
-    const content = () => [problemList(namespace.problems), namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
+    const head = [name, star, namespace.problems.length > 0 ? checkMark(namespace.problems) : warningMark(namespace.warnings)];
+    const content = () => [problemList(namespace.problems), problemList(namespace.warnings), namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
     return element("div", { style: `--depth: ${namespace.depth}` }, disclosure(namespaceKey(namespace.name), head, content));
   });
   const run = disclosure("run-settings", element("span", { class: "lib-name" }, "Run settings"), runSettings);

@@ -505,6 +505,13 @@ def forget_spec(home: Path, run: str) -> None:
     (home / RUNS / run / SPEC).unlink(missing_ok=True)
 
 
+def forget_specs(home: Path) -> None:
+    """Delete every run's spec.yaml in *home* as the app starts, when no run is going:
+    one an older version kept, or one a run's end left as the app stopped."""
+    for spec in (home / RUNS).glob(f"*/{SPEC}"):
+        spec.unlink(missing_ok=True)
+
+
 def new_run_id() -> str:
     """The start time in UTC, to the microsecond: run ids sort in the order the runs
     began, across a change of the local clock."""
