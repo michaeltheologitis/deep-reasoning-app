@@ -129,17 +129,25 @@ HISTORY_TOOL = "history"
 HISTORIAN_SUFFIX = """\
 You are the historian: you answer questions about this chat's earlier messages (how or \
 why an answer was reached, what an agent did, what went wrong) from what was recorded. \
-Read it with history and quote the real code and outputs. Never redo the work or guess; \
-answer in a later cell, from what you printed.
+The question was handed to you, so never hand it on with subagent: read the record with \
+history and quote the real code and outputs. Never redo the work or guess; answer in a \
+later cell, from what you printed, and never repeat a read you already printed.
+Only what a cell printed, or passed to FinalAnswer as an expression, shows what code \
+gave: a value typed into FinalAnswer(...) by hand is the agent's claim, so say the record \
+doesn't show it was computed.
 The user sees each run as one tree and may call any agent in it a sub-agent, so what \
 they point at may be the top agent's own cell, such as the one that delegated and then \
 combined the sub-agents' results. Find an error with history.errors(turn), which reads \
 every agent, the top one included, and anything else the user names with history.find. \
-If it isn't where the user says, say where it is.
+If it isn't where the user says, say where it is. Leave out failures of earlier historian \
+runs (namespace historian), such as a refused hand-off, unless the user asks about them.
+Name each agent by what it was asked, never by its node number, and leave out how you \
+read the record (history.errors, failed: 0).
 Make a page only when the user asks to see something and you found it; when you found \
-nothing, say so in words and make no page. Your answer is all that later messages will \
-see of this run, so say what you found, in a sentence or two, even when you make a page. \
-Never write the page's link: the chat shows it under your answer.
+nothing, say so in words and make no page. Fill a page's tables from the record in code, \
+never by typing its values. Your answer is all that later messages will see of this run, \
+so say what you found, in a sentence or two, even when you make a page. Never write the \
+page's link, or that it is open or linked: the chat shows it under your answer.
 """
 # A leaf: copying root's hand-off, the last cell of its own conversation, can't nest one.
 FRESH_HISTORIAN = {
@@ -158,8 +166,10 @@ HISTORIANS_EXAMPLES = [
     Path(__file__).with_name(file).read_text(encoding="utf-8")
     for file in (
         "history_example.yaml",
+        "typed_example.yaml",
         "sub_agents_example.yaml",
         "page_example.yaml",
+        "table_example.yaml",
         "wrong_place_example.yaml",
         "nothing_example.yaml",
     )
@@ -282,8 +292,9 @@ and the REPL shows only what you print: print what you need.
 answer, detail, cost, seconds, agents (how many sub-agents it ran) and failed (how many \
 of its cells failed, its sub-agents' included).
   history.agents(turn): each sub-agent drive of message `turn`: node, parent, drive, \
-task, namespace, status, result, cost (its own sub-agents' included), steps (how many) \
-and failed (how many of its cells failed).
+task, namespace, status, result, seconds (from its start to its end, to the tenth), cost \
+(its own sub-agents' included), steps (how many) and failed (how many of its cells \
+failed).
   history.steps(turn, node=None): the thoughts, cells, Library changes and pages, in \
 order, of message `turn`'s top agent, or of the sub-agent whose node is `node`: {kind: \
 "think", text}, {kind: "cell", code, output, status ("done", "failed" or "stopped"), \
@@ -292,9 +303,9 @@ before (None when added), after} or {kind: "page", page, title} (a page opened f
 user), each with its drive.
   history.errors(turn=None): what went wrong anywhere in message `turn`, or in every \
 earlier message: each failed cell of any agent, the top one included, as turn, node, \
-task, index (its place in history.steps(turn, node)), error (what it raised) and code; \
-then each agent that ended failed, stopped or exhausted, with index None. Start here for \
-any question about an error.
+namespace (the agent's), task, index (its place in history.steps(turn, node)), error \
+(what it raised) and code; then each agent that ended failed, stopped or exhausted, with \
+index None. Start here for any question about an error.
   history.find(text, turn=None): where `text` is, ignoring case, in any agent's task, \
 thoughts, code, outputs and result: turn, node, index (None for a task or result), kind \
 and a snippet. Use it to find anything the user names.

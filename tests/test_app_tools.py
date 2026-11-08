@@ -147,6 +147,23 @@ def test_an_agents_cost_counts_its_own_calls_and_its_sub_agents(library):
     )
 
 
+def test_an_agent_is_timed_from_its_start_to_its_end_to_the_tenth_as_the_tree_shows_it(
+    library,
+):
+    plant(library, CHAT, recorded("nested"))
+    events = recorded("nested")
+    times = {
+        (event["kind"], event["node"]): event["t"]
+        for event in events
+        if event["kind"] in ("agent.start", "agent.end")
+    }
+    survey, read = history_of(library).agents(1)
+    for agent in (survey, read):
+        node = agent["node"]
+        took = times["agent.end", node] - times["agent.start", node]
+        assert agent["seconds"] == round(took, 1)
+
+
 def test_steps_drill_down_through_the_sub_agents_each_cell_started(library):
     plant(library, CHAT, recorded("nested"))
     history = history_of(library)
@@ -346,7 +363,7 @@ def test_errors_list_each_failed_cell_the_top_agents_included_and_each_failed_ag
     plant(library, CHAT, recorded("nested"))
     plant(library, CHAT, recorded("failing"))
     history = history_of(library)
-    top = {"turn": 2, "node": None, "task": "Survive failures."}
+    top = {"turn": 2, "node": None, "namespace": "root", "task": "Survive failures."}
     assert history.errors(1) == []
     assert history.errors(2) == [
         top
@@ -355,7 +372,8 @@ def test_errors_list_each_failed_cell_the_top_agents_included_and_each_failed_ag
         top
         | {"index": 2, "error": f"openai.{MODEL_DOWN}"}
         | {"code": "r = subagent('Break the model.')\nprint(r)"},
-        {"turn": 2, "node": 2, "task": "Break the model.", "index": None}
+        {"turn": 2, "node": 2, "namespace": "root", "task": "Break the model."}
+        | {"index": None}
         | {"error": f"It ended failed: {MODEL_DOWN}", "code": None},
     ]
     assert history.errors() == history.errors(2)
@@ -427,9 +445,9 @@ def test_errors_and_find_read_a_crafted_record_whose_fields_are_no_text(library)
     plant(library, CHAT, run)
     history = history_of(library)
     assert history.errors(1) == [
-        {"turn": 1, "node": None, "task": "Crafted.", "index": 1, "error": None}
-        | {"code": 7},
-        {"turn": 1, "node": 3, "task": None, "index": None}
+        {"turn": 1, "node": None, "namespace": None, "task": "Crafted.", "index": 1}
+        | {"error": None, "code": 7},
+        {"turn": 1, "node": 3, "namespace": None, "task": None, "index": None}
         | {"error": "It ended failed: 5", "code": None},
     ]
     assert history.find("odd") == []

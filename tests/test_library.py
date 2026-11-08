@@ -198,8 +198,10 @@ def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_mess
     assert shown == {ROOT: HAND_OFFS, HISTORIAN: HISTORIANS, LIBRARIAN: HAND_OFFS}
     assert [each.name for each in HAND_OFFS] == [
         "explain an earlier answer",
+        "tell a typed answer from a computed one",
         "say what each sub-agent did",
         "show it on a page",
+        "put a table on a page",
         "find where it really went wrong",
         "say when there is nothing to show",
     ]
@@ -1103,8 +1105,8 @@ def test_the_seeded_examples_and_the_engines_own_namespace_examples_pass(library
         for row in namespaces
         for each in row["decompositions"]
     ]
-    # the ten seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
-    assert len(rows) == 17
+    # the fourteen seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
+    assert len(rows) == 21
     assert rows == [(name, []) for name, _ in rows]
 
 

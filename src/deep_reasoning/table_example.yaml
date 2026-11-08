@@ -1,0 +1,45 @@
+name: put a table on a page
+messages:
+  - {role: user, content: "Put the sub-agents of my first message on a page, as a table: what each was asked, its answer and its cost."}
+  - role: assistant
+    content: |
+      <think>The user asks for a page with a table of an earlier message's sub-agents. I can't open a page, and what they were asked and answered is recorded, not shown here: the historian reads the record and opens pages. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
+      <repl>
+      FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))
+      </repl>
+  - {role: user, content: "Put the sub-agents of my first message on a page, as a table: what each was asked, its answer and its cost."}
+  - role: assistant
+    content: |
+      <think>Read message 1's sub-agents before building the table.</think>
+      <repl>
+      agents = history.agents(1)
+      print(agents)
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      [{'node': 2, 'parent': 1, 'drive': 1, 'task': 'Sum the first 10 primes.', 'namespace': 'root', 'status': 'done', 'result': '129', 'seconds': 0.1, 'cost': 0.0001526, 'steps': 2, 'failed': 0}, {'node': 3, 'parent': 1, 'drive': 1, 'task': 'Find the 10th Fibonacci number.', 'namespace': 'root', 'status': 'done', 'result': '55', 'seconds': 0.0, 'cost': 0.0001496, 'steps': 2, 'failed': 0}]
+      </observation>
+  - role: assistant
+    content: |
+      <think>Two sub-agents ran. Build the table's rows from the record I read, in code, never by typing its values, then open the page.</think>
+      <repl>
+      p = page.new("The sub-agents of message 1")
+      p.table([{"asked": a["task"], "answer": a["result"], "cost": a["cost"]} for a in agents])
+      print(p.open())
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      Opened the page "The sub-agents of message 1"; the chat links it under your answer.
+      </observation>
+  - role: assistant
+    content: |
+      <think>The page is open, and the chat links it under my answer. Say what the table shows, in short.</think>
+      <repl>
+      FinalAnswer(
+          "Message 1 had two sub-agents: one summed the first 10 primes, 129, and the "
+          "other found the 10th Fibonacci number, 55. The page's table lists each with "
+          "what it was asked, its answer and its cost."
+      )
+      </repl>

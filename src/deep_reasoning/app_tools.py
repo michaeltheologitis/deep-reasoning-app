@@ -101,6 +101,8 @@ Holder = dict[str, Any]
 STARTED_WITH = ("node", "parent", "drive", "task", "namespace")
 AGENT_FIELDS = (*STARTED_WITH, "status", "result")
 ENDED_WITH = ("outcome", "answer", "detail", "cost", "seconds")
+# An agent's time, to the tenth of a second, as the tree shows it.
+SECONDS_DIGITS = 1
 LOOKUP_FIELDS = ("node", "parent", "cell")
 ROOT_LOCKED = (
     "root is locked: the library tool never writes it. Write into another namespace."
@@ -351,7 +353,9 @@ def turn_row(number: int, events: list[Event], tree: Tree) -> dict[str, Any]:
 
 def agent_row(row: Holder) -> dict[str, Any]:
     fields = {key: row[key] for key in AGENT_FIELDS}
+    seconds = row["seconds"]
     return fields | {
+        "seconds": None if seconds is None else round(seconds, SECONDS_DIGITS),
         "cost": total_cost(row["costs"]),
         "steps": len(row["steps"]),
         "failed": failed_cells(row),
@@ -502,14 +506,15 @@ class History:
 
     def agents_of(self, turn: int) -> Iterator[tuple[Any, list[Holder]]]:
         """Message *turn*'s agents as drives() reaches them, each as its node and drives:
-        the top agent first, as node None, its drive with the task, status and result a
-        sub-agent's has. A sub-agent's row named None or the root's node, as a file from
+        the top agent first, as node None, its drive with the task, namespace, status and
+        result a sub-agent's has. A sub-agent's row named None or the root's node, as a file from
         someone else may hold, is the top agent's to drives(), so it is left out."""
         events, tree = self._runs[turn - 1]
         start, end = events[0], events[-1]
         outcome = end.get("outcome")
         top = tree.root | {
             "task": start["prompt"],
+            "namespace": start.get("namespace"),
             "status": "done" if outcome == "answered" else outcome,
             "result": end.get("answer") or end.get("detail"),
         }
@@ -559,14 +564,14 @@ class History:
             at = {"turn": turn, "node": node}
             yield from (
                 at
-                | {"task": row["task"], "index": index}
+                | {"namespace": row["namespace"], "task": row["task"], "index": index}
                 | {"error": error_of(step["output"]), "code": step["code"]}
                 for index, row, step in indexed(drives)
                 if failed(step)
             )
             yield from (
                 at
-                | {"task": row["task"], "index": None}
+                | {"namespace": row["namespace"], "task": row["task"], "index": None}
                 | {"error": ending(row), "code": None}
                 for row in drives
                 if row["status"] in ENDED_BADLY

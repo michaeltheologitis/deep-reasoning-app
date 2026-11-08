@@ -18,8 +18,8 @@ messages:
   - role: user
     content: |
       <observation>
-      [{'turn': 1, 'node': None, 'task': 'How many primes are below 20,000?', 'index': 1, 'error': "ValueError: invalid literal for int() with base 10: '1,033'", 'code': "parts = [subagent(f'Count the primes in [{a}, {a + 10_000}).') for a in (0, 10_000)]\nprint(parts)\nprint(sum(int(part) for part in parts))"}]
-      [{'node': 2, 'parent': 1, 'drive': 1, 'task': 'Count the primes in [0, 10000).', 'namespace': 'root', 'status': 'done', 'result': '1229', 'cost': 0.0001236, 'steps': 1, 'failed': 0}, {'node': 3, 'parent': 1, 'drive': 1, 'task': 'Count the primes in [10000, 20000).', 'namespace': 'root', 'status': 'done', 'result': '1,033', 'cost': 0.0001251, 'steps': 1, 'failed': 0}]
+      [{'turn': 1, 'node': None, 'namespace': 'root', 'task': 'How many primes are below 20,000?', 'index': 1, 'error': "ValueError: invalid literal for int() with base 10: '1,033'", 'code': "parts = [subagent(f'Count the primes in [{a}, {a + 10_000}).') for a in (0, 10_000)]\nprint(parts)\nprint(sum(int(part) for part in parts))"}]
+      [{'node': 2, 'parent': 1, 'drive': 1, 'task': 'Count the primes in [0, 10000).', 'namespace': 'root', 'status': 'done', 'result': '1229', 'seconds': 0.1, 'cost': 0.0001462, 'steps': 1, 'failed': 0}, {'node': 3, 'parent': 1, 'drive': 1, 'task': 'Count the primes in [10000, 20000).', 'namespace': 'root', 'status': 'done', 'result': '1,033', 'seconds': 0.0, 'cost': 0.0001477, 'steps': 1, 'failed': 0}]
       </observation>
   - role: assistant
     content: |

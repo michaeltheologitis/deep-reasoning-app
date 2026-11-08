@@ -98,12 +98,16 @@ REPL_EXEC = re.compile(
 # What a follow-up's run is told ahead of the chat's earlier turns.
 EARLIER_TURNS_NOTE = """\
 This conversation began before this run: the user's earlier messages and your answers \
-follow, then the user's next message. Their runs have ended, so their variables are gone \
-and their sub-agents can't be called again. Each earlier answer is shown as the \
-FinalAnswer it gave. How it was worked out (its thoughts, cells and its sub-agents' \
-steps) is in neither this conversation nor ctx, but it is kept: to say how an earlier \
-answer was worked out or what its sub-agents did, or to show it on a page, do as the \
-worked examples do; never guess or redo it."""
+follow, then the user's next message. Any worked examples above are demonstrations, not \
+this chat's messages: its first message is the first one after this note. The earlier \
+runs have ended: their variables are gone, and their sub-agents can't be called again. \
+Each earlier answer is shown only as the FinalAnswer it gave; how it was worked out (its \
+thoughts, cells and sub-agents' steps) is kept, but in neither this conversation nor \
+ctx. So a message about an earlier answer, in any language (how it was reached, whether \
+it is right, what its code gave, what its sub-agents did or were told, or a page or \
+table of it), is about that record: do as the worked examples do. Working it out again \
+would be a new run, not the one that answered, so never answer such a message that way, \
+or by guessing; work it out again only when the user asks for it to be redone."""
 # An earlier turn's assistant turn: the cell that gave its answer, as the engine's worked
 # examples show one, or why it has none. The cell says its work is folded away: shown the
 # answer alone, root took a vague question about it ("did any of them have trouble?") as
@@ -111,7 +115,7 @@ worked examples do; never guess or redo it."""
 ANSWER = jinja2.Template(
     """\
 {% if turn.outcome == "answered" and turn.answer is not none %}<repl>
-# folded: the work behind this answer (its thoughts, cells and any sub-agents) isn't shown here, only the answer
+# folded: the work behind this answer (its thoughts, cells and any sub-agents) isn't shown here, only the answer; asked about it, in any words or language, do as the worked examples do
 FinalAnswer({{ answer }})
 </repl>
 {%- elif turn.outcome == "failed" %}(No answer: the run failed: {{ turn.detail }})

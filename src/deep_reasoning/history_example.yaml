@@ -3,7 +3,7 @@ messages:
   - {role: user, content: "How did you get that?"}
   - role: assistant
     content: |
-      <think>The user asks how I got an earlier answer: what I actually did then, not how it could be done. The earlier turn shows only the answer. What I did (my code, its output, any sub-agents) is recorded, not shown here: naming a method now, however likely, would be a guess, and redoing the work would show a new run, not the one that answered. The historian reads the record. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
+      <think>The user asks how I got an earlier answer, the same question in any words or language ("how did you work that out?", "tu l'as trouvé comment ?", "wie bist du darauf gekommen?"): what I actually did then, not how it could be done. The earlier turn shows only the answer. What I did (my code, its output, any sub-agents) is recorded, not shown here: naming a method now, however likely, would be a guess, and redoing the work would show a new run, not the one that answered. The historian reads the record. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
       <repl>
       FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))
       </repl>
@@ -17,11 +17,11 @@ messages:
   - role: user
     content: |
       <observation>
-      [{'kind': 'cell', 'code': '17 * 23\nFinalAnswer(391)', 'output': 'FinalAnswer: 391', 'status': 'done', 'agents': [], 'drive': 1}]
+      [{'kind': 'cell', 'code': 'FinalAnswer(17 * 23)', 'output': 'FinalAnswer: 391', 'status': 'done', 'agents': [], 'drive': 1}]
       </observation>
   - role: assistant
     content: |
-      <think>The record shows one cell: I evaluated 17 * 23 in Python and answered with its result.</think>
+      <think>The record shows one cell, which answered with the value of 17 * 23 that Python computed: 391.</think>
       <repl>
-      FinalAnswer("I computed 17 * 23 directly in Python and answered with the result, 391.")
+      FinalAnswer("I computed 17 * 23 in Python, in the cell that answered: FinalAnswer(17 * 23) gave 391.")
       </repl>
