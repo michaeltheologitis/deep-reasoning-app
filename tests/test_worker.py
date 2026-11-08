@@ -9,7 +9,7 @@ import pytest
 from deep_reasoner.tools import ToolBuildError
 from deep_reasoner.v2 import agent
 from deep_reasoner.v2.cli import V2Config, build_reasoner, close_run
-from deep_reasoner.v2.messages import code
+from deep_reasoner.v2.messages import code, func
 from deep_reasoner.v2.repl_coro import REPL
 from genai_prices import Usage, calc_price
 
@@ -21,9 +21,12 @@ from deep_reasoning.worker import (
     cost_of,
     final_answer_of,
     output_of,
+    tool_line,
 )
 
 ROOT, CHILD = 1, 2
+# The engine's own, as it is before a run names any tool: tool_line words lines as it does.
+ENGINE_DESCRIBE = func.describe
 OPENAI_URL = "https://api.openai.com/v1"
 OWN_SERVER_URL = "http://127.0.0.1:8000/v1"
 EXIT_S = 30
@@ -500,3 +503,23 @@ def test_a_run_whose_namespaces_cant_be_read_still_says_which_tool_doesnt_build(
         "no index\nTake it out of the tools of each namespace that grants it in the"
         " Library panel's Namespaces tab (Edit YAML)."
     )
+
+
+def count_words(text: str, sep: str | None = None) -> int:
+    """How many words text has."""
+    return len(text.split(sep))
+
+
+def undocumented(x, *rest, scale=1, **options):
+    return x
+
+
+@pytest.mark.parametrize(
+    ("value", "description"),
+    [(count_words, ""), (count_words, "Counts words."), (undocumented, ""), (len, "")],
+    ids=["docstring", "description", "nothing", "a-builtin"],
+)
+def test_a_tool_named_as_its_value_is_shown_as_the_engine_shows_it(value, description):
+    bound = func(value.__name__, value, description)
+    shown = tool_line(bound.name, bound.value, bound.description)
+    assert shown == ENGINE_DESCRIBE(bound)

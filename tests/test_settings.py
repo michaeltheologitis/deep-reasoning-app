@@ -16,6 +16,7 @@ from deep_reasoning.settings import (
     GEMINI_MODELS,
     LAST_MODEL,
     NO_KEY,
+    NOT_A_KEY,
     OPENAI_MODELS,
     OPENROUTER_MODELS,
     SERVERS,
@@ -29,6 +30,7 @@ from deep_reasoning.settings import (
     is_chat_model,
     key_of,
     key_status,
+    keyless_environment,
     list_models,
     provider_list,
     read_settings,
@@ -190,6 +192,21 @@ def test_a_custom_server_with_no_key_runs_on_a_placeholder(app_home, library):
     assert saved_keys(app_home) == {"DEEP_REASONING_VLLM_URL": LOCAL_URL}
 
 
+def test_a_tool_is_built_keyless_with_only_the_key_variables_every_run_has(
+    app_home, library, monkeypatch
+):
+    monkeypatch.setenv(OPENAI.key_env, SHELL_KEY)
+    openrouter, anthropic, gemini = VENDORS[1:]
+    save_key(app_home, openrouter, KEY)
+    add_server(app_home, library, "vllm", LOCAL_URL, None)
+    built_in = keyless_environment(library, app_home)
+    assert built_in[OPENAI.key_env] == NOT_A_KEY
+    # A saved key, or a custom server's placeholder, reaches only its own provider's
+    # chats: a tool reading one would stop the others.
+    others = {openrouter.key_env, server_key_env("vllm"), anthropic.key_env}
+    assert not built_in.keys() & (others | {gemini.key_env})
+
+
 def test_a_shell_key_for_a_custom_server_is_used_only_once_saved_for_its_address(
     app_home, library, tmp_path, monkeypatch
 ):
@@ -285,6 +302,8 @@ def test_server_key_variables_are_derived_from_their_names():
         (DEFAULT_FOLDER, '["/home/me"]'),
         (DEFAULT_FOLDER, '"relative/folder"'),
         (DEFAULT_FOLDER, json.dumps("C:\\Users\\me")),
+        (DEFAULT_FOLDER, json.dumps("/home/me/caf\udce9")),
+        (LAST_MODEL, json.dumps({"provider": "vllm", "name": "qwen\ud800"})),
     ],
 )
 def test_a_setting_this_app_could_not_have_written_reads_as_unset(library, key, text):

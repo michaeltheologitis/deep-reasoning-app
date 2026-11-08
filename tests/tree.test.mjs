@@ -329,16 +329,22 @@ test("a link or image to an address DOMPurify would drop shows as its text and t
 });
 
 test("a link to an address DOMPurify keeps stays a link, its address shown only by the link", () => {
-  const html = markdownHtml("[home](https://a.example) and [mail](mailto:me@a.example) and [page](/pages/x)");
+  const html = markdownHtml("[home](https://a.example) and [mail](mailto:me@a.example) and [below](#part)");
   assert.equal(anchors(html).length, 3);
-  assert.doesNotMatch(html, /\(https:|\(mailto:|\(\/pages/);
+  assert.doesNotMatch(html, /\(https:|\(mailto:|\(#/);
 });
 
-test("an answer's links may be web, mail or relative addresses only", () => {
-  for (const href of ["https://a.example", "http://a.example/x?y", "mailto:me@a.example", "/pages/x", "#part", "notes.html"]) {
+test("a link to a file in the chat's folder, which the app doesn't serve, shows as its text and the address", () => {
+  const html = markdownHtml("Saved: [Download the CSV](first_20_squares.csv), [cubes.csv](cubes.csv) and [chart](./out/chart.png) [page](/pages/x).");
+  assert.equal(anchors(html).length, 0);
+  assert.match(html, /Download the CSV \(first_20_squares\.csv\), cubes\.csv and chart \(\.\/out\/chart\.png\) page \(\/pages\/x\)\./);
+});
+
+test("an answer's links may be web, mail or a place in it only", () => {
+  for (const href of ["https://a.example", "http://a.example/x?y", "mailto:me@a.example", "#part"]) {
     assert.match(href, SANITIZE.ALLOWED_URI_REGEXP, href);
   }
-  for (const href of ["javascript:alert(1)", "JaVaScRiPt:x", "data:text/html,x", "vbscript:x", "file:///etc/passwd", "ftp://a.example"]) {
+  for (const href of ["javascript:alert(1)", "JaVaScRiPt:x", "data:text/html,x", "vbscript:x", "file:///etc/passwd", "ftp://a.example", "/pages/x", "notes.html", "./a.csv", "//a.example"]) {
     assert.doesNotMatch(href, SANITIZE.ALLOWED_URI_REGEXP, href);
   }
 });

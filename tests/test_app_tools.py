@@ -367,6 +367,17 @@ def test_events_naming_a_node_or_cell_no_run_could_have_are_left_out(library):
     assert left_out == [4, 5, 6]
 
 
+def test_a_message_that_isnt_utf_8_reads_with_a_replacement_character(library):
+    run = plant(library, CHAT, crafted())
+    started = b'{"seq": 1, "t": 1.0, "kind": "turn.start", "prompt": "ca\xff"}'
+    with closing(open_library(library)) as connection:
+        connection.execute(
+            "UPDATE events SET data = CAST(? AS TEXT) WHERE run = ? AND seq = 1",
+            (started, run),
+        )
+    assert [turn["message"] for turn in history_of(library).turns()] == ["ca�"]
+
+
 def test_the_earlier_runs_are_read_once_and_handed_out_as_copies(library):
     plant(library, CHAT, recorded("nested"))
     history = history_of(library)
@@ -1713,6 +1724,8 @@ HOLDS_ITSELF.append(HOLDS_ITSELF)
             ("counter", RAISING.replace("build", "claude_code"), "claude_code"),
             'names factory "claude_code", one of the engine\'s own',
         ),
+        (("sum", RAISING, "build"), 'Tool "sum" would hide Python\'s own sum'),
+        (("json", RAISING, "build"), 'Tool "json" would hide the json module'),
     ],
     ids=[
         "name-not-plain-text",
@@ -1728,6 +1741,8 @@ HOLDS_ITSELF.append(HOLDS_ITSELF)
         "a-key-in-a-bytes-literal",
         "a-source-too-deep-to-parse",
         "a-factory-named-as-the-engines-claude-code",
+        "a-name-python-has-built-in",
+        "a-name-of-a-module-agents-use",
     ],
 )
 def test_a_tool_the_tool_refuses_says_why_and_stores_nothing(

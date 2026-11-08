@@ -16,6 +16,8 @@ const COST_NA = `cost\u00a0${UNKNOWN_COST}`;
 const PRICE_UNKNOWN = "this model's price isn't known";
 const UNFINISHED = "a model call never finished, so what it cost isn't known";
 const WAITING = "waiting for the model…";
+// before the root agent starts: its run is building the tools its namespaces grant
+const STARTING = "starting…";
 const FINAL_ANSWER = "FinalAnswer: ";
 // marked's tokens that leave an answer plain: shown as written, raw HTML included
 const PLAIN_TOKENS = new Set(["paragraph", "space", "text", "escape", "br", "html"]);
@@ -23,11 +25,12 @@ const PLAIN_TOKENS = new Set(["paragraph", "space", "text", "escape", "br", "htm
 const WORD_CHAR = /(?![\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}\p{scx=Thai}\p{scx=Lao}\p{scx=Khmer}\p{scx=Myanmar}\uFF00-\uFFEF])[\p{L}\p{N}_]/u;
 const NEW_TAB_LINK = '<a target="_blank" rel="noopener noreferrer" ';
 const ANCHOR_TAG = /<\/?a\b[^>]*>/g;
-// what the HTML marked makes may hold, and no more: its tags and attributes, and links to the web, mail or a relative address
+// what the HTML marked makes may hold, and no more: its tags and attributes, and links to the web, mail or a place in the
+// answer; the app serves nothing at a relative address, such as a file's name in the chat's folder
 const SANITIZE = {
   ALLOWED_TAGS: ["a", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "input", "li", "ol", "p", "pre", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"],
   ALLOWED_ATTR: ["align", "checked", "class", "disabled", "href", "rel", "start", "target", "title", "type"],
-  ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
+  ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|#)/i,
 };
 const THEME_KEY = "theme";
 const LINE_CHARS = 100;
@@ -409,7 +412,7 @@ function renderUnder(agent) {
   return out(failureView(agent.result.split("\n")[0], { model: agent.model, after: CUT_SEPARATOR }), { tone });
 }
 
-const waiting = () => element("div", { class: "waiting" }, WAITING);
+const waiting = (word = WAITING) => element("div", { class: "waiting" }, word);
 
 function renderAgent(agent) {
   const open = opened.has(agent);
@@ -473,8 +476,8 @@ function newMarkdown({ Marked, Renderer, Tokenizer }) {
       image(href, title, alt) {
         return this.link(href, title, alt || escapeHtml(href));
       },
-      // an image in a link is already a link, so its text alone goes in; an address DOMPurify would drop, such as sandbox:,
-      // shows as text after it, never as a link that does nothing
+      // an image in a link is already a link, so its text alone goes in; an address DOMPurify would drop, such as sandbox:
+      // or a file's name, shows as text after it, never as a link that does nothing
       link(href, title, text) {
         const inner = text.replace(ANCHOR_TAG, "");
         if (!followable(href)) return inner === escapeHtml(href) ? inner : `${inner} (${escapeHtml(href)})`;
@@ -566,6 +569,7 @@ export {
   MS_PER_SECOND,
   PRICE_UNKNOWN,
   SANITIZE,
+  STARTING,
   UNFINISHED,
   UNKNOWN_COST,
   WAITING,
