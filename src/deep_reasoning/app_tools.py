@@ -238,10 +238,15 @@ class Tree:
         default_factory=lambda: {"node": None, "drive": None, "costs": [], "steps": []}
     )
     rows: list[Holder] = field(default_factory=list)
+    model: Any = None
     nodes: dict[Any, tuple[Holder, Any]] = field(default_factory=dict)
     cells: dict[Any, dict[str, Any]] = field(default_factory=dict)
     # The drives each cell started, by the cell's id(), for a page's copy of it.
     started: dict[int, list[Holder]] = field(default_factory=dict)
+
+
+def start_turn(tree: Tree, event: Event) -> None:
+    tree.model = event.get("model")
 
 
 def start_agent(tree: Tree, event: Event) -> None:
@@ -301,8 +306,14 @@ def end_cell(tree: Tree, event: Event) -> None:
 
 
 def add_usage(tree: Tree, event: Event) -> None:
-    """A call's cost counts for its agent and every agent above it."""
+    """A call's cost counts for its agent and every agent above it; a sub-agent's own
+    call names the model it asked for on its row, when that isn't the run's."""
     node, seen = event.get("node"), set()
+    row = holder_of(tree, node)
+    model = event.get("model")
+    own = event.get("own") is True and row is not None and row is not tree.root
+    if own and isinstance(model, str) and model != tree.model:
+        row["model"] = model
     # Each once: a file from someone else may name a node its own ancestor.
     while node in tree.nodes and node not in seen:
         seen.add(node)
@@ -332,6 +343,7 @@ def end_turn(tree: Tree, event: Event) -> None:
 
 
 FOLDS = {
+    "turn.start": start_turn,
     "agent.start": start_agent,
     "think": think,
     "cell.start": start_cell,

@@ -1,15 +1,15 @@
-{"seq": 1, "t": 1793166977.6785486, "kind": "turn.start", "run": "20261028-055617-674279", "chat": "recorded", "prompt": "Keep a spinner going.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261028-055617-674279"}
-{"seq": 2, "t": 1793166978.973735, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Keep a spinner going.", "namespace": "root", "drive": 1}
-{"seq": 3, "t": 1793166979.1315262, "kind": "usage", "node": 1, "model": "gpt-6-luna", "tokens_in": 1087, "tokens_out": 4, "cost": 0.0001107}
-{"seq": 4, "t": 1793166979.1317365, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Spin.'))"}
-{"seq": 5, "t": 1793166979.1359847, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Spin.", "namespace": "root", "drive": 1}
-{"seq": 6, "t": 1793166979.1940012, "kind": "usage", "node": 2, "model": "gpt-6-luna", "tokens_in": 1084, "tokens_out": 5, "cost": 0.0001109}
-{"seq": 7, "t": 1793166979.1942966, "kind": "cell.start", "node": 2, "cell": 2, "code": "print('warming up')"}
-{"seq": 8, "t": 1793166979.195293, "kind": "cell.end", "node": 2, "cell": 2, "code": "print('warming up')", "output": "warming up", "status": "done"}
-{"seq": 9, "t": 1793166979.2004151, "kind": "usage", "node": 2, "model": "gpt-6-luna", "tokens_in": 1092, "tokens_out": 6, "cost": 0.0001122}
-{"seq": 10, "t": 1793166979.2005477, "kind": "cell.start", "node": 2, "cell": 3, "code": "while True:\n    pass"}
-{"seq": 11, "t": 1793166979.2065291, "kind": "cell.end", "node": 2, "cell": 3, "code": "while True:\n    pass", "output": "", "status": "stopped"}
-{"seq": 12, "t": 1793166979.2067587, "kind": "agent.end", "node": 2, "status": "stopped", "result": null, "detail": null}
-{"seq": 13, "t": 1793166979.2077632, "kind": "cell.end", "node": 1, "cell": 1, "code": "print(subagent('Spin.'))", "output": "", "status": "stopped"}
-{"seq": 14, "t": 1793166979.20798, "kind": "agent.end", "node": 1, "status": "stopped", "result": null, "detail": null}
-{"seq": 15, "t": 1793166979.208169, "kind": "turn.end", "outcome": "stopped", "answer": null, "detail": null, "cost": 0.0003338, "seconds": 1.5296204090118408}
+{"seq": 1, "t": 1794136972.798684, "kind": "turn.start", "run": "20261108-112252-774427", "chat": "recorded", "prompt": "Keep a spinner going.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261108-112252-774427"}
+{"seq": 2, "t": 1794136973.9540076, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Keep a spinner going.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794136974.0622537, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1340, "tokens_out": 4, "cost": 0.001344}
+{"seq": 4, "t": 1794136974.0624547, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Spin.'))"}
+{"seq": 5, "t": 1794136974.0688078, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Spin.", "namespace": "root", "drive": 1}
+{"seq": 6, "t": 1794136974.1133564, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1337, "tokens_out": 5, "cost": 0.0013419999999999999}
+{"seq": 7, "t": 1794136974.1135857, "kind": "cell.start", "node": 2, "cell": 2, "code": "print('warming up')"}
+{"seq": 8, "t": 1794136974.1148787, "kind": "cell.end", "node": 2, "cell": 2, "code": "print('warming up')", "output": "warming up", "status": "done"}
+{"seq": 9, "t": 1794136974.125419, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1345, "tokens_out": 6, "cost": 0.001351}
+{"seq": 10, "t": 1794136974.1255648, "kind": "cell.start", "node": 2, "cell": 3, "code": "while True:\n    pass"}
+{"seq": 11, "t": 1794136974.1315663, "kind": "cell.end", "node": 2, "cell": 3, "code": "while True:\n    pass", "output": "", "status": "stopped"}
+{"seq": 12, "t": 1794136974.131853, "kind": "agent.end", "node": 2, "status": "stopped", "result": null, "detail": null}
+{"seq": 13, "t": 1794136974.133163, "kind": "cell.end", "node": 1, "cell": 1, "code": "print(subagent('Spin.'))", "output": "", "status": "stopped"}
+{"seq": 14, "t": 1794136974.133303, "kind": "agent.end", "node": 1, "status": "stopped", "result": null, "detail": null}
+{"seq": 15, "t": 1794136974.1334016, "kind": "turn.end", "outcome": "stopped", "answer": null, "detail": null, "unfinished_calls": 0, "cost": 0.004037, "seconds": 1.3347177505493164}
