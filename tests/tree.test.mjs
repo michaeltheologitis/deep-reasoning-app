@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { CLAMPS, SANITIZE, clamped, element, known, markdownHtml, opened, renderAgent, renderAnswer, renderStep } from "../src/deep_reasoning/web/tree.js";
+import { CLAMPS, SANITIZE, clamped, element, known, markdownHtml, opened, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
 
 globalThis.marked = createRequire(import.meta.url)("../src/deep_reasoning/web/vendor/marked.min.js");
 
@@ -214,4 +214,11 @@ test("an answer's links may be web, mail or relative addresses only", () => {
   for (const href of ["javascript:alert(1)", "JaVaScRiPt:x", "data:text/html,x", "vbscript:x", "file:///etc/passwd", "ftp://a.example"]) {
     assert.doesNotMatch(href, SANITIZE.ALLOWED_URI_REGEXP, href);
   }
+});
+
+test("a cell that raised or was stopped before its FinalAnswer gave one reads as a Python cell, not the final answer", () => {
+  const cell = { kind: "cell", code: "FinalAnswer('it's)", output: "SyntaxError: unterminated string literal", status: "failed", agents: [] };
+  assert.equal(stepLabel(cell), "Python(FinalAnswer('it's))");
+  assert.equal(stepLabel({ ...cell, output: null, status: "stopped" }), "Python(FinalAnswer('it's))");
+  assert.equal(stepLabel({ ...cell, output: "FinalAnswer: 'x'", status: "done" }), "Final answer");
 });

@@ -920,20 +920,26 @@ FAILED_IN_THE_TOP_AGENT = (
 EXAMPLES_FIRST_MESSAGE = {
     "explain an earlier answer": (
         "What is 17 times 23?",
-        {"What is 17 times 23?": [repl("17 * 23", "FinalAnswer(391)")]},
+        {"What is 17 times 23?": [repl("FinalAnswer(17 * 23)")]},
+    ),
+    # The answer typed in by hand, and wrong: pow gives 184.
+    "tell a typed answer from a computed one": (
+        "What is 13**31 mod 1009?",
+        {"What is 13**31 mod 1009?": [repl("pow(13, 31, 1009)", "FinalAnswer(512)")]},
     ),
     "say what each sub-agent did": SUB_AGENTS_FIRST_MESSAGE,
     "show it on a page": SUB_AGENTS_FIRST_MESSAGE,
+    "put a table on a page": SUB_AGENTS_FIRST_MESSAGE,
     "find where it really went wrong": FAILED_IN_THE_TOP_AGENT,
     "say when there is nothing to show": SUB_AGENTS_FIRST_MESSAGE,
 }
-# A cost depends on the prompt, which the examples are part of.
-COST = re.compile(r"'cost': [^,}]+")
+# A cost depends on the prompt, which the examples are part of, and a time on the run.
+VARIES = re.compile(r"'(cost|seconds)': [^,}]+")
 
 
 def as_recorded(observation):
-    """*observation* as any run of an example prints it: its costs masked."""
-    return COST.sub("'cost': …", observation)
+    """*observation* as any run of an example prints it: its costs and times masked."""
+    return VARIES.sub(r"'\1': …", observation)
 
 
 # How a hand-off reaches the historian: the question, root's hand-off, then the question
@@ -1036,6 +1042,30 @@ async def test_root_hands_show_me_on_a_page_to_the_historian_whose_page_its_turn
         "Sum the first 10 primes.",
         "129",
     )
+
+
+@pytest.mark.anyio
+async def test_the_historians_table_on_a_page_holds_the_sub_agents_as_recorded(
+    library_on, connect
+):
+    [text] = [
+        each
+        for each in HISTORIANS_EXAMPLES
+        if parsed(each).name == "put a table on a page"
+    ]
+    _, _, events, turns, pages = await ask_as_the_example(library_on, connect, text)
+    [[table]] = [page["blocks"] for page in pages]
+    sub_agents = [
+        each for each in kinds(turns[0]["events"], "agent.start") if each["parent"]
+    ]
+    answers = {
+        each["node"]: each["result"] for each in kinds(turns[0]["events"], "agent.end")
+    }
+    assert table["columns"] == ["asked", "answer", "cost"]
+    assert [row[:2] for row in table["rows"]] == [
+        [each["task"], answers[each["node"]]] for each in sub_agents
+    ]
+    assert events[-1]["answer"].startswith("Message 1 had two sub-agents")
 
 
 @pytest.mark.anyio

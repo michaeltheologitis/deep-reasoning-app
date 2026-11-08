@@ -94,7 +94,8 @@ def folded_answer(literal: str) -> str:
     the note that its work is folded away."""
     return (
         "<repl>\n# folded: the work behind this answer (its thoughts, cells and any "
-        f"sub-agents) isn't shown here, only the answer\nFinalAnswer({literal})\n</repl>"
+        "sub-agents) isn't shown here, only the answer; asked about it, in any words or "
+        f"language, do as the worked examples do\nFinalAnswer({literal})\n</repl>"
     )
 
 

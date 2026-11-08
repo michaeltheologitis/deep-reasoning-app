@@ -33,24 +33,25 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   chat's earlier runs (each message's sub-agents, thoughts and cells) with the app's own `history` tool, and root
   hands such questions to a sub-agent there, with your message as you wrote it and the conversation so far: root's
   worked examples, which every namespace inherits, show the hand-off, and the historian's show reading `history`
-  before answering. `history` lists what went wrong anywhere in a message, the top agent's own cells included
-  (`errors`), finds any text you name (`find`), and cuts each text past 2,000 characters, so a huge output can't
-  swamp the model (`full` reads one step whole). A namespace whose `spawn` list leaves `historian` out can't hand
-  off, nor can any once `historian` is deleted: a run there is shown, in each hand-off's place, the same question
-  answered by saying it can't, so the agent says so rather than guess or pass the question to another namespace; a
-  hand-off of your own to a namespace it can't reach is shown answered there as best it can.
-  The Library is left as it is; the panel says so under the namespace's Hand-offs, and deleting `historian` warns of
-  it. If you take `history` out of it, delete root's hand-off examples (open each in the Decompositions tab and
-  Delete it): they send questions where nothing can read the history. If you take `page` out of it, delete `show it
-  on a page` and `find where it really went wrong` from root and historian.
+  before answering. `history` lists each sub-agent with its result, seconds and cost (`agents`), what went wrong
+  anywhere in a message, the top agent's own cells included, with each agent's namespace (`errors`), finds any text
+  you name (`find`), and cuts each text past 2,000 characters, so a huge output can't swamp the model (`full` reads
+  one step whole). A namespace whose `spawn` list leaves `historian` out can't hand off, nor can any once
+  `historian` is deleted: a run there is shown, in each hand-off's place, the same question answered by saying it
+  can't, so the agent says so rather than guess or pass the question to another namespace; a hand-off of your own to
+  a namespace it can't reach is shown answered there as best it can. The Library is left as it is; the panel says so
+  under the namespace's Hand-offs, and deleting `historian` warns of it. If you take `history` out of it, delete
+  root's hand-off examples (open each in the Decompositions tab and Delete it): they send questions where nothing
+  can read the history. If you take `page` out of it, delete `show it on a page`, `put a table on a page` and `find
+  where it really went wrong` from root and historian.
 - An older Library keeps what it has: one made since `history` came reads it at root, with a worked example there,
   and needs nothing. For the historian, run `reset`, which deletes the Library and every chat, or add `historian` in
-  the panel (`tools: [history, page]`, `spawn: []`, and the examples a new Library has) and give root the five
-  hand-off examples in place of its own `explain an earlier answer`. If your historian lacks `page`, add it to its
-  tools and give root and historian the examples a new Library has. One made after `page` came but before `errors`
-  has a `show it on a page` that prints the page's `/pages/…` link: replace it in root and historian with a new
-  Library's, and add a new Library's `find where it really went wrong` and `say when there is nothing to show` to
-  both.
+  the panel (`tools: [history, page]`, `spawn: []`, and the examples a new Library has) and give root the hand-off
+  examples a new Library has in place of its own `explain an earlier answer`. If your historian lacks `page`, add it
+  to its tools and give root and historian the examples a new Library has. One made after `page` came but before
+  `errors` has a `show it on a page` that prints the page's `/pages/…` link: replace it in root and historian with a
+  new Library's, and add a new Library's `find where it really went wrong` and `say when there is nothing to show`
+  to both.
 - The agent can show you something on a page of its own, with the app's `page` tool: Markdown text, tables, and steps
   or sub-agents of the chat's earlier messages, copied from their record and drawn as the chat draws them. A line
   under the answer, and a step in its tree, open the page in a new tab; the answer itself says what was found, and

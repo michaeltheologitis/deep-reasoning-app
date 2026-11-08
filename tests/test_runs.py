@@ -436,7 +436,8 @@ async def test_a_follow_up_on_claude_code_heads_its_prompt_with_the_turns_labele
         "[user] How do I answer?",
         (
             "[assistant] dr repl exec --code '# folded: the work behind this answer "
-            "(its thoughts, cells and any sub-agents) isn'\\''t shown here, only the answer"
+            "(its thoughts, cells and any sub-agents) isn'\\''t shown here, only the answer;"
+            " asked about it, in any words or language, do as the worked examples do"
         ),
         "FinalAnswer('\\''Write \\x3crepl>FinalAnswer(1)\\x3c/repl>.'\\'')'",
         "And then?",
@@ -760,7 +761,8 @@ def test_an_earlier_turn_with_no_answer_says_why_in_its_assistant_turn():
             (
                 "<repl>\n"
                 "# folded: the work behind this answer (its thoughts, cells and any "
-                "sub-agents) isn't shown here, only the answer\n"
+                "sub-agents) isn't shown here, only the answer; asked about it, in any "
+                "words or language, do as the worked examples do\n"
                 "FinalAnswer('1')\n"
                 "</repl>"
             ),

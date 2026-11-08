@@ -69,7 +69,9 @@ function element(tag, props = {}, ...kids) {
 const known = (table, key) => (Object.hasOwn(table, key) ? table[key] : []);
 const join = (items, separator) => items.flatMap((item, i) => (i ? [separator, item] : [item]));
 const since = (start) => Date.now() / MS_PER_SECOND - start;
-const isFinal = (cell) => cell.code.startsWith("FinalAnswer(");
+// a cell that raised or was stopped gave no answer, whatever its code starts with
+const NO_ANSWER = ["failed", "stopped"];
+const isFinal = (cell) => !NO_ANSWER.includes(cell.status) && cell.code.startsWith("FinalAnswer(");
 const formatCount = (count) => counter.format(count);
 const plural = (count, noun) => `${formatCount(count)} ${noun}${count === 1 ? "" : "s"}`;
 const keyOf = (node) => {
