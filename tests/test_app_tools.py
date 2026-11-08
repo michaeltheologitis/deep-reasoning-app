@@ -800,59 +800,102 @@ def test_a_written_decomposition_is_stored_and_the_result_gives_its_problems(
     assert ("drafts", done["name"]) in stored(fresh)
 
 
-@pytest.mark.parametrize(
-    ("content", "stored_content"),
-    [
-        (
-            "|\n    [repl]\n    FinalAnswer(3)\n    [/repl]\n",
-            "|\n    <repl>\n    FinalAnswer(3)\n    </repl>\n",
-        ),
-        ("[repl]FinalAnswer(3)[/repl]\n", "<repl>FinalAnswer(3)</repl>\n"),
-    ],
-    ids=["block", "one-line"],
-)
 def test_a_decomposition_written_with_repl_placeholders_is_stored_with_the_real_tags(
-    fresh, content, stored_content
+    fresh,
 ):
-    answer = "- role: assistant\n  content: "
+    answer = (
+        "- role: assistant\n  content: |\n    [repl]\n    FinalAnswer(3)\n    [/repl]\n"
+    )
     tool = library_tool(fresh)
-    tool.write_decomposition("drafts", EXAMPLE + answer + content)
+    tool.write_decomposition("drafts", EXAMPLE + answer)
     assert tool.show("drafts")["decompositions"] == [
         {
             "name": "count the tickets",
-            "yaml": EXAMPLE + answer + stored_content,
+            "yaml": EXAMPLE + answer.replace("[", "<").replace("]", ">"),
             "problems": ["Turn 2 (assistant) has no <think>…</think>."],
         }
     ]
 
 
+def test_a_decomposition_with_no_placeholder_tag_is_stored_as_typed(fresh):
+    typed = (
+        "name: count the tickets  # as typed\n"
+        "messages:\n"
+        '- {role: user, content: "How many tickets are open?"}\n'
+    )
+    tool = library_tool(fresh)
+    tool.write_decomposition("drafts", typed)
+    [stored_yaml] = [each["yaml"] for each in tool.show("drafts")["decompositions"]]
+    assert stored_yaml == typed
+
+
+ASKED = "What does tags[repl] return?"
+CELL = "<think>Look it up.</think>\n<repl>\nFinalAnswer(tags[repl])\n</repl>"
+
+
 @pytest.mark.parametrize(
-    "turns",
+    ("turns", "contents"),
     [
         (
-            "- role: user\n  content: What does tags[repl] return?\n"
-            "- role: assistant\n  content: |\n    <think>Look it up.</think>\n"
-            "    [repl]\n    FinalAnswer(tags[repl])\n    [/repl]\n"
+            (
+                f"- role: user\n  content: {ASKED}\n"
+                "- role: assistant\n  content: |\n    <think>Look it up.</think>\n"
+                "    [repl]\n    FinalAnswer(tags[repl])\n    [/repl]\n"
+            ),
+            [ASKED, f"{CELL}\n"],
         ),
         (
-            '- {role: user, content: "What does tags[repl] return?"}\n'
-            "- {role: assistant, content: "
-            '"<think>Look it up.</think>\\n[repl]\\nFinalAnswer(tags[repl])\\n[/repl]"}\n'
+            (
+                f'- {{role: user, content: "{ASKED}"}}\n'
+                "- {role: assistant, content: "
+                '"<think>Look it up.</think>\\n[repl]\\nFinalAnswer(tags[repl])\\n[/repl]"}\n'
+            ),
+            [ASKED, CELL],
+        ),
+        (
+            (
+                "- role: user\n  content: Strip the tags.\n"
+                "- role: assistant\n  content: |\n    <think>t</think>\n    [repl]\n"
+                "    xs = [repl]\n"
+                '    FinalAnswer(text.replace("[repl]", ""))\n'
+                "    [/repl]\n"
+            ),
+            [
+                "Strip the tags.",
+                (
+                    "<think>t</think>\n<repl>\nxs = [repl]\n"
+                    'FinalAnswer(text.replace("[repl]", ""))\n</repl>\n'
+                ),
+            ],
+        ),
+        (
+            (
+                f"- role: user\n  content: &asked {ASKED}\n"
+                "- role: assistant\n  content: &cell |\n    <think>Look it up.</think>\n"
+                "    [repl]\n    FinalAnswer(tags[repl])\n    [/repl]\n"
+                "- role: user\n  content: *asked\n"
+                "- role: assistant\n  content: *cell\n"
+            ),
+            [ASKED, f"{CELL}\n", ASKED, f"{CELL}\n"],
+        ),
+        (
+            (
+                "- role: user\n  content: Answer 3.\n"
+                '- {role: assistant, content: "<think>t</think> [repl]FinalAnswer(3)[/repl]"}\n'
+            ),
+            ["Answer 3.", "<think>t</think> [repl]FinalAnswer(3)[/repl]"],
         ),
     ],
-    ids=["block", "quoted"],
+    ids=["block", "quoted", "in-code", "alias", "not-on-a-line-of-its-own"],
 )
-def test_only_an_assistant_turns_placeholder_tags_are_written_as_real_ones(
-    fresh, turns
+def test_only_an_assistant_turns_placeholder_tags_on_lines_of_their_own_are_written(
+    fresh, turns, contents
 ):
     tool = library_tool(fresh)
     tool.write_decomposition("drafts", f"name: tags\nmessages:\n{turns}")
     [stored_yaml] = [each["yaml"] for each in tool.show("drafts")["decompositions"]]
-    question, answer = yaml.safe_load(stored_yaml)["messages"]
-    assert question["content"] == "What does tags[repl] return?"
-    assert answer["content"].rstrip() == (
-        "<think>Look it up.</think>\n<repl>\nFinalAnswer(tags[repl])\n</repl>"
-    )
+    stored_turns = yaml.safe_load(stored_yaml)["messages"]
+    assert [turn["content"] for turn in stored_turns] == contents
 
 
 class NeverEqual(str):

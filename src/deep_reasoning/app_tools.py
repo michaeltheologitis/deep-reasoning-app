@@ -137,11 +137,9 @@ CUT_SHORT = (
     " whole text, from show(name), tools(name) or changes()."
 )
 TOO_LONG = f"The YAML may be at most {MAX_YAML_CHARS:,} characters."
-# An example's cell tags, which a cell writes as [repl] and [/repl], as a reply's last
-# real <repl> is the one that runs. An opening one is no subscript, such as tags[repl],
-# but may follow an escape, such as \n in a quoted YAML string.
-OPENING_PLACEHOLDER = re.compile(r"(?<!(?<!\\)[\w)\]}])\[repl\]")
-CLOSING_PLACEHOLDER = "[/repl]"
+# An example's cell tags, each on a line of its own, which a cell writes as placeholders,
+# as a reply's last real <repl> is the one that runs.
+REAL_TAGS = {"[repl]": "<repl>", "[/repl]": "</repl>"}
 HOLDS_A_KEY = (
     "What you wrote holds a provider's key, and the Library file is shared, so keys never"
     " go in it. Take the key out."
@@ -906,50 +904,32 @@ def check_no_key(texts: list[str], key_names: list[str]) -> None:
 
 
 def with_real_tags(text: str) -> str:
-    """The decomposition written as YAML *text* with the placeholder tags its assistant
-    turns hold, [repl] and [/repl], written as the real ones in place, and the rest as
-    typed, a user's [repl] included."""
-    # Each real tag is as long as its placeholder, so a turn is where it is in the text
-    # with real tags everywhere, which a turn starting [repl] needs to parse.
-    everywhere = text.replace("[repl]", "<repl>").replace(
-        CLOSING_PLACEHOLDER, "</repl>"
-    )
+    """The decomposition written as YAML *text* with each line of an assistant turn that
+    is a placeholder tag alone, [repl] or [/repl], written as the real one; *text* as it
+    is when it has none, or doesn't read as a decomposition, which the store refuses."""
     try:
-        root = yaml.compose(everywhere, Loader=yaml.SafeLoader)
+        decomposition = yaml.safe_load(text)
     except yaml.YAMLError:
         return text
-    for start, end in assistant_spans(root):
-        span = OPENING_PLACEHOLDER.sub("<repl>", text[start:end])
-        text = text[:start] + span.replace(CLOSING_PLACEHOLDER, "</repl>") + text[end:]
-    return text
+    messages = (
+        decomposition.get("messages") if isinstance(decomposition, dict) else None
+    )
+    changed = False
+    for turn in messages if isinstance(messages, list) else []:
+        if not isinstance(turn, dict) or turn.get("role") != "assistant":
+            continue
+        content = turn.get("content")
+        if isinstance(content, str):
+            lines = content.splitlines(keepends=True)
+            turn["content"] = "".join(map(tag_written, lines))
+            changed = changed or turn["content"] != content
+    return dump(decomposition) if changed else text
 
 
-def assistant_spans(root: yaml.Node | None) -> list[tuple[int, int]]:
-    """Where each assistant turn's content is in a decomposition's YAML, given as its
-    composed *root* node."""
-    messages = node_fields(root).get("messages")
-    turns = messages.value if isinstance(messages, yaml.SequenceNode) else []
-    spans = []
-    for turn in map(node_fields, turns):
-        role, content = turn.get("role"), turn.get("content")
-        if (
-            isinstance(role, yaml.ScalarNode)
-            and role.value == "assistant"
-            and content is not None
-        ):
-            spans.append((content.start_mark.index, content.end_mark.index))
-    return spans
-
-
-def node_fields(node: yaml.Node | None) -> dict[str, yaml.Node]:
-    """A YAML mapping node's values by their keys' text; empty for any other node."""
-    if not isinstance(node, yaml.MappingNode):
-        return {}
-    return {
-        key.value: value
-        for key, value in node.value
-        if isinstance(key, yaml.ScalarNode)
-    }
+def tag_written(line: str) -> str:
+    """*line*, written as the real tag when it is a placeholder tag alone, its indent kept."""
+    tag = line.strip()
+    return line.replace(tag, REAL_TAGS[tag]) if tag in REAL_TAGS else line
 
 
 def yaml_text(value: Any) -> str:
