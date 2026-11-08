@@ -183,9 +183,8 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .answer th:not([align]) { text-align: left; }
 .working { color: var(--accent); }
 /* a long prompt or answer shows its first lines, fading out, until shown all */
-.clamped { overflow: hidden; mask-image: linear-gradient(to bottom, #000 70%, transparent); }
-.user.clamped { max-height: calc(8 * 1.55em); }
-.answer.clamped { max-height: calc(40 * 1.55em); }
+/* --clamp-lines: how many lines it shows, set by clamped() in tree.js */
+.clamped { overflow: hidden; max-height: calc(var(--clamp-lines) * 1lh); mask-image: linear-gradient(to bottom, #000 70%, transparent); }
 .show-all { align-self: flex-start; color: var(--dim); }
 .show-all:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
 

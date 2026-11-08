@@ -2044,6 +2044,14 @@ def pages_in(library):
         return {page for (page,) in connection.execute("SELECT id FROM pages")}
 
 
+def test_the_chat_and_a_pages_tab_load_nothing_but_from_the_app(client):
+    page = a_page(client.app.state.runs.library, client.post("/api/chats").json()["id"])
+    for path in ["/", f"/pages/{page}"]:
+        policy = client.get(path).headers["content-security-policy"]
+        assert "default-src 'self'" in policy
+        assert "img-src 'self' data:" in policy
+
+
 def test_a_page_is_read_from_the_api_and_its_tab_is_the_page_drawing_it(client):
     library = client.app.state.runs.library
     page = a_page(library, client.post("/api/chats").json()["id"])

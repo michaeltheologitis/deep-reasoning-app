@@ -49,9 +49,6 @@ const PANEL_OPEN = "panel-open";
 const LIBRARY_CHANGED = "library-changed";
 const PLUS_NA = `\u00a0+\u00a0${UNKNOWN_COST}`;
 const MENU_STEPS = { ArrowDown: 1, ArrowUp: -1 };
-// a prompt or an answer past about this many lines shows its first few until shown all
-const LONG_PROMPT_LINES = 12;
-const LONG_ANSWER_LINES = 200;
 const OUTCOME = {
   exhausted: ["ran out of turns", "warn"],
   failed: ["failed", "err"],
@@ -67,8 +64,6 @@ let popover = null;
 // Each provider's models, as the server lists them with its key: read once per page load, and again after settings change.
 let modelLists = null;
 let drawing = 0;
-const promptsWhole = new WeakSet();
-const answersWhole = new WeakSet();
 
 function countAgents(holder, wanted = () => true) {
   let count = 0;
@@ -108,15 +103,14 @@ function trailText({ tasks, step }) {
 }
 
 function renderPrompt(turn) {
-  const draw = (clamp) => element("div", { class: `user ${clamp}` }, element("span", { class: "prompt" }, "> "), turn.prompt);
-  return clamped(turn, promptsWhole, "prompt", turn.prompt, LONG_PROMPT_LINES, draw);
+  return clamped(turn, "prompt", turn.prompt, () => element("div", { class: "user" }, element("span", { class: "prompt" }, "> "), turn.prompt));
 }
 
 // A run out of turns has no answer: the engine's words saying so show as its failure.
 function renderTurnAnswer(turn) {
   if (turn.answer == null) return null;
   if (turn.outcome === "exhausted") return out(turn.answer, { tone: "warn", full: true });
-  return clamped(turn, answersWhole, "answer", turn.answer, LONG_ANSWER_LINES, (clamp) => renderAnswer(turn.answer, clamp));
+  return clamped(turn, "answer", turn.answer, () => renderAnswer(turn.answer));
 }
 
 // A turn names its namespace when it differs from the turn before's, so a chat that switched reads clearly.

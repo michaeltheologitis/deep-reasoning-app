@@ -14,9 +14,18 @@ const PRICE_UNKNOWN = "this model's price isn't known";
 const FINAL_ANSWER = "FinalAnswer: ";
 // marked's tokens that leave an answer plain: shown as written, raw HTML included
 const PLAIN_TOKENS = new Set(["paragraph", "space", "text", "escape", "br", "html"]);
-const WORD_CHAR = /\w/;
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
 const NEW_TAB_LINK = '<a target="_blank" rel="noopener noreferrer" ';
+const ANCHOR_TAG = /<\/?a\b[^>]*>/g;
+// what the HTML marked makes may hold, and no more: its tags and attributes, and links to the web, mail or a relative address
+const SANITIZE = {
+  ALLOWED_TAGS: ["a", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "input", "li", "ol", "p", "pre", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"],
+  ALLOWED_ATTR: ["align", "checked", "class", "disabled", "href", "rel", "start", "target", "title", "type"],
+  ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
+};
 const LINE_CHARS = 100;
+// a prompt or answer past about `past` lines shows its first `shown` until shown whole
+const CLAMPS = { prompt: { past: 12, shown: 8, whole: new WeakSet() }, answer: { past: 200, shown: 40, whole: new WeakSet() } };
 const TRACEBACK = /^(?:Traceback| {2}\+ Exception Group Traceback) \(most recent call last\):$/;
 // an exception group's lines hang off its frame, "  | "; the exception's own line is the first after the head not indented within it
 const GROUP_FRAME = /^ {2}\| /;
@@ -345,18 +354,30 @@ function renderAgent(agent) {
 const escapeHtml = (text) => text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 const isPlain = (tokens) => tokens.every((token) => PLAIN_TOKENS.has(token.type) && isPlain(token.tokens ?? []));
 
-// Markdown as answers show it: raw HTML shows as text; underscores never emphasise, nor asterisks touching a letter or digit
-// outside them, as in code (__init__, 2*3*4); an image is a link to it, never fetched; and each link opens in a new tab.
+// Markdown as answers show it, so code (__init__, 2*3*4, ~/a~b) and raw HTML show as written, and nothing loads.
 function newMarkdown({ Marked, Renderer, Tokenizer }) {
   return new Marked({
     breaks: true,
     tokenizer: {
+      // after an inline <code>, <pre>, <kbd> or <script>, marked would leave the text unescaped
+      tag(src) {
+        const token = Tokenizer.prototype.tag.call(this, src);
+        this.lexer.state.inRawBlock = false;
+        return token;
+      },
+      // undefined, as false would fall back to marked's own: one ~ never strikes
+      del(src) {
+        const token = Tokenizer.prototype.del.call(this, src);
+        return token?.raw.startsWith("~~") ? token : undefined;
+      },
+      // _ never emphasises, nor * touching a letter or digit outside it; the whole run stays text, so marked doesn't retry within it
       emStrong(src, masked, before = "") {
         const token = Tokenizer.prototype.emStrong.call(this, src, masked, before);
         if (!token) return token;
         const after = src[token.raw.length] ?? "";
-        // undefined, as false would fall back to marked's own
-        return token.raw.startsWith("_") || WORD_CHAR.test(before) || WORD_CHAR.test(after) ? undefined : token;
+        if (!(token.raw.startsWith("_") || WORD_CHAR.test(before) || WORD_CHAR.test(after))) return token;
+        const run = src.match(/^[*_]+/)[0];
+        return { type: "text", raw: run, text: run };
       },
     },
     renderer: {
@@ -364,8 +385,9 @@ function newMarkdown({ Marked, Renderer, Tokenizer }) {
       image(href, title, alt) {
         return this.link(href, title, alt || escapeHtml(href));
       },
+      // an image in a link is already a link, so its text alone goes in
       link(href, title, text) {
-        return Renderer.prototype.link.call(this, href, title, text).replace(/^<a /, NEW_TAB_LINK);
+        return Renderer.prototype.link.call(this, href, title, text.replace(ANCHOR_TAG, "")).replace(/^<a /, NEW_TAB_LINK);
       },
     },
   });
@@ -379,22 +401,27 @@ function markdownHtml(text) {
 }
 
 // Answers and a page's text are model output: shown as Markdown when they hold some, else as plain text.
-function renderAnswer(text, clamp = "") {
+function renderAnswer(text) {
   const html = markdownHtml(text);
-  if (html == null) return element("div", { class: `answer plain ${clamp}` }, text);
-  const el = element("div", { class: `answer ${clamp}` });
-  el.innerHTML = globalThis.DOMPurify.sanitize(html, { ADD_ATTR: ["target"] });
+  if (html == null) return element("div", { class: "answer plain" }, text);
+  const el = element("div", { class: "answer" });
+  el.innerHTML = globalThis.DOMPurify.sanitize(html, SANITIZE);
   return el;
 }
 
-// A text past longLines (about a wide screen's) shows its first lines until shown whole: set holds the nodes shown whole,
-// and name tells a node's toggles apart. draw makes the text's element with the class it is given.
-function clamped(node, set, name, text, longLines, draw) {
+// A node's long prompt or answer (kind), as draw makes it, shows its first lines until shown whole.
+function clamped(node, kind, text, draw) {
+  const { past, shown, whole } = CLAMPS[kind];
   const lines = text.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / LINE_CHARS)), 0);
-  if (lines <= longLines) return draw("");
-  const whole = set.has(node);
-  const label = whole ? "show less" : `show all · ${plural(lines, "line")}`;
-  return [draw(whole ? "" : "clamped"), toggler(node, { class: "show-all" }, label, set, `${keyOf(node)}:${name}`)];
+  const el = draw();
+  if (lines <= past) return el;
+  const all = whole.has(node);
+  if (!all) {
+    el.className += " clamped";
+    el.setAttribute("style", `--clamp-lines: ${shown}`);
+  }
+  const label = all ? "show less" : `show all · ${plural(lines, "line")}`;
+  return [el, toggler(node, { class: "show-all" }, label, whole, `${keyOf(node)}:${kind}`)];
 }
 
 const whenChangesApply = (test) => {
@@ -419,9 +446,11 @@ function useStoredTheme() {
 }
 
 export {
+  CLAMPS,
   COST_NA,
   MS_PER_SECOND,
   PRICE_UNKNOWN,
+  SANITIZE,
   UNKNOWN_COST,
   caret,
   clamped,

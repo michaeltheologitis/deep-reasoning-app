@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { clamped, known, markdownHtml, opened, renderAgent, renderAnswer, renderStep } from "../src/deep_reasoning/web/tree.js";
+import { CLAMPS, SANITIZE, clamped, element, known, markdownHtml, opened, renderAgent, renderAnswer, renderStep } from "../src/deep_reasoning/web/tree.js";
 
 globalThis.marked = createRequire(import.meta.url)("../src/deep_reasoning/web/vendor/marked.min.js");
 
@@ -119,12 +119,16 @@ const PLAIN_ANSWERS = [
   "<!doctype html><html><body><h1>Hi</h1><img src=\"http://example.com/x.png\"></body></html>",
   "x**2 + y**2, regex \\d+\\.\\d+, C:\\Users\\_temp and &lt;",
   "two\nlines\n\nthen a paragraph",
+  "2**10** is big",
+  "about ~5-~10 minutes",
+  "café**x** and cafe**x**",
 ];
 const MARKDOWN_ANSWERS = [
   ["a list", "- first\n- second", /<ul>\n<li>first<\/li>\n<li>second<\/li>\n<\/ul>/],
   ["a table", "| room | seats |\n|---|---:|\n| A | 12 |", /<table>[\s\S]*<th>room<\/th>[\s\S]*<td align="right">12<\/td>/],
   ["a code block", "```python\nprint(1 < 2)\n```", /<pre><code class="language-python">print\(1 &lt; 2\)\n<\/code><\/pre>/],
   ["bold text", "The answer is **42**.", /<p>The answer is <strong>42<\/strong>\.<\/p>/],
+  ["a double-tilde strike", "~~struck~~ out", /<p><del>struck<\/del> out<\/p>/],
 ];
 const anchors = (html) => html.match(/<a [^>]*>/g) ?? [];
 
@@ -164,22 +168,50 @@ test("every link in an answer opens in a new tab, with no opener or referrer", (
   for (const link of links) assert.match(link, /^<a target="_blank" rel="noopener noreferrer" href=/);
 });
 
-test("a long text shows its first lines with a toggle to show it all, and all of it once shown whole", () => {
+test("a long prompt shows its first lines with a toggle to show it all, and all of it once shown whole", () => {
   const turn = {};
-  const whole = new WeakSet();
-  const draw = (clamp) => ({ className: clamp });
   const text = "line\n".repeat(30);
-  const [shown, toggle] = clamped(turn, whole, "prompt", text, 12, draw);
-  assert.equal(shown.className, "clamped");
+  const draw = () => element("div", { class: "user" }, text);
+  const [shown, toggle] = clamped(turn, "prompt", text, draw);
+  assert.equal(shown.className, "user clamped");
+  assert.equal(shown.attributes.style, `--clamp-lines: ${CLAMPS.prompt.shown}`);
   assert.equal(toggle.textContent, "show all · 31 lines");
-  whole.add(turn);
-  const [all, back] = clamped(turn, whole, "prompt", text, 12, draw);
-  assert.equal(all.className, "");
+  assert.equal(toggle.attributes["aria-expanded"], "false");
+  CLAMPS.prompt.whole.add(turn);
+  const [all, back] = clamped(turn, "prompt", text, draw);
+  assert.equal(all.className, "user");
   assert.equal(back.textContent, "show less");
-  assert.equal(clamped({}, whole, "prompt", "short", 12, draw).className, "");
+  assert.equal(clamped({}, "prompt", "short", draw).className, "user");
 });
 
 test("one very long line counts as the lines it wraps to", () => {
-  const [, toggle] = clamped({}, new WeakSet(), "answer", "x".repeat(100000), 200, () => ({}));
+  const [, toggle] = clamped({}, "answer", "x".repeat(100000), () => element("div"));
   assert.equal(toggle.textContent, "show all · 1,000 lines");
+});
+
+for (const tag of ["code", "pre", "kbd", "script"]) {
+  test(`raw HTML after a <${tag}> tag in a Markdown answer still shows as text`, () => {
+    const html = markdownHtml(`# Answer\n\nSee <${tag}><img/src=//evil.example/x.png> <p/style="background:url(//evil.example/y)">`);
+    assert.doesNotMatch(html, /<(img|p\/)/);
+  });
+}
+
+test("in a Markdown answer, a run of asterisks no emphasis takes, one tilde, or a letter beyond ASCII stay as written", () => {
+  const html = markdownHtml("# Notes\n\n2**10** is big, about ~5-~10 minutes, café**x** and cafe**x**");
+  assert.match(html, /2\*\*10\*\* is big, about ~5-~10 minutes, café\*\*x\*\* and cafe\*\*x\*\*/);
+});
+
+test("an image inside a link is the link's text, so no link holds another", () => {
+  const html = markdownHtml("[![badge](https://img.example/b.png)](https://target.example)");
+  assert.equal(anchors(html).length, 1);
+  assert.match(html, /href="https:\/\/target\.example">badge<\/a>/);
+});
+
+test("an answer's links may be web, mail or relative addresses only", () => {
+  for (const href of ["https://a.example", "http://a.example/x?y", "mailto:me@a.example", "/pages/x", "#part", "notes.html"]) {
+    assert.match(href, SANITIZE.ALLOWED_URI_REGEXP, href);
+  }
+  for (const href of ["javascript:alert(1)", "JaVaScRiPt:x", "data:text/html,x", "vbscript:x", "file:///etc/passwd", "ftp://a.example"]) {
+    assert.doesNotMatch(href, SANITIZE.ALLOWED_URI_REGEXP, href);
+  }
 });
