@@ -2241,6 +2241,8 @@ WRITTEN_TEMPLATES = {
 }
 TICKETS = "open tickets"
 LOOPING = "{{% for i in 'x' * 3000 %}}{{% for j in 'x' * 3000 %}}{body}{{% endfor %}}{{% endfor %}}"
+# Long, so loops reach the limit in a thousand turns, well within the time a render has.
+LOOPED = "ab" * 500
 # Refused as it passes the limit, so long before it would have made it all.
 REFUSED_S = 2
 # Templates that would make a text, list or number a few times past the limit, each a
@@ -2253,12 +2255,12 @@ PAST_THE_LIMIT_TEMPLATES = {
         "{% set ns = namespace(n=2) %}{% for _ in 'x' * 23 %}"
         "{% set ns.n = ns.n * ns.n %}{% endfor %}{{ ns.n > 1 }}"
     ),
-    "loops rendering": LOOPING.format(body="ab"),
+    "loops rendering": LOOPING.format(body=LOOPED),
     "loops in a macro": (
-        f"{{% macro m() %}}{LOOPING.format(body='ab')}{{% endmacro %}}{{{{ m()|length }}}}"
+        f"{{% macro m() %}}{LOOPING.format(body=LOOPED)}{{% endmacro %}}{{{{ m()|length }}}}"
     ),
     "loops in a set block": (
-        f"{{% set x %}}{LOOPING.format(body='ab')}{{% endset %}}{{{{ x|length }}}}"
+        f"{{% set x %}}{LOOPING.format(body=LOOPED)}{{% endset %}}{{{{ x|length }}}}"
     ),
     "a text doubled in a namespace": (
         "{% set ns = namespace(s='ab') %}{% for _ in 'x' * 23 %}"

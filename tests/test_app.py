@@ -924,7 +924,7 @@ FAILING_AS_RENDERED = {
     ),
     "a text multiplied past the limit": ("{{ 'ab' * 3000000 }}", PAST_THE_LIMIT_WHY),
     "loops rendering past the limit": (
-        "{% for i in 'x' * 3000 %}{% for j in 'x' * 3000 %}ab{% endfor %}{% endfor %}",
+        "{% for i in 'x' * 3000 %}{% for j in 'x' * 3000 %}{{ 'ab' * 500 }}{% endfor %}{% endfor %}",
         PAST_THE_LIMIT_WHY,
     ),
     "loops rendering nothing past its time": (
