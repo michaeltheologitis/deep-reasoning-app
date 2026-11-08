@@ -345,6 +345,12 @@ def test_a_valid_decomposition_is_stored_and_listed_under_its_namespace(client):
             VALID.replace("next course", "catalog lookup"),
             'course_advisor already has "catalog lookup"; rename it',
         ),
+        (
+            "router",
+            VALID.replace('"CS310"', '"{{ next }}"'),
+            "Turn 2 (assistant), line 1: the engine reads a turn holding {{ or {%",
+        ),
+        ("router", VALID.replace("next course", "'next course '"), "starts or ends"),
     ],
 )
 def test_an_invalid_decomposition_is_refused_with_a_plain_message(
@@ -503,6 +509,24 @@ def test_a_decomposition_is_edited_under_a_new_name_and_deleted_through_the_api(
     )
     assert deleted.status_code == 200, deleted.text
     assert "hand it on" not in decompositions_of(client, "root")
+
+
+def test_an_edit_the_engine_couldnt_render_is_refused_and_changes_nothing(client):
+    [(name, stored), *_] = [
+        (each["name"], each["yaml"])
+        for each in decompositions_of(client, "root").values()
+    ]
+    before = client.get("/api/library").json()
+    body = {"namespace": "root", "name": name, "was": stored}
+    response = client.put(
+        "/api/decompositions", json=body | {"yaml": VALID.replace("CS310", "{% x %}")}
+    )
+    assert response.status_code == 400
+    assert (
+        "this one doesn't parse (Encountered unknown tag 'x'"
+        in response.json()["detail"]
+    )
+    assert client.get("/api/library").json() == before
 
 
 @pytest.mark.parametrize(

@@ -9,11 +9,14 @@ the app's settings; this module lays the whole file out.
 """
 
 import ast
+import builtins
 import inspect
 import json
+import keyword
 import re
 import sqlite3
 import sys
+import unicodedata
 from collections import defaultdict
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -27,6 +30,8 @@ from deep_reasoner.tools import TOOL_BUILDERS
 from deep_reasoner.tools.base import DEFAULT_CLAUDE_DESCRIPTION, DEFAULT_RAG_DESCRIPTION
 from deep_reasoner.tools.kg_main import KnowledgeGraph
 from deep_reasoner.tools.safe_url import DEFAULT_SAFE_URL_DESCRIPTION
+from deep_reasoner.v2.agent import DeepReasoner, _render_context
+from deep_reasoner.v2.claude_reasoner import ClaudeDeepReasoner
 from deep_reasoner.v2.cli import (
     _DEFAULT_LLM_DESCRIPTION,
     V2Config,
@@ -34,7 +39,9 @@ from deep_reasoner.v2.cli import (
     build_namespace_registry,
     declared_tool_names,
 )
-from deep_reasoner.v2.messages import NoCodeBlock, code
+from deep_reasoner.v2.messages import NoCodeBlock, _has_jinja, code, func, var
+from jinja2 import TemplateError, TemplateSyntaxError, meta, nodes
+from jinja2.sandbox import SandboxedEnvironment
 from pydantic import ValidationError
 
 log = structlog.get_logger()
@@ -364,6 +371,40 @@ EMPTY_NAMESPACE = "{}\n"
 # The settings V2Config reads; the panel may delete any other, as an import may bring junk.
 ENGINE_SETTINGS = V2Config.model_fields.keys()
 UNREAD_SETTING = "set in the Library; the engine doesn't read it"
+# The backbones the engine builds an agent on; a namespace naming another fails every run there.
+BACKBONES = (DeepReasoner.backbone_type, ClaudeDeepReasoner.backbone_type)
+# As the library tool's limit; past 64 MiB, a change event would end the run that wrote it.
+MAX_YAML_CHARS = 1_000_000
+# A var named as one of these hides it from the agent's code, as max: 10 breaks max(numbers).
+BUILTIN_NAMES = frozenset(dir(builtins))
+# Characters that don't show: controls and formats, such as a zero-width space.
+INVISIBLE = ("Cc", "Cf")
+# When an agent starts, the engine renders each turn holding {{ or {% as a Jinja template
+# against its vars, tools and task and the run settings' prompt_template_variables, and a
+# turn it can't render fails every run shown it. Checked here in Jinja's sandbox: a shared
+# file's template mustn't run code in the app.
+JINJA = SandboxedEnvironment()
+TEMPLATE = "the engine reads a turn holding {{ or {% as a Jinja template"
+ESCAPE = (
+    "Write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%, or put the turn between"
+    " {% raw %} and {% endraw %}."
+)
+FILLED_IN = (
+    "task, vars, funcs, coroutines and the run settings' prompt_template_variables"
+)
+# What a template may raise as it renders, as `{{ 1 / 0 }}` or `{{ vars.x.value }}` with no
+# x; the engine's render raises the same, and the run fails.
+RENDER_FAILURES = (
+    TemplateError,
+    ArithmeticError,
+    AttributeError,
+    LookupError,
+    TypeError,
+    ValueError,
+    RecursionError,
+    MemoryError,
+)
+TASK = "the task"
 
 
 class LibraryError(ValueError):
@@ -672,9 +713,20 @@ def config_and_registry(connection):
 
 
 def check(connection):
-    """Raise unless the engine would accept the Library: every chain resolves and every tool granted exists."""
+    """Raise unless the engine would accept the Library: every chain resolves, every tool
+    granted exists and every backbone is one it builds. The Library as a run's config, and
+    its namespaces as the engine resolves them."""
     config, registry = config_and_registry(connection)
     registry.check(declared_tool_names(config))
+    for name in registry.names:
+        kind = registry.backbone(name)
+        if kind not in BACKBONES:
+            level = registry.resolve(name).sources.reasoner or name
+            known = ", ".join(map(repr, BACKBONES))
+            raise ValueError(
+                f"namespace {level!r}: unknown reasoner type {kind!r}; known: {known}."
+            )
+    return config, registry
 
 
 def tool_row(name, block, config_dir):
@@ -804,9 +856,94 @@ def parsed(text):
         decomposition = Decomposition.model_validate(data)
     except ValidationError as error:
         raise LibraryError("\n".join(map(problem, error.errors()))) from error
-    if not decomposition.name.strip():
+    name = decomposition.name
+    if not name.strip():
         raise LibraryError(BLANK_NAME)
+    if name != name.strip():
+        raise LibraryError(
+            f'The name "{name}" starts or ends with a space; take it out, so it reads as it'
+            " looks."
+        )
+    hidden = [char for char in name if unicodedata.category(char) in INVISIBLE]
+    if hidden:
+        raise LibraryError(
+            f"The name holds a character you can't see (U+{ord(hidden[0]):04X}); take it"
+            " out, so it reads as it looks."
+        )
     return decomposition
+
+
+def checked_text(text):
+    """Raise unless *text* is short enough to be a decomposition's YAML."""
+    if len(text) > MAX_YAML_CHARS:
+        raise LibraryError(
+            f"A decomposition's YAML may be at most {MAX_YAML_CHARS:,} characters; this"
+            f" has {len(text):,}."
+        )
+
+
+def a_tool(*args, **kwargs):
+    """What a tool's name is bound to while templates are rendered to check them: never called."""
+
+
+def render_names(config, registry, namespace):
+    """What the engine renders *namespace*'s turns against: its vars and tools by kind,
+    the task and the run settings' prompt_template_variables, by the engine's own code."""
+    resolved = registry.resolve(namespace)
+    bindings = [var(name, value) for name, value in resolved.vars.items()]
+    bindings += [func(name, a_tool) for name in resolved.tools]
+    return _render_context(bindings, config.prompt_template_variables, TASK)
+
+
+def first_use(template, name):
+    """The line of *template* (parsed) where *name* is first read."""
+    uses = [
+        each.lineno
+        for each in template.find_all(nodes.Name)
+        if each.name == name and each.ctx == "load"
+    ]
+    return min(uses)
+
+
+def render_problem(label, text, names):
+    """Why the engine can't render the turn *text*, *label*, against *names*; None when
+    it can, or the turn holds no template."""
+    if not _has_jinja(text):
+        return None
+    try:
+        template = JINJA.parse(text)
+        missing = sorted(meta.find_undeclared_variables(template) - names.keys())
+        if missing:
+            line = first_use(template, missing[0])
+            return (
+                f'{label}, line {line}: {TEMPLATE}, and fills in no "{missing[0]}", only'
+                f" {FILLED_IN}. {ESCAPE}"
+            )
+        JINJA.from_string(template).render(**names)
+    except TemplateSyntaxError as error:
+        return f"{label}, line {error.lineno}: {TEMPLATE}, and this one doesn't parse ({error.message}). {ESCAPE}"
+    except RENDER_FAILURES as error:
+        return f"{label}: {TEMPLATE}, and rendering this one fails ({error}). {ESCAPE}"
+    return None
+
+
+def render_problems(decomposition, names):
+    """Each turn of *decomposition* the engine couldn't render against *names*."""
+    turns = enumerate(decomposition.messages, start=1)
+    found = (
+        render_problem(f"Turn {number} ({turn.role})", turn.content, names)
+        for number, turn in turns
+    )
+    return [each for each in found if each]
+
+
+def renders(connection, namespace, decomposition):
+    """Raise unless every turn of *decomposition* renders as the engine renders it in
+    *namespace*."""
+    config, registry = config_and_registry(connection)
+    problems = render_problems(decomposition, render_names(config, registry, namespace))
+    if problems:
+        raise LibraryError("\n".join(problems))
 
 
 def running_code(content):
@@ -905,13 +1042,15 @@ def example_problems(decomposition):
     return turn_problems(decomposition.model_dump()["messages"])
 
 
-def stored_problems(text):
+def stored_problems(text, names):
     """The problems of the decomposition stored as YAML *text*: its shape's, as a shared
-    file may hold anything, or else its turns'."""
+    file may hold anything, or else its turns', as a worked example and as templates
+    rendered against *names*."""
     try:
-        return example_problems(parsed(text))
+        decomposition = parsed(text)
     except LibraryError as error:
         return str(error).splitlines()
+    return example_problems(decomposition) + render_problems(decomposition, names)
 
 
 def add_decomposition(connection, namespace, text, replace=False, allowed=None):
@@ -920,6 +1059,7 @@ def add_decomposition(connection, namespace, text, replace=False, allowed=None):
     its place. *allowed*, given the connection under the write lock first, raises to refuse.
     A worked example with problems is stored all the same, so a draft can be saved.
     The stored row with its problems, and the YAML it replaced (None when it is new)."""
+    checked_text(text)
     decomposition = parsed(text)
     name = decomposition.name
     stored = {"namespace": namespace, "name": name, "yaml": text}
@@ -931,6 +1071,7 @@ def add_decomposition(connection, namespace, text, replace=False, allowed=None):
         found = stored_decomposition(connection, namespace, name)
         if found is not None and not replace:
             raise already_has(namespace, name)
+        renders(connection, namespace, decomposition)
         connection.execute(UPSERT_DECOMPOSITION, tuple(stored.values()))
     problems = example_problems(decomposition)
     return stored | {"problems": problems}, found
@@ -964,12 +1105,14 @@ def edit_decomposition(connection, namespace, name, was, text):
     decomposition *name*, which the person opened as *was*; it may take another name
     that *namespace* doesn't hold. Raises LibraryError saying why not, and
     ChangedMeanwhile if *name* is no longer stored as *was*."""
+    checked_text(text)
     decomposition = parsed(text)
     with writing(connection):
         unchanged_decomposition(connection, namespace, name, was)
         taken = stored_decomposition(connection, namespace, decomposition.name)
         if decomposition.name != name and taken is not None:
             raise already_has(namespace, decomposition.name)
+        renders(connection, namespace, decomposition)
         # In its place, so the decompositions stay in the order they were added.
         connection.execute(
             "UPDATE decompositions SET name = ?, yaml = ? WHERE namespace = ? AND name = ?",
@@ -993,6 +1136,8 @@ def namespace_problem(error):
     match error["loc"], error["type"]:
         case (key,), "extra_forbidden":
             return f'Remove "{key}": a namespace\'s YAML holds only {NAMESPACE_HOLDS}.'
+        case ("vars", name, "[key]"), _:
+            return f'A var\'s name should be text, like "year", not {name}.'
         case (str(key), *_), _ if key in SHAPES:
             return SHAPES[key]
     return f"{'.'.join(map(str, error['loc']))}: {error['msg']}."
@@ -1028,16 +1173,53 @@ def own_yaml(text):
 
 
 def accepted(connection):
-    """Raise unless the engine accepts the Library, in words for the panel."""
+    """Raise unless the engine accepts the Library, in words for the panel; check's answer."""
     try:
-        check(connection)
+        return check(connection)
     except ValueError as error:
         raise LibraryError(f"The engine refuses it: {error}") from error
 
 
+def var_problem(name):
+    """Why *name* won't do as a var's name, None when it will: the agent's code reads a
+    var by its name."""
+    if not name.isidentifier():
+        return (
+            f'Var "{name}" needs a Python name, like "year": letters, digits and _,'
+            " not starting with a digit."
+        )
+    if keyword.iskeyword(name):
+        return f'Var "{name}" is a Python keyword; rename it, like "{name}_value".'
+    if name in BUILTIN_NAMES:
+        return (
+            f"Var \"{name}\" would hide Python's own {name}, which the agent's code may"
+            f' use; rename it, like "{name}_value".'
+        )
+    return None
+
+
+def hidden_vars(registry, name):
+    """Raise if, in namespace *name* or one under it, a tool takes the place of a var of
+    the same name, as the engine binds tools over vars."""
+    for each in registry.names:
+        resolved = registry.resolve(each)
+        clashes = sorted(resolved.vars.keys() & set(resolved.tools))
+        if clashes and name in registry.chain(each):
+            clash = clashes[0]
+            raise LibraryError(
+                f'In {each}, var "{clash}" (set in {resolved.sources.vars[clash]}) has'
+                f" the name of the tool {clash} (granted in"
+                f" {resolved.sources.tools[clash]}), which takes its place: rename the var."
+            )
+
+
 def write_namespace(connection, namespace, text):
     """Store *namespace* as its YAML *text*, inside a transaction that keeps it only if
-    every namespace it may spawn into is there and the engine accepts the Library."""
+    its vars are well named, every namespace it may spawn into is there, the engine
+    accepts the Library and no tool takes a var's place there or below."""
+    problems = list(filter(None, map(var_problem, namespace.vars)))
+    if problems:
+        raise LibraryError("\n".join(problems))
     connection.execute(UPSERT_NAMESPACE, (namespace.name, text))
     # The engine lets a spawn name no namespace, and fails only when the agent spawns there.
     missing = [
@@ -1050,7 +1232,8 @@ def write_namespace(connection, namespace, text):
                 for each in missing
             )
         )
-    accepted(connection)
+    _, registry = accepted(connection)
+    hidden_vars(registry, namespace.name)
 
 
 def add_namespace(connection, name, text, allowed=None):
@@ -1234,6 +1417,9 @@ def table(value):
 
 
 def var_summary(value):
+    if value is None:
+        # What the agent's code gets: shown() would say "not set".
+        return "None"
     rows = table(value)
     return count(len(rows["rows"]), "row") if rows else shown(value)
 
@@ -1270,8 +1456,13 @@ def namespace_fields(registry, name, run):
         spawn = located(
             ", ".join(resolved.spawn) or "nowhere: a leaf", sources.spawn, name
         )
+    # Granted here when it lists the tool itself, though a level above grants it too.
+    own_tools = registry.config(name).tools
     tools = [
-        located(tool, sources.tools[tool], name, "granted") for tool in resolved.tools
+        located(
+            tool, name if tool in own_tools else sources.tools[tool], name, "granted"
+        )
+        for tool in resolved.tools
     ]
     variables = [
         located(f"{key} ({var_summary(value)})", sources.vars[key], name)
@@ -1399,7 +1590,9 @@ def namespace_rows(connection, config, registry):
             "depth": len(registry.chain(name)) - 1,
             "fields": namespace_fields(registry, name, config),
             "decompositions": checked(
-                decompositions[name], config.namespaces.get(name)
+                decompositions[name],
+                config.namespaces.get(name),
+                render_names(config, registry, name),
             ),
             "yaml": own.get(name, ""),
         }
@@ -1407,14 +1600,18 @@ def namespace_rows(connection, config, registry):
     ]
 
 
-def checked(rows, namespace):
+def checked(rows, namespace, names):
     """A namespace's stored decompositions, *rows*, each with its problems as a worked
-    example, from *namespace*, the engine's reading of the same rows. Under a root the
-    file lacks, which the engine reads none of, they are parsed here."""
+    example and as templates rendered against *names*, as a shared file may hold one the
+    engine can't render, from *namespace*, the engine's reading of the same rows. Under a
+    root the file lacks, which the engine reads none of, they are parsed here."""
     if namespace is None:
-        return [row | {"problems": stored_problems(row["yaml"])} for row in rows]
+        return [row | {"problems": stored_problems(row["yaml"], names)} for row in rows]
     pairs = zip(rows, namespace.decompositions, strict=True)
-    return [row | {"problems": example_problems(each)} for row, each in pairs]
+    return [
+        row | {"problems": example_problems(each) + render_problems(each, names)}
+        for row, each in pairs
+    ]
 
 
 def panel(connection):

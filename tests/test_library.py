@@ -1093,3 +1093,213 @@ def test_a_run_setting_the_engine_doesnt_read_is_deleted_and_one_it_reads_stays(
     assert "catalog_path" not in labels
     with pytest.raises(LibraryError, match='no run setting "catalog_path"'):
         change(library, delete_setting, "catalog_path")
+
+
+# A worked example whose answer cell is given as *code*, in namespace-free YAML.
+def answering(name, code):
+    return (
+        f"name: {name}\nmessages:\n- role: user\n  content: What is the total?\n"
+        "- role: assistant\n  content: |\n    <think>Print it, then answer.</think>\n"
+        f"    <repl>\n    total = 3\n    {code}\n    FinalAnswer(total)\n    </repl>\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("code", "problem"),
+    [
+        (
+            'print(f"{{{total}}}")',
+            (
+                "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a"
+                " Jinja template, and this one doesn't parse (expected token ':', got '}')."
+            ),
+        ),
+        (
+            'print("{{ total }}")',
+            (
+                "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a"
+                ' Jinja template, and fills in no "total", only task, vars, funcs, coroutines'
+                " and the run settings' prompt_template_variables."
+            ),
+        ),
+        (
+            'print("{{ task }}")  {# a note',
+            (
+                "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a"
+                " Jinja template, and this one doesn't parse (Missing end of comment tag)."
+            ),
+        ),
+        (
+            'print("{{ vars.topic.value }}")',
+            (
+                "Turn 2 (assistant): the engine reads a turn holding {{ or {% as a Jinja"
+                " template, and rendering this one fails ('dict object' has no attribute"
+                " 'topic')."
+            ),
+        ),
+    ],
+    ids=["an-f-string", "an-unknown-name", "a-comment", "a-var-root-lacks"],
+)
+def test_a_decomposition_the_engine_cant_render_is_refused_naming_its_turn(
+    library, code, problem
+):
+    text = answering("braces", code)
+    before = dumped(library)
+    escape = "Write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%"
+    with pytest.raises(LibraryError, match=re.escape(problem)) as refused:
+        change(library, add_decomposition, ROOT, text)
+    assert escape in str(refused.value)
+    [(name, stored), *_] = names_and_yaml(library, ROOT)
+    with pytest.raises(LibraryError, match=re.escape(problem)):
+        change(library, edit_decomposition, ROOT, name, stored, text)
+    assert dumped(library) == before
+
+
+@pytest.mark.parametrize(
+    ("namespace", "code", "rendered"),
+    [
+        (ROOT, 'print("{{ task }}")', 'print("Count the tickets.")'),
+        (ROOT, "print(f\"{{ '{{' }}{total}}}\")", 'print(f"{{{total}}}")'),
+        (ROOT, '{% raw %}print(f"{{{total}}}"){% endraw %}', 'print(f"{{{total}}}")'),
+        (ROOT, 'print("{{ term }}")', 'print("fall")'),
+        (
+            "research",
+            'print("{{ vars.topic.value }}", "{{ funcs.llm.name }}")',
+            'print("ml", "llm")',
+        ),
+    ],
+    ids=["the-task", "escaped", "raw", "a-template-variable", "a-namespaces-var"],
+)
+def test_a_template_the_check_passes_is_stored_and_the_engine_renders_it(
+    library, tmp_path, monkeypatch, no_network, namespace, code, rendered
+):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(
+            UPSERT_SETTING, ("prompt_template_variables", dump({"term": "fall"}))
+        )
+    change(library, add_namespace, "research", RESEARCH)
+    change(library, add_decomposition, namespace, answering("braces", code))
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
+    monkeypatch.chdir(tmp_path)
+    config = run_config(library, tmp_path, namespace)
+    reasoner, _alias = build_reasoner(config, run_dir=tmp_path / "run")
+    # The engine renders an agent's worked examples as it starts, before any model call.
+    reasoner.send("Count the tickets.")._start()
+    examples = reasoner.ctx.examples
+    close_run(reasoner)
+    [_, answer] = [each["content"] for each in examples if each["example"] == "braces"]
+    assert rendered in answer
+
+
+def test_a_shared_files_decomposition_the_engine_cant_render_is_marked_with_why(
+    library, tmp_path, monkeypatch, no_network
+):
+    text = answering("braces", 'print(f"{{{total}}}")')
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_DECOMPOSITION, (ROOT, "braces", text))
+    [root, *_] = panel_of(library)["namespaces"]
+    [problem] = root["decompositions"][-1]["problems"]
+    assert problem.startswith("Turn 2 (assistant), line 4: the engine reads a turn")
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
+    monkeypatch.chdir(tmp_path)
+    reasoner, _alias = build_reasoner(run_config(library, tmp_path), run_dir=tmp_path)
+    with pytest.raises(ValueError, match="'braces' in namespace 'root' could not be"):
+        reasoner.send("Count the tickets.")._start()
+    close_run(reasoner)
+
+
+@pytest.mark.parametrize(
+    ("name", "problem"),
+    [
+        ("count it ", 'The name "count it " starts or ends with a space'),
+        (" count it", 'The name " count it" starts or ends with a space'),
+        ("count\u200bit", "The name holds a character you can't see (U+200B)"),
+    ],
+)
+def test_a_decomposition_named_unlike_it_looks_is_refused(library, name, problem):
+    text = ADDED.replace("name: added", f"name: {json.dumps(name)}")
+    with pytest.raises(LibraryError, match=re.escape(problem)):
+        change(library, add_decomposition, ROOT, text)
+
+
+def test_a_decomposition_past_a_million_characters_is_refused(library):
+    text = ADDED + "#" * 1_000_000 + "\n"
+    with pytest.raises(
+        LibraryError,
+        match=f"may be at most 1,000,000 characters; this has {len(text):,}",
+    ):
+        change(library, add_decomposition, ROOT, text)
+    [(name, stored), *_] = names_and_yaml(library, ROOT)
+    with pytest.raises(LibraryError, match="may be at most 1,000,000 characters"):
+        change(library, edit_decomposition, ROOT, name, stored, text)
+
+
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        (
+            "reasoner: {type: chatgpt}\n",
+            (
+                "The engine refuses it: namespace 'research': unknown reasoner type"
+                " 'chatgpt'; known: 'chat', 'claude_code'."
+            ),
+        ),
+        ("vars: {max: 10}\n", 'Var "max" would hide Python\'s own max'),
+        ("vars: {type: memo}\n", 'Var "type" would hide Python\'s own type'),
+        ("vars: {1abc: 1}\n", 'Var "1abc" needs a Python name, like "year"'),
+        ("vars: {my var: 1}\n", 'Var "my var" needs a Python name'),
+        ("vars: {class: 1}\n", 'Var "class" is a Python keyword'),
+        ("vars: {1: a}\n", 'A var\'s name should be text, like "year", not 1.'),
+        (
+            "vars: {llm: 1}\n",
+            (
+                'In research, var "llm" (set in research) has the name of the tool llm'
+                " (granted in root), which takes its place: rename the var."
+            ),
+        ),
+    ],
+)
+def test_a_namespace_that_would_fail_its_runs_or_hide_a_var_is_refused(
+    library, text, problem
+):
+    before = dumped(library)
+    with pytest.raises(LibraryError, match=re.escape(problem)):
+        change(library, add_namespace, "research", text)
+    assert dumped(library) == before
+
+
+def test_a_tool_granted_below_a_var_of_its_name_is_refused(library):
+    tool = {"factory": "build", "factory_from": "tally.py"}
+    with closing(open_library(library)) as connection:
+        store_tool(connection, "tally", tool, "def build(client, params):\n    pass\n")
+    change(library, add_namespace, "research", "vars: {tally: 3}\n")
+    change(library, add_namespace, "research.papers", "")
+    before = dumped(library)
+    with pytest.raises(
+        LibraryError,
+        match=re.escape('In research.papers, var "tally" (set in research)'),
+    ):
+        change(library, change_namespace, "research.papers", "tools: [tally]\n")
+    assert dumped(library) == before
+
+
+@pytest.mark.parametrize("name", ["research ", "research\u200b", " research"])
+def test_a_namespace_named_unlike_it_looks_is_refused(library, name):
+    with pytest.raises(LibraryError, match="A namespace name is words of letters"):
+        change(library, add_namespace, name, "")
+
+
+def test_a_namespace_granting_a_tool_root_grants_says_it_grants_it_here(library):
+    change(library, add_namespace, "research", "tools: [llm]\nvars: {draft: null}\n")
+    [research] = [
+        each for each in panel_of(library)["namespaces"] if each["name"] == "research"
+    ]
+    fields = {each["label"]: each["items"] for each in research["fields"]}
+    assert fields["Tools"][0] == {
+        "value": "llm",
+        "source": "granted here",
+        "here": True,
+    }
+    assert fields["Variables"] == [
+        {"value": "draft (None)", "source": "set here", "here": True}
+    ]

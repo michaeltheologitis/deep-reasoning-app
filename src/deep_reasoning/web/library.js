@@ -19,7 +19,12 @@ const NAMESPACE_KEYS = ["repl", "reasoner", "tools", "vars", "spawn", "system_su
 const NAMESPACE_NAME = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
 const INDENT = "  ";
 const CHECK_DELAY_MS = 300;
-const MAX_FILE_BYTES = 1_000_000;
+// as the server's limit on a decomposition's YAML; a file of more bytes than 4 a character can't fit
+const MAX_YAML_CHARS = 1_000_000;
+const UTF8_MAX_BYTES = 4;
+const counted = new Intl.NumberFormat("en");
+// characters that don't show, as the server reads them: controls and formats, such as a zero-width space
+const INVISIBLE = /[\p{Cc}\p{Cf}]/u;
 // what heads a decomposition's turn problems in its form: they don't stop it saving, as a draft may have them, but agents are shown it as it is
 const reach = (namespace) => (namespace === ROOT ? "every namespace" : `${namespace} and the namespaces under it`);
 const headed = (action, namespace, problems) =>
@@ -274,8 +279,8 @@ async function readFile() {
   const [file] = fileInput.files;
   fileInput.value = "";
   if (!file) return;
-  if (file.size > MAX_FILE_BYTES) {
-    showProblems(decompositionForm, [`${file.name} is too big to be a decomposition's YAML; choose its .yaml file.`]);
+  if (file.size > MAX_YAML_CHARS * UTF8_MAX_BYTES) {
+    showProblems(decompositionForm, [`${file.name} holds more than ${counted.format(MAX_YAML_CHARS)} characters, the most a decomposition's YAML may hold.`]);
     return;
   }
   decompositionForm.editor.value = await file.text();
@@ -465,8 +470,13 @@ function readYaml(text) {
 }
 
 // editing: the name of the one an Edit form holds, which its YAML may keep
+// characters as Python counts them, which a string's length overcounts past the BMP
+const characters = (text) => (text.length > MAX_YAML_CHARS ? [...text].length : text.length);
+
 function decompositionProblems(text, namespace, editing = null) {
   if (!text.trim()) return ["Write the decomposition's YAML above, or choose a .yaml file."];
+  const length = characters(text);
+  if (length > MAX_YAML_CHARS) return [`A decomposition's YAML may be at most ${counted.format(MAX_YAML_CHARS)} characters; this has ${counted.format(length)}.`];
   const { value: parsed, problem } = readYaml(text);
   if (problem) return [problem];
   if (!isMapping(parsed)) return ["The YAML should be a mapping: a name: line, then messages:, as in the template."];
@@ -481,6 +491,9 @@ function decompositionProblems(text, namespace, editing = null) {
 function nameProblem(name, namespace, editing) {
   if (name === undefined) return 'Add a name: line, like "name: count the open tickets".';
   if (typeof name !== "string" || !name.trim()) return 'The name should be text, like "name: count the open tickets".';
+  if (name !== name.trim()) return `The name "${name}" starts or ends with a space; take it out, so it reads as it looks.`;
+  const hidden = name.match(INVISIBLE);
+  if (hidden) return `The name holds a character you can't see (U+${hidden[0].codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}); take it out, so it reads as it looks.`;
   if (name !== editing && namespace?.decompositions.some((each) => each.name === name)) return `${namespace.name} already has "${name}"; rename it, pick another namespace, or Edit that one.`;
   return null;
 }
