@@ -427,6 +427,34 @@ def test_import_builds_its_tools_with_the_runs_environment_and_no_key_in_it(
     assert not seen.keys() & gone
 
 
+READS_GEMINIS_KEY = """\
+import os
+from deep_reasoner.primitives import Func
+
+KEY = os.environ["GEMINI_API_KEY"]
+
+def build(client, params):
+    return Func(lambda: len(KEY))
+"""
+
+
+def test_import_refuses_a_tool_reading_a_key_no_chat_could_run_with(
+    tmp_path, app_home, no_vendor_keys
+):
+    (tmp_path / "gem.py").write_text(READS_GEMINIS_KEY)
+    config = tmp_path / "gem.yaml"
+    config.write_text(
+        "tools:\n  ping: {factory: build, factory_from: gem.py}\n"
+        "namespaces:\n  helper: {tools: [ping]}\n"
+    )
+    import_it = ["import", str(config), "--library", str(tmp_path / "lib.sqlite")]
+    with pytest.raises(SystemExit, match="Tool ping .*KeyError: 'GEMINI_API_KEY'"):
+        cli.main(import_it)
+    app_home.mkdir()
+    (app_home / ".env").write_text("GEMINI_API_KEY=sk-gemini-saved-here\n")
+    cli.main(import_it)
+
+
 @pytest.mark.parametrize(
     ("where", "name"),
     [

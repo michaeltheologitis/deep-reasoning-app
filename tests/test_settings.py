@@ -16,6 +16,7 @@ from deep_reasoning.settings import (
     GEMINI_MODELS,
     LAST_MODEL,
     NO_KEY,
+    NOT_A_KEY,
     OPENAI_MODELS,
     OPENROUTER_MODELS,
     SERVERS,
@@ -29,6 +30,7 @@ from deep_reasoning.settings import (
     is_chat_model,
     key_of,
     key_status,
+    keyless_environment,
     list_models,
     provider_list,
     read_settings,
@@ -188,6 +190,20 @@ def test_a_custom_server_with_no_key_runs_on_a_placeholder(app_home, library):
     add_server(app_home, library, "vllm", LOCAL_URL, None)
     assert run_key(app_home, find_provider(library, "vllm")) == NO_KEY
     assert saved_keys(app_home) == {"DEEP_REASONING_VLLM_URL": LOCAL_URL}
+
+
+def test_a_tool_is_built_keyless_with_the_key_variables_a_run_could_have_and_no_others(
+    app_home, library, monkeypatch
+):
+    monkeypatch.setenv(OPENAI.key_env, SHELL_KEY)
+    openrouter, anthropic, gemini = VENDORS[1:]
+    save_key(app_home, openrouter, KEY)
+    add_server(app_home, library, "vllm", LOCAL_URL, None)
+    built_in = keyless_environment(library, app_home)
+    given = [OPENAI.key_env, openrouter.key_env, server_key_env("vllm")]
+    assert {built_in[name] for name in given} == {NOT_A_KEY}
+    # No chat could run with these: a tool reading one would stop every chat.
+    assert not built_in.keys() & {anthropic.key_env, gemini.key_env}
 
 
 def test_a_shell_key_for_a_custom_server_is_used_only_once_saved_for_its_address(

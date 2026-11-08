@@ -87,6 +87,7 @@ from deep_reasoning.library import (
     sandbox_templates,
     store_tool,
     stored_config,
+    tool_name_problem,
     tool_text,
     turn_problems,
     writing,
@@ -1013,6 +1014,47 @@ def test_a_custom_tools_description_is_what_its_source_tells_the_agent(
 
 
 @pytest.mark.parametrize(
+    ("made", "settings", "description"),
+    [
+        (
+            "Func(count_words)",
+            {"description": "Settings say."},
+            "Count the words in text.",
+        ),
+        (
+            'Func(count_words, description=params["description"])',
+            {"description": "Settings say."},
+            "Settings say.",
+        ),
+        (
+            'Func(count_words, description=params.get("description"))',
+            {"description": "Settings say."},
+            "Settings say.",
+        ),
+        (
+            'Func(count_words, description=params.get("description"))',
+            {},
+            "Count the words in text.",
+        ),
+        (
+            'Func(count_words, params.get("description", "Counts."))',
+            {},
+            "Counts.",
+        ),
+    ],
+    ids=["ignored", "read", "got", "got-none", "got-a-default"],
+)
+def test_a_custom_tools_description_is_its_settings_only_when_its_factory_reads_them(
+    library, made, settings, description
+):
+    block = {"factory": "build", "factory_from": "count_words.py"} | settings
+    with closing(open_library(library)) as connection:
+        store_tool(connection, "count_words", block, COUNT_WORDS.format(made=made))
+        tools = {tool["name"]: tool for tool in panel(connection)["tools"]}
+    assert tools["count_words"]["description"] == description
+
+
+@pytest.mark.parametrize(
     ("tool", "factory"),
     [
         ("history", "build_history"),
@@ -1670,11 +1712,33 @@ def test_a_tool_is_deleted_only_once_no_namespace_grants_it(library):
 
 
 @pytest.mark.parametrize(
+    ("name", "problem"),
+    [
+        (
+            "len",
+            "Tool \"len\" would hide Python's own len, which the agent's code may use;",
+        ),
+        ("open", 'Tool "open" would hide Python\'s own open,'),
+        ("json", 'Tool "json" would hide the json module, which the agent\'s code may'),
+        ("pandas", 'Tool "pandas" would hide the pandas module,'),
+        ("np", 'Tool "np" would hide the np module,'),
+    ],
+)
+def test_a_tool_may_not_be_named_as_a_built_in_or_a_module_agents_use(name, problem):
+    assert tool_name_problem(name).startswith(problem)
+
+
+@pytest.mark.parametrize("name", ["wordcount", "csv_stats", "waitlist"])
+def test_a_tool_may_have_a_name_python_doesnt_use(name):
+    assert tool_name_problem(name) is None
+
+
+@pytest.mark.parametrize(
     ("name", "refusal"),
     [
-        ("llm", "llm is granted in root: take it out of their tools first."),
-        ("history", "history is granted in historian: take it out of their tools"),
-        ("rag", 'The Library holds no tool "rag" to delete.'),
+        ("llm", "llm is the engine's own, not the Library's, so it can't be deleted;"),
+        ("history", "history is the app's own, not the Library's, so it can't be"),
+        ("rag", "rag is the engine's own, not the Library's, so it can't be deleted;"),
     ],
 )
 def test_a_tool_the_library_holds_no_row_for_is_not_deleted(library, name, refusal):

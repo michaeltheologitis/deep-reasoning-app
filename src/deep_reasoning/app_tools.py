@@ -91,6 +91,7 @@ from deep_reasoning.library import (
     taken,
     texts_in,
     tool_file,
+    tool_name_problem,
     tool_rows,
     tool_text,
     without_impossible_hand_offs,
@@ -1079,6 +1080,8 @@ def check_tool(
             f'"{name}" is taken: it is a Python keyword, a built-in or app tool, or a name'
             f" the REPL binds itself ({', '.join(TAKEN_NAMES)}). Pick another."
         )
+    if problem := tool_name_problem(name):
+        raise LibraryError(problem)
     check_tool_block(name, {"factory": factory, "factory_from": tool_file(name)})
     check_size(source, "The source")
     check_size(dump(settings), "The settings as YAML")

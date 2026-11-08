@@ -167,7 +167,15 @@ deep-reasoning`. A module file in the chat's folder imports too.
 - Every run builds every tool some namespace grants, whatever its chat's namespace: a granted tool's code runs at the
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never
-  runs, but to check it builds.
+  runs, but to check it builds. While a run builds its tools, its tree says "starting…".
+- Agents see each tool of yours by the name a namespace grants it under, with its signature and its `Func`
+  description, else its docstring, which the Tools tab shows. It is built afresh for each message, so its state lasts
+  one message, shared by every agent in that run. An async tool's calls return coroutines, which agents drive
+  with `run_all([...])`, as the REPL has no top-level `await`: a worked example calling it that way helps.
+- A tool of yours may not be named as one of Python's built-ins or a module agents' code commonly uses (`len`, `json`,
+  `pandas`), which it would hide: the librarian, an import and the panel's grant refuse it. Built to check it (the
+  panel, an import), a tool sees no key: the key variables of the providers a chat can run on hold a placeholder, so
+  one that reads another provider's key is refused, as it would stop every chat.
 - A new Library's root has a `system_suffix`, which every namespace inherits, telling agents about the app and how to
   answer; read, edit or delete it in the panel.
 

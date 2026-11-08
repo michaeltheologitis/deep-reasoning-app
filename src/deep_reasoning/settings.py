@@ -387,15 +387,17 @@ def every_key(library: Path, home: Path) -> tuple[list[str], list[str]]:
 
 def keyless_environment(library: Path, home: Path) -> dict[str, str]:
     """What a run's worker gets of this environment, but any key: what a tool built to
-    check it gets. Each of *library*'s providers' key variables holds NOT_A_KEY, so a
-    tool that reads one while it is built still builds, and reads no key."""
+    check it gets. The key variable of each provider a chat can run on holds NOT_A_KEY,
+    so a tool that reads one while it is built still builds, and reads no key; one that
+    reads another's fails, as it would in every run."""
     names, secrets = every_key(library, home)
     kept = {
         name: value
         for name, value in worker_env({}).items()
         if name not in names and value not in secrets
     }
-    return kept | dict.fromkeys(key_names(library), NOT_A_KEY)
+    runnable = [each.key_env for each in usable(library, saved_keys(home))]
+    return kept | dict.fromkeys(runnable, NOT_A_KEY)
 
 
 def find_provider(library: Path, name: str) -> Provider | None:

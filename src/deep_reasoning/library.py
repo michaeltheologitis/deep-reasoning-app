@@ -387,6 +387,8 @@ DOCUMENTED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 FUNC = "Func"
 NO_DESCRIPTION = "no description found in its source"
 BUILT_DESCRIPTION = "set when it's built: {}"
+# The setting a custom tool's factory may describe it by, as the engine's llm does.
+DESCRIBED_BY = "description"
 BUILTIN_DESCRIPTIONS = {
     "llm": _DEFAULT_LLM_DESCRIPTION,
     "rag": DEFAULT_RAG_DESCRIPTION,
@@ -624,6 +626,20 @@ DECOMPOSITIONS_KEPT = 256
 FIELDS_MAPPING = 'The YAML should be a mapping of fields, like "tools: [llm]".'
 # A var named as one of these hides it from the agent's code, as max: 10 breaks max(numbers).
 BUILTIN_NAMES = frozenset(dir(builtins))
+# Modules the agent's code commonly uses, and the names it imports some as: a tool named
+# as one hides it, until the code imports it, which hides the tool.
+COMMON_MODULES = frozenset(
+    {
+        *("asyncio", "base64", "collections", "copy", "csv", "datetime", "decimal"),
+        *("functools", "glob", "hashlib", "heapq", "io", "itertools", "json"),
+        *("logging", "math", "operator", "os", "pathlib", "pickle", "random", "re"),
+        *("shutil", "sqlite3", "statistics", "string", "subprocess", "sys"),
+        *("tempfile", "textwrap", "time", "typing", "urllib", "uuid", "zipfile"),
+        *("numpy", "np", "pandas", "pd", "scipy", "matplotlib", "plt", "seaborn"),
+        *("sns", "sklearn", "sympy", "networkx", "nx", "polars", "requests", "httpx"),
+        *("yaml", "bs4", "PIL"),
+    }
+)
 # Characters that don't show: controls and formats, such as a zero-width space.
 INVISIBLE = ("Cc", "Cf")
 # What the engine renders a turn's template against, beside prompt_template_variables.
@@ -2059,6 +2075,22 @@ def var_problem(name):
     return None
 
 
+def tool_name_problem(name):
+    """Why a tool of your own may not be named *name*, beside taken(): None when it may.
+    As a var, it would hide one of Python's built-ins from the agent's code; or a module
+    that code commonly uses."""
+    if name in BUILTIN_NAMES:
+        hidden = f"Python's own {name}"
+    elif name in COMMON_MODULES:
+        hidden = f"the {name} module"
+    else:
+        return None
+    return (
+        f'Tool "{name}" would hide {hidden}, which the agent\'s code may use; rename it,'
+        f' like "{name}_tool".'
+    )
+
+
 def hidden_vars(registry, names):
     """Raise if, in any of the namespaces *names*, a tool takes the place of a var of
     the same name, as the engine binds tools over vars."""
@@ -2302,6 +2334,8 @@ def built_grants(
             text = merged(namespace_yaml(connection, name) or "", text)
         namespace, _ = authored(name, text)
         afresh = granted_afresh(connection, namespace)
+        if misnamed := list(filter(None, map(tool_name_problem, afresh))):
+            raise LibraryError("\n".join(misnamed))
         if locks is not None:
             locks(connection, namespace, afresh)
         if adding:
@@ -2358,6 +2392,12 @@ def delete_tool(connection, name):
 def tool_refusal(name, granting, stored):
     """Why tool *name* can't be deleted, as the namespaces *granting* grant it and the
     Library holds a row for it or not (*stored*); None when it can."""
+    if not stored and (name in BUILDERS or name in APP_TOOLS):
+        whose = "the app's" if name in APP_TOOLS else "the engine's"
+        return (
+            f"{name} is {whose} own, not the Library's, so it can't be deleted; agents"
+            " use it only where a namespace grants it."
+        )
     if granting:
         return (
             f"{name} is granted in {', '.join(granting)}: take it out of their tools"
@@ -2602,11 +2642,12 @@ def run_settings(read):
     return rows
 
 
-def source_description(source, factory):
+def source_description(source, factory, block):
     """What the agent is told a custom tool does, as far as its *source* says without
-    running it: the description its *factory* gives Func(...), as text or a module's text
-    constant, else, when it gives none, the docstring of the function or class it wraps.
-    Empty when neither says, or the source doesn't parse, as a shared file may hold."""
+    running it: the description its *factory* gives Func(...), as text, a module's text
+    constant or its *block*'s description setting, else, when it gives none, the
+    docstring of the function or class it wraps. Empty when neither says, or the source
+    doesn't parse, as a shared file may hold."""
     try:
         module = parsed_python(source)
     except LibraryError:
@@ -2621,12 +2662,37 @@ def source_description(source, factory):
         for target in node.targets
         if isinstance(target, ast.Name)
     }
+    parameters = [] if isinstance(build, ast.ClassDef) else build.args.args
+    settings = parameters[1].arg if len(parameters) > 1 else None
     for call in ast.walk(build):
         if isinstance(call, ast.Call) and called(call.func) == FUNC:
             # As Python finds a name in the factory: its own defs, then the module's.
             scope = top_level(module.body) | top_level(build.body)
-            return func_description(call, scope, texts)
+            read = partial(read_setting, settings, block)
+            return func_description(call, scope, texts, read)
     return ""
+
+
+def read_setting(settings, block, node):
+    """*node* as a factory whose settings are its parameter *settings* reads it from
+    *block*: for settings["description"], the setting; for settings.get("description",
+    default), the setting or else the default; any other *node* as it is."""
+    if isinstance(node, ast.Subscript):
+        got, key, default = node.value, node.slice, node
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and node.args
+    ):
+        got, key = node.func.value, node.args[0]
+        default = node.args[1] if len(node.args) > 1 else ast.Constant(None)
+    else:
+        return node
+    named = isinstance(got, ast.Name) and got.id == settings
+    if not (named and isinstance(key, ast.Constant) and key.value == DESCRIBED_BY):
+        return node
+    return ast.Constant(block[DESCRIBED_BY]) if DESCRIBED_BY in block else default
 
 
 def top_level(body):
@@ -2634,10 +2700,13 @@ def top_level(body):
     return {node.name: node for node in body if isinstance(node, DOCUMENTED)}
 
 
-def func_description(call, scope, texts):
+def func_description(call, scope, texts, read):
     """What the Func(value, description=None) *call* tells the agent: its description,
-    else value's docstring, where value names one of *scope*'s functions or classes."""
+    as *read* (read_setting()) reads it, else value's docstring, where value names one of
+    *scope*'s functions or classes."""
     given = argument(call, "description", 1)
+    if given is not None:
+        given = read(given)
     if given is not None and not is_none(given):
         text = literal_text(given, texts)
         return BUILT_DESCRIPTION.format(ast.unparse(given)) if text is None else text
@@ -2678,8 +2747,7 @@ def literal_text(node, texts):
 
 
 def origin(name, factory, block, source):
-    """Where a tool comes from, as the panel shows it, and what the agent is told it does
-    unless its block says."""
+    """Where a tool comes from, as the panel shows it, and what the agent is told it does."""
     if name in APP_TOOLS:
         made = {"file": APP_TOOLS_MODULE, "defined_in": APP, "badge": "the app's"}
         return made, APP_TOOLS[name][1]
@@ -2689,9 +2757,9 @@ def origin(name, factory, block, source):
             "defined_in": None,
             "badge": "built-in",
         }
-        return made, BUILTIN_DESCRIPTIONS[factory]
+        return made, block.get(DESCRIBED_BY) or BUILTIN_DESCRIPTIONS[factory]
     made = {"file": block["factory_from"], "defined_in": "the Library", "badge": None}
-    return made, source_description(source, factory) or NO_DESCRIPTION
+    return made, source_description(source, factory, block) or NO_DESCRIPTION
 
 
 def granted_in(registry, names, tool):
@@ -2731,7 +2799,7 @@ def tool_rows(config, registry, names, sources):
             name in sources,
             factory=factory,
             **made,
-            description=block.get("description") or description,
+            description=description,
             config=dump({name: block}).rstrip() if block else None,
             source=sources.get(name),
         )

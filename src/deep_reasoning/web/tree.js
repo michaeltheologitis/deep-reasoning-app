@@ -13,6 +13,8 @@ const COST_NA = `cost\u00a0${UNKNOWN_COST}`;
 const PRICE_UNKNOWN = "this model's price isn't known";
 const UNFINISHED = "a model call never finished, so what it cost isn't known";
 const WAITING = "waiting for the model…";
+// before the root agent starts: its run is building the tools its namespaces grant
+const STARTING = "starting…";
 const FINAL_ANSWER = "FinalAnswer: ";
 // marked's tokens that leave an answer plain: shown as written, raw HTML included
 const PLAIN_TOKENS = new Set(["paragraph", "space", "text", "escape", "br", "html"]);
@@ -398,7 +400,7 @@ function renderUnder(agent) {
   return out(failureView(agent.result.split("\n")[0], { model: agent.model, after: CUT_SEPARATOR }), { tone });
 }
 
-const waiting = () => element("div", { class: "waiting" }, WAITING);
+const waiting = (word = WAITING) => element("div", { class: "waiting" }, word);
 
 function renderAgent(agent) {
   const open = opened.has(agent);
@@ -555,6 +557,7 @@ export {
   MS_PER_SECOND,
   PRICE_UNKNOWN,
   SANITIZE,
+  STARTING,
   UNFINISHED,
   UNKNOWN_COST,
   WAITING,
