@@ -2,11 +2,13 @@
 import { PANEL_CLOSE, PANEL_OPEN, caret, closeOtherPanels, element, folderPicker, request, settingsChanged } from "./app.js";
 
 const ENV_FILE = "~/.deep-reasoning/.env";
-const NEW_NAME = "vllm";
-const NEW_URL = "http://localhost:8000/v1";
+// Ollama's, as an example: not the app's own port
+const NEW_NAME = "ollama";
+const NEW_URL = "http://localhost:11434/v1";
 // not a name, so no server's name can be taken for it
 const ADDING = Symbol("adding");
 const NO_FOLDER = "each chat's own scratch folder";
+const FOLDER_MISSING = "missing: new chats use a scratch folder";
 const STATUS = { set: "key ✓", shell: "key from your shell" };
 
 const panel = document.getElementById("settings");
@@ -28,8 +30,10 @@ const addToggle = element(
 );
 const addArea = element("div", { class: "lib-add" }, addToggle);
 const folderName = element("span", { id: "default-folder-name" }, NO_FOLDER);
+const folderMissing = element("span", { id: "default-folder-missing", class: "set-missing" });
 const folderHost = element("div");
 const folderButton = pickerButton("default-folder", "dialog", folderName, pickDefaultFolder);
+folderButton.setAttribute("aria-describedby", "default-folder-missing default-folder-note");
 
 panel.append(
   element(
@@ -43,7 +47,7 @@ panel.append(
     { class: "lib-body" },
     element("section", { class: "lib-group" }, element("h3", { class: "lib-label" }, "Providers"), providerRows, addArea),
     element("p", { class: "lib-note" }, `Keys are kept in ${ENV_FILE}, readable only by you. Keys already set in your shell keep working; one saved here wins.`),
-    pickerSection("default-folder", "Default folder", folderButton, folderHost, "New chats work in it; each chat can pick its own under the message box."),
+    pickerSection("default-folder", "Default folder", [folderButton, " ", folderMissing], folderHost, "New chats work in it; each chat can pick its own under the message box."),
   ),
 );
 
@@ -229,9 +233,11 @@ function pickDefaultFolder() {
   });
 }
 
-function showDefaultFolder({ folder }) {
+// One that isn't on this computer, as in a Library from another, is marked: new chats get their own scratch folder.
+function showDefaultFolder({ folder, missing }) {
   defaultFolder = folder;
   folderName.textContent = folder ?? NO_FOLDER;
+  folderMissing.textContent = missing ? FOLDER_MISSING : "";
 }
 
 async function loadDefaultFolder() {

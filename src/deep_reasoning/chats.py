@@ -10,13 +10,14 @@ import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
 from coolname import generate_slug
 
-from deep_reasoning.library import open_library
+from deep_reasoning.library import RUN_ID, RUN_ID_FORMAT, open_library
 
 log = structlog.get_logger()
 
@@ -30,6 +31,9 @@ ADD_CHAT = (
     " VALUES (:id, :title, :created, :folder)"
 )
 NEW_TITLE = "New chat"
+# The longest title kept: a longer one, typed or taken from a first message, is cut.
+TITLE_CHARS = 200
+RUN_IDS = "SELECT chat, id FROM runs WHERE typeof(id) = 'text'"
 # Three words, like "tunneling-easygoing-mosquito": over 300 million ids.
 ID_WORDS = 3
 
@@ -67,18 +71,50 @@ def chats_in(connection: sqlite3.Connection) -> list[Chat]:
     return [dict(row) for row in rows if well_formed(row)]
 
 
+def latest_runs(connection: sqlite3.Connection, chat: str | None = None) -> dict:
+    """Each chat's latest run, or *chat*'s, by its id; an id the app couldn't have made,
+    as a file from someone else may hold, is left out."""
+    query, args = (
+        (RUN_IDS, ()) if chat is None else (f"{RUN_IDS} AND chat = ?", (chat,))
+    )
+    latest = {}
+    for owner, run in connection.execute(query, args):
+        if re.fullmatch(RUN_ID, run) and run > latest.get(owner, ""):
+            latest[owner] = run
+    return latest
+
+
+def last_used(chat: Chat) -> float:
+    """When the chat was last used: its latest run's start, else when it was made."""
+    created = chat["created"]
+    made = created if isinstance(created, int | float) else 0.0
+    if chat["last_run"] is None:
+        return made
+    try:
+        began = datetime.strptime(chat["last_run"], RUN_ID_FORMAT)
+    except ValueError:  # the shape of an id, but no date, as month 13
+        return made
+    return began.replace(tzinfo=UTC).timestamp()
+
+
 def list_chats(path: Path) -> list[Chat]:
-    """Every chat the app could have written, newest first."""
+    """Every chat the app could have written, with its latest run, the one used last
+    first."""
     with connect(path) as connection:
-        return chats_in(connection)
+        chats, latest = chats_in(connection), latest_runs(connection)
+    chats = [chat | {"last_run": latest.get(chat["id"])} for chat in chats]
+    return sorted(chats, key=last_used, reverse=True)
 
 
 def find_chat(path: Path, chat: str) -> Chat | None:
+    """The chat, with its latest run; None when it isn't there."""
     with connect(path) as connection:
         row = connection.execute(
             f"SELECT {COLUMNS} FROM chats WHERE id = ?", (chat,)
         ).fetchone()
-    return None if row is None or not well_formed(row) else dict(row)
+        if row is None or not well_formed(row):
+            return None
+        return dict(row) | {"last_run": latest_runs(connection, chat).get(chat)}
 
 
 def create_chat(path: Path, folder: str | None = None) -> Chat:
@@ -93,12 +129,19 @@ def create_chat(path: Path, folder: str | None = None) -> Chat:
     with connect(path) as connection:
         while not connection.execute(ADD_CHAT, chat).rowcount:
             chat["id"] = generate_slug(ID_WORDS)
-    return dict.fromkeys(CHOICES) | chat
+    return dict.fromkeys(CHOICES) | chat | {"last_run": None}
+
+
+def capped(title: str) -> str:
+    return title[:TITLE_CHARS].rstrip()
 
 
 def rename_chat(path: Path, chat: str, title: str) -> None:
+    """Title the chat *title*, cut past TITLE_CHARS."""
     with connect(path) as connection:
-        connection.execute("UPDATE chats SET title = ? WHERE id = ?", (title, chat))
+        connection.execute(
+            "UPDATE chats SET title = ? WHERE id = ?", (capped(title), chat)
+        )
 
 
 def choose(
@@ -123,17 +166,18 @@ def choose_folder(path: Path, chat: str, folder: str | None) -> None:
         connection.execute("UPDATE chats SET folder = ? WHERE id = ?", (folder, chat))
 
 
-def title_new_chat(path: Path, chat: str, message: str) -> None:
+def title_new_chat(path: Path, chat: str, message: str) -> str | None:
     """Title a chat still called "New chat" after *message*'s first line that isn't
-    blank."""
-    title = message.strip().partition("\n")[0].strip()
+    blank, cut past TITLE_CHARS; the title, or None when the chat keeps its own."""
+    title = capped(message.strip().partition("\n")[0].strip())
     if not title:
-        return
+        return None
     with connect(path) as connection:
-        connection.execute(
+        titled = connection.execute(
             "UPDATE chats SET title = ? WHERE id = ? AND title = ?",
             (title, chat, NEW_TITLE),
-        )
+        ).rowcount
+    return title if titled else None
 
 
 def delete_chat(path: Path, chat: str) -> None:

@@ -305,8 +305,18 @@ def refuse_taken(name: str, others: list[Provider]) -> None:
     get: a server under it would be handed that provider's key."""
     key_env = server_key_env(name)
     for other in others:
-        if other.name.lower() == name.lower() or other.key_env == key_env:
-            raise SettingsError(f"There is a provider named {other.name} already.")
+        taken = f"There is a provider named {other.name} already"
+        if other.name == name:
+            raise SettingsError(f"{taken}.")
+        if other.name.lower() == name.lower():
+            raise SettingsError(
+                f"{taken}, and names differing only in case count as one."
+            )
+        if other.key_env == key_env:
+            raise SettingsError(
+                f"{taken}, and {name} would keep its key under the same variable,"
+                f" {key_env}: pick a name that differs in its letters or digits."
+            )
 
 
 def stored_server(entry: Any, others: list[Provider]) -> Provider:

@@ -343,11 +343,12 @@ def reset_or_exit(library, home, yes):
 
 
 def serve(port, no_browser, library, home):
-    folder_or_exit(library, home)
-    with owning(library, NOT_STARTED) as connection:
-        connection.close()
-        server = Server(uvicorn.Config(create_app(library, home)))
-        with listen(port) as sock:
+    # The port first: one that is taken leaves no Library or lock made for nothing.
+    with listen(port) as sock:
+        folder_or_exit(library, home)
+        with owning(library, NOT_STARTED) as connection:
+            connection.close()
+            server = Server(uvicorn.Config(create_app(library, home)))
             url = f"http://{HOST}:{sock.getsockname()[1]}/"
             log.info("Deep Reasoning is running", url=url, library=str(library))
             if not no_browser:

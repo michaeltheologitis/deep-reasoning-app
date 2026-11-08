@@ -22,9 +22,15 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 **Chats**
 - Chats on the left: new, rename, delete. Saved in the Library file (below) with every message's run, they come back
   after a restart. Deleting a chat wipes its messages from the file.
+- The chat used last is listed first, and a reload opens it. **+ New chat** goes to an empty chat if there is one,
+  so empty chats don't pile up. A title is cut past 200 characters. An unsent message stays with its chat.
+- Several tabs on one app keep in step: coming back to a tab, or opening a chat, shows the chats, messages, runs,
+  names and picks another tab changed, and follows a run another tab started. A chat deleted in another tab leaves
+  the list with a note naming it.
 - Each message is a run, shown live as a tree of sub-agents you open level by level, waiting for the model until its
   first answer; the nodes you open stay open after a reload. A sub-agent on another model than the chat's shows it on
   its row. Esc stops a run, saying so at once, though a cell busy in C (a long `time.sleep`) holds it up a few seconds.
+  One run goes at a time in a tab: a message sent meanwhile is kept, and the hint says which chat's run is going.
 - Each run shows its time, sub-agent count, cost and model. A call is priced from the price list of the vendor whose
   address it went to (OpenAI, OpenRouter, Anthropic, Google), or by the server's own figure where it sends one, as
   OpenRouter does; so a vendor's model name on a server of your own costs N/A, as does a run whose only calls never
@@ -70,7 +76,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   there is nothing to show, so asking to be shown how an answer was reached goes there too.
 - Each chat has its own model, namespace and working folder, picked under the message box; a change applies from
   the next message.
-- Light and dark themes; works at phone width, and with no internet: the page loads nothing but the app.
+- Light and dark themes; works at phone width, where the chats are a drawer (☰; Esc shuts it), and with no internet:
+  the page loads nothing but the app.
 
 **Models and keys**, in **settings** (bottom left)
 - Vendors and their key variables: OpenAI `OPENAI_API_KEY`, OpenRouter `OPENROUTER_API_KEY`, Anthropic
@@ -89,9 +96,11 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 
 **Working folders**
 - The agent's Python runs in the chat's folder, so files it writes are there for the next message.
-- A scratch folder by default, in `~/.deep-reasoning` (hover the folder's name for its path), deleted with the chat.
+- A scratch folder by default, in `~/.deep-reasoning` (hover the folder's name for its path), deleted with the chat;
+  deleting a chat whose scratch folder holds files says so first.
   A folder you pick is never deleted.
-- Settings has a default folder for new chats; one that isn't on this computer gives them a scratch folder.
+- Settings has a default folder for new chats; one that isn't on this computer is marked missing and gives them a
+  scratch folder.
 
 **The Library**
 - One SQLite file of namespaces, decompositions, custom tools and run settings, and your chats, with their past
@@ -125,8 +134,9 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 - A save or delete in the panel is refused if what you opened was changed meanwhile (by the librarian, another tab
   or an import): your draft stays, beside what is stored now, and saving again replaces it. One deleted meanwhile
   says so, and its row goes. A delete the panel can tell would be refused (a tool a namespace grants, a namespace
-  with namespaces under it or that another's `spawn` names) says why at once, without asking first. The panel reads
-  the Library again whenever you open it or come back to its window.
+  with namespaces under it or that another's `spawn` names) says why at once, without asking first. The panel, and
+  the namespace menu under the message box, read the Library again whenever you open the panel or come back to the
+  window.
 - The Tools tab shows each tool, with what agents are told it does (for one of the Library's own, as far as its
   Python says without running it) and the Python of the Library's own, and deletes one of the Library's that no
   namespace grants. Run settings can't be changed in the panel, but one the engine doesn't read, as an import may

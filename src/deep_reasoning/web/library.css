@@ -100,4 +100,5 @@
 .set-note { grid-column: 2; color: var(--dim); }
 .set-path { white-space: nowrap; }
 .set-model { color: var(--fg); }
+.set-missing { color: var(--warn); }
 .lib-action:disabled, .lib-action:disabled:hover { color: var(--dim); opacity: 0.6; cursor: default; }
