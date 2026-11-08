@@ -59,6 +59,7 @@ from deep_reasoning.library import (
     LIBRARIAN_SUFFIX,
     LIBRARIANS_EXAMPLES,
     MAX_YAML_CHARS,
+    NO_SUB_AGENTS,
     PAGE_DESCRIPTION,
     ROOT,
     ROOT_SUFFIX,
@@ -321,8 +322,8 @@ def test_a_fresh_library_shows_llm_granted_at_root_history_and_page_in_the_histo
         {"value": ROOT_SUFFIX.strip(), "source": "inherited from root", "here": False},
         {"value": HISTORIAN_SUFFIX.strip(), "source": "set here", "here": True},
         {
-            "value": SPAWN_LINE.render(allowed=[], above=False, itself=False),
-            "source": "added at run time, for the spawn list set here",
+            "value": NO_SUB_AGENTS,
+            "source": "added at run time, set here",
             "here": True,
         },
     ]
@@ -1012,18 +1013,14 @@ async def test_a_namespace_that_may_not_hand_off_to_the_historian_says_it_cant(
     )
 
 
-# A planner whose fan-out names the searcher it may spawn into, and a leaf searcher.
+# A planner that may spawn into a leaf searcher, and the fan-out its line shows, as is.
 TEAM = (("searcher", "spawn: []\n"), ("planner", "spawn: [searcher]\n"))
+PLANNERS_LINE = SPAWN_LINE.render(allowed=["searcher"], above=False)
+SHOWN_FAN_OUT = PLANNERS_LINE[PLANNERS_LINE.index("run_all(") : -1]
 TEAM_PLAN = {
-    "Plan it.": [
-        repl(
-            "found = run_all({k: anext(subagent(namespace='searcher').send(t))"
-            " for k, t in {'a': 'Find it.'}.items()})",
-            "print(found)",
-        ),
-        repl("FinalAnswer('done')"),
-    ],
-    "Find it.": [repl("FinalAnswer('found')")],
+    "Plan it.": [repl(f"print({SHOWN_FAN_OUT})"), repl("FinalAnswer('done')")],
+    "first task": [repl("FinalAnswer('found')")],
+    "second task": [repl("FinalAnswer('found')")],
 }
 
 
@@ -1048,8 +1045,8 @@ async def test_a_team_is_told_where_it_can_hand_work_and_a_leaf_that_it_cant(
         call.messages[-1]["content"]: prompt
         for call, prompt in zip(fake.calls, system_prompts(fake.calls))
     }
-    assert "agents here can't hand work to them" in told["Find it."]
-    assert 'subagent(namespace="searcher").send(t)' in told["Plan it."]
+    assert NO_SUB_AGENTS in told["first task"]
+    assert PLANNERS_LINE in told["Plan it."]
 
 
 # Message 1 of the examples that read sub-agents, as the fake answers it.
@@ -1977,11 +1974,10 @@ async def test_root_hands_a_question_about_the_library_to_the_librarian_which_ma
     namespaces = [each["namespace"] for each in kinds(events, "agent.start")]
     assert namespaces == ["root", LIBRARIAN]
     # Each suffix its agents get, root's first, with where it comes from.
-    leaf = SPAWN_LINE.render(allowed=[], above=False, itself=False)
     assert events[-1]["answer"] == (
         f"The historian's agents are told:\n\n{ROOT_SUFFIX.strip()}\n(inherited from"
-        f" root)\n\n{HISTORIAN_SUFFIX.strip()}\n(set here)\n\n{leaf}\n(added at run"
-        " time, for the spawn list set here)"
+        f" root)\n\n{HISTORIAN_SUFFIX.strip()}\n(set here)\n\n{NO_SUB_AGENTS}\n(added"
+        " at run time, set here)"
     )
     librarians_prompt = system_prompts(fake.calls[-1:])[0]
     assert "In this chat you may only read the Library: its namespace, root," in (
