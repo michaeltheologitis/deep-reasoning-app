@@ -31,14 +31,18 @@ import json
 import os
 import re
 import sqlite3
+import threading
 from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import Future
 from contextlib import closing, contextmanager
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from functools import cached_property, partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import jinja2
 import structlog
 import yaml
 from deep_reasoner.namespaces import ROOT, NamespaceConfig, NamespaceRegistry
@@ -81,6 +85,7 @@ from deep_reasoning.library import (
     reading,
     refuse_keys,
     running_code,
+    sees,
     store_tool,
     taken,
     texts_in,
@@ -124,11 +129,21 @@ ENDED_WITH = ("outcome", "answer", "detail", "cost", "seconds")
 SECONDS_DIGITS = 1
 LOOKUP_FIELDS = ("node", "parent", "cell")
 ROOT_LOCKED = (
-    "root is locked: the library tool never writes it. Write into another namespace."
+    "root is locked: the library tool never writes it. The user edits it in the Library"
+    " panel (top right): its YAML with Edit YAML in the Namespaces tab (its system_suffix"
+    " for what every chat should do), its worked examples in the Decompositions tab. Or"
+    " write into another namespace."
 )
-NOT_THIS_CHAT = (
+# Where the user changes the Library: a chat in a namespace that sees the library tool.
+PICK_AN_EDITOR = jinja2.Template(
+    "pick {% if editors %}{{ editors | join(' or ') }}{% else %}a namespace that grants"
+    " library{% endif %} under the message box",
+    undefined=jinja2.StrictUndefined,
+)
+NOT_THIS_CHAT = jinja2.Template(
     "The Library can be changed only in a chat whose namespace grants the library tool;"
-    " pick librarian under the message box."
+    " {{ pick }}.",
+    undefined=jinja2.StrictUndefined,
 )
 NOT_TEXT = (
     "The namespace's name should be text, and the YAML text or a dict of plain values."
@@ -176,6 +191,14 @@ GRANTED = (
 )
 # Any other REPL is a sandbox, and building a tool runs its code outside it.
 LOCAL_REPL = "local"
+# Told to the library tool's agents in a chat that can't write, such as a sub-agent's.
+READ_ONLY_HERE = jinja2.Template(
+    "\nIn this chat you may only read the Library: its namespace, {{ namespace }}, doesn't"
+    " grant library, so the tool refuses every write, here and in any sub-agent. Asked"
+    " for a change, don't try it: answer, with FinalAnswer, what you would change, and"
+    " that the user should {{ pick }} and ask there.",
+    undefined=jinja2.StrictUndefined,
+)
 NOT_LOCAL = (
     "Writing a tool, or granting a custom tool, works only in a chat whose namespace runs"
     " the local REPL: building the tool to check it runs its code outside any sandbox."
@@ -480,6 +503,42 @@ def app_file(library: str, mode: str) -> Iterator[sqlite3.Connection]:
         raise LibraryError(
             f"The Library file can't be used now ({error}); try again."
         ) from error
+
+
+def written[T](library: str, write: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """What *write* returns, given the app file opened to write and *args*."""
+    with app_file(library, "rw") as connection:
+        return write(connection, *args, **kwargs)
+
+
+def stop_proof[T](work: Callable[[], T]) -> T:
+    """What *work* returns, worked out on a thread of its own, in this thread's context.
+    The engine stops a cell by raising StopRequested in the cell's thread, once, at its
+    next bytecode: one that arrives during a commit, in C, is raised as the commit
+    returns. Here it is raised before the other thread takes *work* up, which it then
+    never does, or once *work* is done; so a Stop never falls between a write and the
+    event that logs it. The server's kill, 5 s after a Stop, still could, were a write
+    still going then and the kill to land between its commit and its log."""
+    future = Future()
+
+    def take_up() -> None:
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            future.set_result(work())
+        # Handed on whole, as result() raises it in the caller's thread.
+        except BaseException as error:  # noqa: BLE001
+            future.set_exception(error)
+
+    thread = threading.Thread(target=copy_context().run, args=(take_up,))
+    try:
+        thread.start()
+        thread.join()
+    except BaseException:
+        if not future.cancel():
+            thread.join()
+        raise
+    return future.result()
 
 
 def earlier_runs(library: str, chat: str, run: str) -> list[list[Event]]:
@@ -831,9 +890,13 @@ class Page:
                 f'Saved the page "{title}" again, as it stands now; the chat still'
                 " links it."
             )
+        stop_proof(partial(self._open_anew, title, blocks))
+        return f'Opened the page "{title}"; the chat links it under your answer.'
+
+    def _open_anew(self, title: str, blocks: str) -> None:
+        """Save the page anew, as this page, and log page.open."""
         self._page = self._add_page(title, blocks)
         log.info("page.open", page=self._page, title=title)
-        return f'Opened the page "{title}"; the chat links it under your answer.'
 
     def _add(self, block: dict[str, Any]) -> None:
         if len(self._blocks) == MAX_BLOCKS:
@@ -878,13 +941,11 @@ def build_page(client: Any, params: dict[str, Any]) -> Func:
         """Save a new page of this run's, its *blocks* as JSON; its id."""
         # The agent whose cell opens the page, as its page.open event names it.
         node = structlog.contextvars.get_contextvars().get("agent_id")
-        with app_file(library, "rw") as connection:
-            return add_page(connection, chat, run, node, title, blocks)
+        return written(library, add_page, chat, run, node, title, blocks)
 
     def update(page: str, blocks: str) -> None:
         """Save page *page* of this run's again, with *blocks*, as JSON."""
-        with app_file(library, "rw") as connection:
-            update_page(connection, chat, run, page, blocks)
+        written(library, update_page, chat, run, page, blocks)
 
     def new(title: str) -> Page:
         """A page titled *title*, saved when its open() is called."""
@@ -1267,6 +1328,8 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     the tools it checks in the run's *tools_dir*."""
     library, chat_namespace = params["library"], params["namespace"]
     key_names, tools_dir = params["key_names"], Path(params["tools_dir"])
+    editors = params.get("editors", [])
+    pick = PICK_AN_EDITOR.render(editors=editors)
 
     def show(name: str | None = None) -> Any:
         """Every namespace in brief, or namespace *name* as the Library panel shows it."""
@@ -1293,10 +1356,10 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         """Raise unless this run's chat is in a namespace that grants the library tool, as
         the Library stands under the write lock: a grant taken away meanwhile counts."""
         granted = chat_namespace in registry.names and (
-            LIBRARY_TOOL in registry.resolve(chat_namespace).tools
+            sees(registry, chat_namespace, LIBRARY_TOOL)
         )
         if not granted:
-            raise LibraryError(NOT_THIS_CHAT)
+            raise LibraryError(NOT_THIS_CHAT.render(pick=pick))
 
     def check_local(registry: NamespaceRegistry) -> None:
         """Raise unless this run's chat runs the local REPL: a build runs a tool's code
@@ -1367,19 +1430,28 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         if "<repl>" not in text:
             text = with_real_tags(text)
         check_writable(namespace, text, key_names)
-        with app_file(library, "rw") as connection:
-            stored, before = add_decomposition(
-                connection, namespace, text, replace=True, allowed=may_write
+
+        def write() -> tuple[dict[str, Any], Event]:
+            stored, before = written(
+                library,
+                add_decomposition,
+                namespace,
+                text,
+                replace=True,
+                allowed=may_write,
             )
-        done = "added" if before is None else "replaced"
-        change = logged(
-            done,
-            before,
-            text,
-            what="decomposition",
-            namespace=namespace,
-            name=stored["name"],
-        )
+            done = "added" if before is None else "replaced"
+            change = logged(
+                done,
+                before,
+                text,
+                what="decomposition",
+                namespace=namespace,
+                name=stored["name"],
+            )
+            return stored, change
+
+        stored, change = stop_proof(write)
         broken = code_problems(text)
         return {**change, "problems": stored["problems"]} | (
             {"code_problems": broken} if broken else {}
@@ -1390,13 +1462,15 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         text = yaml_text(yaml)
         check_writable(name, text, key_names)
         built = built_grants(name, text, adding=True)
-        with app_file(library, "rw") as connection:
-            stored = add_namespace(
-                connection, name, text, allowed=partial(may_grant, built)
+
+        def write() -> Event:
+            allowed = partial(may_grant, built)
+            stored = written(library, add_namespace, name, text, allowed=allowed)
+            return logged(
+                "added", None, stored, what="namespace", namespace=name, name=name
             )
-        return logged(
-            "added", None, stored, what="namespace", namespace=name, name=name
-        )
+
+        return stop_proof(write)
 
     def change(name: str, yaml: Any, replace: bool = False) -> dict[str, Any]:
         """Give namespace *name* the fields *yaml* sets, keeping the others, or with
@@ -1405,19 +1479,20 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         check_writable(name, text, key_names)
         merge = not replace
         built = built_grants(name, text, adding=False, merge=merge)
-        with app_file(library, "rw") as connection:
-            before, stored = change_namespace(
-                connection,
-                name,
-                text,
-                allowed=partial(may_grant, built),
-                merge=merge,
-            )
         at = {"what": "namespace", "namespace": name, "name": name}
-        if stored == before:
+
+        def write() -> tuple[str, str, Event | None]:
+            allowed = partial(may_grant, built)
+            before, stored = written(
+                library, change_namespace, name, text, allowed=allowed, merge=merge
+            )
+            done = None if stored == before else logged("changed", before, stored, **at)
+            return before, stored, done
+
+        before, stored, done = stop_proof(write)
+        if done is None:
             return {"done": "unchanged", **at}
         changed, kept = field_changes(before, stored)
-        done = logged("changed", before, stored, **at)
         return done | {"changed": cut(changed), "kept": kept}
 
     def write_tool(
@@ -1436,18 +1511,16 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             **(settings or {}),
         }
         check_builds({name: (block, source)}, tools_dir, WRITTEN)
-        with app_file(library, "rw") as connection:
-            found = store_tool(
-                connection,
-                name,
-                block,
-                source,
-                allowed=lambda locked: may_write_tool(locked, name),
-            )
-        before = None if found is None else tool_text(name, *found)
-        after = tool_text(name, dump(block), source)
-        done = "added" if found is None else "replaced"
-        return logged(done, before, after, what="tool", name=name)
+
+        def write() -> Event:
+            allowed = partial(may_write_tool, name=name)
+            found = written(library, store_tool, name, block, source, allowed=allowed)
+            before = None if found is None else tool_text(name, *found)
+            after = tool_text(name, dump(block), source)
+            done = "added" if found is None else "replaced"
+            return logged(done, before, after, what="tool", name=name)
+
+        return stop_proof(write)
 
     tool = SimpleNamespace(
         show=show,
@@ -1458,4 +1531,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         change_namespace=change,
         write_tool=write_tool,
     )
-    return Func(tool, description=LIBRARY_DESCRIPTION)
+    description = LIBRARY_DESCRIPTION
+    if chat_namespace not in editors:
+        description += READ_ONLY_HERE.render(namespace=chat_namespace, pick=pick)
+    return Func(tool, description=description)

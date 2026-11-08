@@ -1,15 +1,21 @@
 import json
 import re
 import sqlite3
+import threading
+import time
 from contextlib import closing
 from itertools import count
 from pathlib import Path
 
 import pytest
 import yaml
+from deep_reasoner.core import capture_debug_logs
+from deep_reasoner.stopping import DriveTable, StopRequested
 from fake_model import RESEARCH_CHANGED, SPLIT_COUNT, WORD_COUNT, WORD_COUNT_DOC
+from structlog.contextvars import bound_contextvars
 from structlog.testing import capture_logs
 
+from deep_reasoning import app_tools
 from deep_reasoning.app_tools import (
     BRIEF_CHARS,
     CHANGED_MEANWHILE,
@@ -44,7 +50,9 @@ from deep_reasoning.library import (
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
     LIBRARIAN,
+    LIBRARIAN_HAND_OFFS,
     LIBRARIANS_EXAMPLES,
+    LIBRARY_DESCRIPTION,
     UPSERT_TOOL,
     LibraryError,
     add_namespace,
@@ -73,6 +81,11 @@ ANOTHER_CHAT = "another-chat"
 CURRENT = "20261027-235959-000000"
 RUN_NUMBERS = count()
 EXHAUSTED = "Agent failed to produce a final answer within 3 iterations."
+STOPPED_NODE = 1
+CALLING_AGENT = 7
+COMMIT_WITHIN_S = 30
+# Long past the few bytecodes between a write's COMMIT being traced and its wait in C.
+WAITING_IN_C_S = 0.2
 
 
 def recorded(name):
@@ -687,9 +700,9 @@ RUN_CONFIG = {
 }
 
 
-def library_tool(library, namespace="librarian"):
-    """The library tool, as a run of a chat in *namespace* gets it, in a run folder with
-    its spec."""
+def library_func(library, namespace="librarian", editors=(LIBRARIAN,)):
+    """The library tool, with what its agents are told, as a run of a chat in *namespace*
+    gets it, in a run folder with its spec; *editors* None names none."""
     run = library.parent / "run"
     run.mkdir(exist_ok=True)
     (run / SPEC).write_text(yaml.safe_dump({"config": RUN_CONFIG}))
@@ -701,16 +714,26 @@ def library_tool(library, namespace="librarian"):
         "namespace": namespace,
         "key_names": [SHELL_KEY_ENV],
     }
-    return build_library(None, told).value
+    if editors is not None:
+        told["editors"] = list(editors)
+    return build_library(None, told)
 
 
-# A fresh app file's decompositions: root's hand-offs, then the historian's examples of the
-# same names, then the librarian's.
+def library_tool(library, namespace="librarian"):
+    return library_func(library, namespace).value
+
+
+# A fresh app file's decompositions: root's hand-offs to the librarian, then to the
+# historian, then the historian's examples of the same names, then the librarian's.
 FRESH = [
-    (namespace, parsed(text).name)
-    for namespace in ("root", HISTORIAN)
-    for text in HISTORIANS_EXAMPLES
-] + [(LIBRARIAN, parsed(text).name) for text in LIBRARIANS_EXAMPLES]
+    *[("root", parsed(text).name) for text in LIBRARIAN_HAND_OFFS],
+    *[
+        (namespace, parsed(text).name)
+        for namespace in ("root", HISTORIAN)
+        for text in HISTORIANS_EXAMPLES
+    ],
+    *[(LIBRARIAN, parsed(text).name) for text in LIBRARIANS_EXAMPLES],
+]
 
 
 def stored(library):
@@ -972,6 +995,24 @@ def test_a_chat_whose_namespace_lost_the_grant_mid_run_may_not_write(
     assert stored(fresh) == before
 
 
+def test_the_tools_agents_are_told_they_may_only_read_in_a_chat_that_cant_write(
+    fresh,
+):
+    assert library_func(fresh).description == LIBRARY_DESCRIPTION
+    told = library_func(fresh, "drafts").description.removeprefix(LIBRARY_DESCRIPTION)
+    assert "may only read" in told
+    assert "its namespace, drafts," in told
+    assert "pick librarian under the message box" in told
+
+
+def test_a_run_config_that_names_no_editors_tells_the_tools_agents_they_may_only_read(
+    fresh,
+):
+    told = library_func(fresh, editors=None).description
+    assert "its namespace, librarian," in told
+    assert "pick a namespace that grants library under the message box" in told
+
+
 def test_a_busy_app_file_is_a_refusal_in_words(fresh):
     refused = pytest.raises(LibraryError, match="can't be used now .*; try again")
     with closing(open_library(fresh)) as connection, writing(connection), refused:
@@ -986,6 +1027,99 @@ def test_a_moved_app_file_is_never_made_afresh(fresh, tmp_path):
         with pytest.raises(LibraryError, match="can't be used now"):
             call()
     assert not fresh.exists()
+
+
+def stopped_while_committing(library, monkeypatch, write):
+    """What *write* logs when it runs in a cell that is stopped while its write commits.
+    A reader keeps the commit waiting until the Stop has been sent, so the Stop arrives
+    while the cell's thread is inside the commit."""
+    committing = threading.Event()
+
+    def note_commit(sql):
+        if sql == "COMMIT":
+            committing.set()
+
+    def traced(path, mode="ro"):
+        connection = open_existing(path, mode)
+        if mode == "rw":
+            connection.set_trace_callback(note_commit)
+        return connection
+
+    monkeypatch.setattr(app_tools, "open_existing", traced)
+    drives, stopped = DriveTable(), []
+
+    def cell():
+        try:
+            with drives.cell((STOPPED_NODE,)):
+                write()
+        except StopRequested:
+            stopped.append(STOPPED_NODE)
+
+    reader = sqlite3.connect(library, isolation_level=None)
+    with closing(reader), capture_debug_logs() as logs:
+        reader.execute("BEGIN")
+        reader.execute("SELECT count(*) FROM namespaces").fetchone()
+        thread = threading.Thread(target=cell)
+        thread.start()
+        assert committing.wait(COMMIT_WITHIN_S)
+        time.sleep(WAITING_IN_C_S)
+        assert thread.is_alive(), "the commit didn't wait on the reader"
+        drives.stop(STOPPED_NODE)
+        reader.rollback()
+        thread.join()
+    assert stopped == [STOPPED_NODE]
+    return [log for log in logs if log["event"] in ("library.change", "page.open")]
+
+
+def library_dump(library):
+    with closing(open_library(library)) as connection:
+        return list(connection.iterdump())
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        lambda tool: tool.add_namespace("research", "system_suffix: Be brief.\n"),
+        lambda tool: tool.change_namespace("drafts", "system_suffix: Be brief.\n"),
+        lambda tool: tool.write_decomposition("drafts", EXAMPLE),
+        lambda tool: tool.write_tool("counter", WORD_COUNT, "build"),
+    ],
+    ids=["add_namespace", "change_namespace", "write_decomposition", "write_tool"],
+)
+def test_a_stop_as_a_write_commits_leaves_it_written_and_logged(
+    fresh, monkeypatch, write
+):
+    before = library_dump(fresh)
+    tool = library_tool(fresh)
+    logs = stopped_while_committing(fresh, monkeypatch, lambda: write(tool))
+    assert [log["event"] for log in logs] == ["library.change"]
+    assert library_dump(fresh) != before
+
+
+def add_research(library):
+    library_tool(library).add_namespace("research", "system_suffix: Be brief.\n")
+
+
+def open_notes(library):
+    p = page_of(library).new("Notes")
+    p.text("Kept.")
+    p.open()
+
+
+@pytest.mark.parametrize("write", [add_research, open_notes])
+def test_a_write_is_logged_with_the_calling_agents_context(fresh, write):
+    with capture_debug_logs() as logs, bound_contextvars(agent_id=CALLING_AGENT):
+        write(fresh)
+    [logged] = [log for log in logs if log["event"] in ("library.change", "page.open")]
+    assert logged["agent_id"] == CALLING_AGENT
+
+
+def test_a_stop_as_a_page_is_saved_leaves_it_saved_and_logged(fresh, monkeypatch):
+    p = page_of(fresh).new("Notes")
+    p.text("Saved whole.")
+    logs = stopped_while_committing(fresh, monkeypatch, p.open)
+    [(page, *_)] = stored_pages(fresh)
+    assert [(log["event"], log["page"]) for log in logs] == [("page.open", page)]
 
 
 def stored_namespaces(library):

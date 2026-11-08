@@ -1,0 +1,11 @@
+name: read the Library
+messages:
+  - {role: user, content: "What does the historian's suffix say?"}
+  - role: assistant
+    content: |
+      <think>Read the historian as the Library resolves it, each suffix its agents get with where it comes from, and answer with them as the tool returns them, never retyped: the user sees only my answer.</think>
+      <repl>
+      fields = {field["label"]: field["items"] for field in library.show("historian")["fields"]}
+      told = [f"{each['value']}\n({each['source']})" for each in fields["System suffix"]]
+      FinalAnswer("The historian's agents are told:\n\n" + "\n\n".join(told))
+      </repl>
