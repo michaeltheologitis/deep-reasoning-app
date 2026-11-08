@@ -26,7 +26,7 @@ This project's Notion page (todos, changelog, notes): https://app.notion.com/p/4
 
 ### Trust boundary: a shared file
 
-- Everything read from the file is checked as the app could have written it (Library rows as the engine reads them, within 1,000,000 characters; custom servers, settings, chats, runs, events, pages), and what fails is left out with a warning, so it reads as unset; the panel lists each Library row left out, to fix or delete. The page and the `history` tool read a run's record as untrusted too.
+- Everything read from the file is checked as the app could have written it (Library rows as the engine reads them, within 1,000,000 characters, names in printable ASCII and not root's, templates as a save checks them; custom servers, settings, chats, runs, events, pages), and what fails is left out with a warning, so it reads as unset; the panel lists each Library row left out, to fix or delete. The page and the `history` tool read a run's record as untrusted too.
 - Deleted rows are wiped (`secure_delete`) and the file's own triggers and views never run, so a copy carries nothing deleted.
 - The engine's templates render sandboxed in the app's processes, so a shared file's worked example, prompt or suffix reaches no Python internals.
 
@@ -41,7 +41,7 @@ This project's Notion page (todos, changelog, notes): https://app.notion.com/p/4
 - An edit or delete carries the YAML it was opened on and is refused with 409 if that changed since; the panel then shows what is stored, keeping the draft. The panel and the namespace menu read the Library again when opened or the window comes back. A chat whose namespace was deleted is refused on its next run until it picks another.
 - Decompositions are checked as worked examples by the rules the engine's own examples keep (`turn_problems`, and its twin `web/turns.js`, held to its words by `tests/turn_cases.json`), the code not run: problems mark one ✗ but never refuse it, so a draft is stored. Saving refuses one over 1,000,000 characters, oddly named, or with a template the engine couldn't render or that reaches Python internals (checked, never rendered). A namespace is refused for a backbone, suffix or var the engine can't take there or below.
 - After each namespace's own `system_suffix`, a run tells its agents which namespace they are in (not root's), where their Python runs when their REPL isn't the one above (root's: the local one), and, when it sets a `spawn` list, where they can hand work (`run_lines`); the line isn't stored, the library tool refuses a suffix holding one, and the panel shows it as added at run time.
-- `deep-reasoning import` writes, in one transaction, what the Library doesn't hold and root's fields over root's own, and says what it changed, left out and what that changes in the app. It refuses, changing nothing, a file that isn't a config, the app's own namespaces or one under them, a tool named as a built-in, what the panel would refuse, and a key.
+- `deep-reasoning import` writes, in one transaction, what the Library doesn't hold and root's fields over root's own, and says what it changed, left out and what that changes in the app. It refuses, changing nothing, a file that isn't a config, the app's own namespaces or one under them, a tool named as a built-in, what the panel would refuse, an `entry_namespace` naming no namespace, a template variable a kept worked example reads, and a key; it reads only files in the config's folder (`--within` widens it).
 
 ### Keys
 

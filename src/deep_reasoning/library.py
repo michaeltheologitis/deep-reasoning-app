@@ -19,7 +19,7 @@ import sys
 import unicodedata
 from collections import Counter, defaultdict
 from contextlib import closing, contextmanager
-from functools import partial
+from functools import lru_cache, partial
 from pathlib import Path
 
 import deep_reasoner.llm
@@ -441,11 +441,16 @@ name lower down takes the place of its parent's there. Where a method takes \
 yaml, give YAML text or a dict of plain values.
   library.show(name=None): every namespace, in brief: name, depth, sets (the fields it \
 sets itself), tools (all its agents get, inherited ones included) and decompositions \
-(each name, with how many problems it has as a worked example: 0 is ✓). Each text is \
-cut after 200 characters, ending "…(+N chars)". show(name) gives namespace `name` whole: \
-name, depth, yaml (the fields it sets itself, as change_namespace takes them), fields \
-(each as the engine resolves it, with where it comes from) and decompositions (each with \
-its name, yaml and problems).
+(only those it holds itself: each name, with how many problems it has as a worked \
+example: 0 is ✓). Each text is cut after 200 characters, ending "…(+N chars)". \
+show(name) gives namespace `name` whole: name, depth, yaml (the fields it sets itself, \
+as change_namespace takes them), fields (each as the engine resolves it, with where it \
+comes from), decompositions (every one its agents are shown, inherited ones included: \
+each with its name and from, the namespace that holds it; those `name` holds itself \
+with their yaml and problems too, and show(from) gives an inherited one's; rewritten: \
+True on one they are shown doing what they can instead of a hand-off they can't make, \
+as the Hand-offs field says) and decompositions_left_out (those it holds that no agent \
+is shown, as a shared file's the engine can't read: name, yaml and problems).
   library.tools(name=None): every tool, in brief: name, kind ("custom", "built-in" or \
 "the app's"), factory, settings, granted_in (the namespaces that grant it themselves), \
 description and source (a custom tool's Python, else None), each text cut after 200 \
@@ -609,8 +614,13 @@ YAML_NOT_TEXT = "Its YAML isn't text."
 GRANT_IGNORED = "Runs ignore its grants until it is fixed or deleted."
 NAME_NOT_TEXT = "Its name isn't text."
 NOT_A_RUN_SETTING = "The Library never holds it: each chat or run sets it, or the Library's own tables do."
-# What heads the problems of a decomposition the engine can't read.
+# What heads the problems of a decomposition left out: one the engine can't read, or
+# can't render, which would fail every run in its namespace and below.
 UNREAD_DECOMPOSITION = "Agents aren't shown it: the engine can't read it."
+UNRENDERED_DECOMPOSITION = "Agents aren't shown it: a run can't render it."
+# How many stored decompositions' readings are kept, so a read of the Library parses only
+# those that changed; a Library holds a few dozen.
+DECOMPOSITIONS_KEPT = 256
 FIELDS_MAPPING = 'The YAML should be a mapping of fields, like "tools: [llm]".'
 # A var named as one of these hides it from the agent's code, as max: 10 breaks max(numbers).
 BUILTIN_NAMES = frozenset(dir(builtins))
@@ -1027,8 +1037,9 @@ def own_fields(name, text):
 def read_namespaces(connection):
     """The namespaces that load, as {name: own fields}; those left out, as {name: why};
     and each one's own YAML as the panel shows it, None for one too long or not text.
-    One under a namespace left out or not there goes too, as the engine can't resolve
-    it; root's stay, as the engine supplies a bare root for a file without one."""
+    One named so it could pass for another (check_stored_name()) goes too. One under a
+    namespace left out or not there goes too, as the engine can't resolve it; root's
+    stay, as the engine supplies a bare root for a file without one."""
     query = f"SELECT name, {fitting('yaml')} FROM namespaces ORDER BY rowid"
     namespaces, left, shown = {}, {}, {}
     for name, text, size in connection.execute(query):
@@ -1038,6 +1049,7 @@ def read_namespaces(connection):
         shown[name] = None
         try:
             shown[name] = row_text(text, size)
+            check_stored_name(name)
             namespaces[name] = own_fields(name, shown[name])
         except LibraryError as error:
             left[name] = warn_left_out("namespaces", name, str(error))
@@ -1053,10 +1065,10 @@ def read_namespaces(connection):
     return namespaces, left, shown
 
 
-def read_decompositions(connection):
+def read_decompositions(connection, names):
     """Each decomposition row, in the order they were added, as {namespace, name, yaml,
     decomposition, why}: yaml None for one the panel can't show, and decomposition, as
-    the engine's model reads it, None for one left out, with why."""
+    the engine's model reads it, None for one left out, with why (decomposition_read())."""
     query = (
         f"SELECT namespace, name, {fitting('yaml')} FROM decompositions ORDER BY rowid"
     )
@@ -1065,15 +1077,28 @@ def read_decompositions(connection):
         if type(namespace) is not str or type(name) is not str:
             warn_left_out("decompositions", (namespace, name), NAME_NOT_TEXT)
             continue
-        row = {"namespace": namespace, "name": name, "yaml": None}
-        row |= {"decomposition": None, "why": None}
-        try:
-            row["yaml"] = row_text(text, size)
-            row["decomposition"] = decomposition_in(row["yaml"])
-        except LibraryError as error:
-            row["why"] = warn_left_out("decompositions", (namespace, name), str(error))
-        rows.append(row)
+        decomposition, why = decomposition_read(text, size, names)
+        if why:
+            warn_left_out("decompositions", (namespace, name), why)
+        row = {"namespace": namespace, "name": name, "yaml": shown_text(text, size)}
+        rows.append(row | {"decomposition": decomposition, "why": why})
     return rows
+
+
+@lru_cache(maxsize=DECOMPOSITIONS_KEPT)
+def decomposition_read(text, size, names):
+    """A stored decomposition, read from its row's *text* and *size* (as fitting() reads
+    them), and why it is left out: the decomposition and None when agents can be shown
+    it; None and why, as the panel lists it, when the engine can't read it or can't
+    render one of its turns, whose templates may read only *names*. Kept for the next
+    read of the Library, which most requests and every run make."""
+    try:
+        decomposition = decomposition_in(row_text(text, size))
+    except LibraryError as error:
+        return None, f"{UNREAD_DECOMPOSITION}\n{error}"
+    if problems := template_problems(decomposition, names):
+        return None, "\n".join([UNRENDERED_DECOMPOSITION, *problems])
+    return decomposition, None
 
 
 def read_library(connection):
@@ -1082,6 +1107,7 @@ def read_library(connection):
     namespaces, namespaces_left, namespace_yaml = read_namespaces(connection)
     settings, settings_left = read_run_settings(connection, namespaces)
     tools, tools_left = read_tools(connection)
+    names = template_names(settings.get("prompt_template_variables", {}))
     return {
         "settings": settings,
         "settings_left": settings_left,
@@ -1090,7 +1116,7 @@ def read_library(connection):
         "namespaces": namespaces,
         "namespaces_left": namespaces_left,
         "namespace_yaml": namespace_yaml,
-        "decompositions": read_decompositions(connection),
+        "decompositions": read_decompositions(connection, names),
     }
 
 
@@ -1637,12 +1663,21 @@ def check_decomposition_name(name):
             f'The name "{name}" starts or ends with a space; take it out, so it reads as it'
             " looks."
         )
-    hidden = [char for char in name if unicodedata.category(char) in INVISIBLE]
+    hidden = first_char(name, invisible)
     if hidden:
         raise LibraryError(
-            f"The name holds a character you can't see (U+{ord(hidden[0]):04X}); take it"
-            " out, so it reads as it looks."
+            f"The name holds a character you can't see ({hidden}); take it out, so it"
+            " reads as it looks."
         )
+
+
+def first_char(text, test):
+    """The first character of *text* that passes *test*, as U+ writes it; None for none."""
+    return next((f"U+{ord(char):04X}" for char in text if test(char)), None)
+
+
+def invisible(char):
+    return unicodedata.category(char) in INVISIBLE
 
 
 # Root's worked examples in a new Library, as YAML: its hand-offs to the librarian, then
@@ -1666,10 +1701,10 @@ def sandbox_templates():
     deep_reasoner.llm._JinjaEnv = SANDBOXED
 
 
-def template_names(config):
+def template_names(variables):
     """The names a turn's template may read: what the engine fills in, and the run
-    settings' prompt_template_variables in *config*."""
-    return {*FILLED_IN, *config.prompt_template_variables}
+    settings' prompt_template_variables, *variables*."""
+    return frozenset({*FILLED_IN, *variables})
 
 
 def first_use(template, name):
@@ -1752,7 +1787,8 @@ def template_problems(decomposition, names):
 def check_templates(connection, decomposition):
     """Raise unless every turn of *decomposition* is a template the engine renders."""
     config, _ = config_and_registry(connection)
-    problems = template_problems(decomposition, template_names(config))
+    names = template_names(config.prompt_template_variables)
+    problems = template_problems(decomposition, names)
     if problems:
         raise LibraryError("\n".join(problems))
 
@@ -2046,7 +2082,9 @@ def suffix_problem(connection, namespace):
         return None
     config, _ = config_and_registry(connection)
     label = f"The system_suffix of {namespace.name}"
-    return template_problem(label, suffix, template_names(config))
+    return template_problem(
+        label, suffix, template_names(config.prompt_template_variables)
+    )
 
 
 def check_fields(connection, namespace, adding):
@@ -2137,6 +2175,24 @@ def check_name(name):
             f'"{name}" reads as root, which every namespace goes under already: name it'
             ' something else, like "research".'
         )
+
+
+def check_stored_name(name):
+    """Raise unless a stored namespace's *name* holds only what a saved one may hold,
+    printable ASCII, and, unless it is root, doesn't read as root, so none passes for
+    another in the menu, written out so the panel shows what it holds. The save's
+    stricter rules (check_name()) are left to saving, so an older Library's names stay."""
+    if odd := first_char(
+        name, lambda char: not (char.isascii() and char.isprintable())
+    ):
+        why = f"holds characters a saved name can't ({odd})"
+    elif name != ROOT and name.strip().lower() == ROOT:
+        why = "reads as root"
+    else:
+        return
+    raise LibraryError(
+        f"Its name, {name!a}, {why}, so it could pass for another namespace in the menu."
+    )
 
 
 def check_place(connection, name):
@@ -2735,7 +2791,6 @@ def namespace_rows(read, config, registry):
     for row in read["decompositions"]:
         decompositions[row["namespace"]].append(row)
     left = read["namespaces_left"]
-    names = template_names(config)
     targets = hand_off_targets(config)
     handed = Counter(hand_offs_made(registry, targets))
     readable = set(registry.names)
@@ -2750,7 +2805,7 @@ def namespace_rows(read, config, registry):
                 if name in readable
                 else []
             ),
-            "decompositions": checked(decompositions[name], names),
+            "decompositions": checked(decompositions[name]),
             "yaml": own_yaml(read["namespace_yaml"].get(name, "")),
             "handed_to": handed[name],
             # The engine supplies a bare root when the file's is left out.
@@ -2773,22 +2828,21 @@ def hand_offs_made(registry, targets):
             yield target
 
 
-def checked(rows, names):
+def checked(rows):
     """A namespace's stored decompositions, *rows* as read_decompositions() reads them,
-    each with its problems as a worked example and as templates reading only *names*, as
-    a shared file may hold one the engine can't render; or, for one the engine can't
-    read, why."""
+    each with its problems as a worked example; or, for one left out, why: its templates
+    were checked as it was read."""
     return [
-        {"name": row["name"], "yaml": row["yaml"], "problems": problems_of(row, names)}
+        {"name": row["name"], "yaml": row["yaml"], "problems": problems_of(row)}
         for row in rows
     ]
 
 
-def problems_of(row, names):
+def problems_of(row):
     decomposition = row["decomposition"]
     if decomposition is None:
-        return [UNREAD_DECOMPOSITION, *row["why"].splitlines()]
-    return decomposition_problems(decomposition, names)
+        return row["why"].splitlines()
+    return example_problems(decomposition)
 
 
 def listed_tools(read, config, registry, names):

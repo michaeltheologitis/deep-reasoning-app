@@ -18,7 +18,7 @@ from deep_reasoner.v2.cli import (
 )
 from structlog.testing import capture_logs
 
-from deep_reasoning.importing import NOT_CARRIED, import_config
+from deep_reasoning.importing import KEEP_VARIABLES, NOT_CARRIED, import_config
 from deep_reasoning.library import (
     HERE_LINE,
     HISTORIAN,
@@ -120,10 +120,11 @@ def run_config(library, tmp_path, namespace=ROOT):
     )
 
 
-def import_into(library, config):
-    """What importing *config* into *library* changed, as the lines it says."""
+def import_into(library, config, within=None):
+    """What importing *config* into *library*, reading within *within*, changed, as the
+    lines it says."""
     with closing(open_library(library)) as connection:
-        return import_config(connection, config)["changes"]
+        return import_config(connection, config, within=within)["changes"]
 
 
 def dumped(library):
@@ -349,7 +350,7 @@ def test_an_import_may_not_give_a_tool_an_app_tools_name(library, tmp_path, tool
 
 
 def test_import_says_each_setting_namespace_and_tool_it_changed(library, waitlist):
-    said = import_into(library, waitlist)
+    said = import_into(library, waitlist, within=CONFIGS)
     assert said == [
         "Run settings, for every chat:",
         (
@@ -815,12 +816,13 @@ ANSWERS = (
 )
 
 
-def refused_unchanged(library, config, said):
-    """Import *config*, which must be refused saying *said*, leaving *library* as it was."""
+def refused_unchanged(library, config, said, within=None):
+    """Import *config*, reading within *within*, which must be refused saying *said*,
+    leaving *library* as it was."""
     open_library(library).close()
     before = dumped(library)
     with pytest.raises(LibraryError) as refused:
-        import_into(library, config)
+        import_into(library, config, within)
     assert said in str(refused.value)
     assert dumped(library) == before
 
@@ -1002,8 +1004,21 @@ ALIAS_BOMB = (
 )
 
 
+# Six aliases deep: about 2,350,000 values and characters written out, under the cap
+# alone and past it twice.
+HALF_A_BOMB = (
+    "a: &a [x, x, x, x, x, x, x, x, x, x]\n"
+    + "".join(
+        f"{name}: &{name} [{', '.join([f'*{before}'] * 10)}]\n"
+        for before, name in zip("abcde", "bcdef")
+    )
+    + "max_iter: 3\n"
+)
+
+
 # Where a config's alias bomb may be: the config itself, a file it composes from a
-# folder beside it (named through that folder), or its namespaces_dir.
+# folder beside it (named through that folder), its namespaces_dir, or split between
+# it and its namespaces_dir.
 BOMB_PLACES = {
     "itself": ("bomb.yaml", {}),
     "in a file it composes": (
@@ -1013,6 +1028,13 @@ BOMB_PLACES = {
     "in its namespaces_dir": (
         "config.yaml",
         {"config.yaml": "namespaces_dir: parts\n", "parts/research.yaml": ALIAS_BOMB},
+    ),
+    "halved between it and its namespaces_dir": (
+        "config.yaml",
+        {
+            "config.yaml": f"namespaces_dir: halves\n{HALF_A_BOMB}",
+            "halves/research.yaml": HALF_A_BOMB,
+        },
     ),
 }
 
@@ -1024,8 +1046,7 @@ def test_import_refuses_an_alias_bomb_without_writing_it_out(library, tmp_path, 
     (tmp_path / "parts").mkdir()
     (tmp_path / "parts" / "bomb.yaml").write_text(ALIAS_BOMB)
     config, files = BOMB_PLACES[place]
-    for name, text in files.items():
-        (tmp_path / name).write_text(text)
+    lay_out(tmp_path, files)
     said = "is too big to import: with each alias written out, as the engine reads it"
     started = time.monotonic()
     refused_unchanged(library, tmp_path / config, said)
@@ -1073,6 +1094,194 @@ def test_import_blames_a_file_it_composes_that_is_not_a_config(library, tmp_path
     config = config_file(tmp_path, "_compose: [list.yaml]\n")
     said = f"{tmp_path / 'list.yaml'} {NOT_A_MAPPING}"
     refused_unchanged(library, config, said)
+
+
+# A setting a file outside the config's folder holds, which an import never reads.
+OUTSIDE_SETTING = "max_iter: 7\n"
+
+
+def outside(tmp_path):
+    return tmp_path / "outside.yaml"
+
+
+# Where a config in cfg/ under tmp_path names a file outside that folder: the files
+# laid out (lay_out()), the config, and how the refusal names it, given tmp_path.
+OUTSIDE_PLACES = {
+    "an absolute path": (
+        {},
+        lambda tmp: f"_compose: [{outside(tmp)}]\n",
+        lambda tmp: f"{outside(tmp)},",
+    ),
+    "a path up out of its folder": (
+        {},
+        lambda tmp: "_compose: [../outside.yaml]\n",
+        lambda tmp: f"../outside.yaml, which is {outside(tmp)},",
+    ),
+    "a file it composes, composing one outside": (
+        {"cfg/parts/base.yaml": "_compose: [../../outside.yaml]\n"},
+        lambda tmp: "_compose: [parts/base.yaml]\n",
+        lambda tmp: f"base.yaml composes ../../outside.yaml, which is {outside(tmp)},",
+    ),
+    "a link to a file outside": (
+        {"cfg/link.yaml": "->outside.yaml"},
+        lambda tmp: "_compose: [link.yaml]\n",
+        lambda tmp: f"link.yaml, which is {outside(tmp)},",
+    ),
+    "its namespaces_dir up out of its folder": (
+        {"names/research.yaml": "system_suffix: hi\n"},
+        lambda tmp: "namespaces_dir: ../names\n",
+        lambda tmp: f"Its namespaces_dir is ../names, which is {tmp / 'names'},",
+    ),
+    "a link in its namespaces_dir to a file outside": (
+        {"cfg/names/research.yaml": "->outside.yaml"},
+        lambda tmp: "namespaces_dir: names\n",
+        lambda tmp: (
+            f"Its namespaces_dir holds {tmp / 'cfg' / 'names' / 'research.yaml'},"
+            f" which is {outside(tmp)},"
+        ),
+    ),
+    "a tool's factory_from up out of its folder": (
+        {"tally.py": "def build(client, params): ...\n"},
+        lambda tmp: "tools:\n  tally: {factory: build, factory_from: ../tally.py}\n",
+        lambda tmp: (
+            f'Tool "tally" names factory_from ../tally.py, which is {tmp / "tally.py"},'
+        ),
+    ),
+}
+
+
+def lay_out(tmp_path, files):
+    """Each of *files* under *tmp_path*, by path, its text; one of "->target" a link to
+    *target*, from tmp_path."""
+    for name, text in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if text.startswith("->"):
+            path.symlink_to(tmp_path / text.removeprefix("->"))
+        else:
+            path.write_text(text)
+
+
+@pytest.mark.parametrize("place", OUTSIDE_PLACES)
+def test_import_refuses_a_file_outside_the_configs_folder_naming_it(
+    library, tmp_path, place
+):
+    files, text, named = OUTSIDE_PLACES[place]
+    lay_out(tmp_path, {"outside.yaml": OUTSIDE_SETTING, **files})
+    (tmp_path / "cfg").mkdir(exist_ok=True)
+    config = config_file(tmp_path / "cfg", text(tmp_path))
+    said = (
+        f"{named(tmp_path)} outside {tmp_path / 'cfg'};"
+        " an import reads only files in the config's folder and below: copy the file"
+        " in, or pass --within with a folder holding both."
+    )
+    refused_unchanged(library, config, said)
+
+
+def test_import_refuses_a_namespaces_dir_of_the_whole_disk_without_reading_it(
+    library, tmp_path
+):
+    started = time.monotonic()
+    config = config_file(tmp_path, "namespaces_dir: /\n")
+    refused_unchanged(library, config, f"Its namespaces_dir is /, outside {tmp_path};")
+    assert time.monotonic() - started < BOMB_SECONDS
+
+
+def test_import_reads_nested_composes_and_a_namespaces_dir_in_its_folder(
+    library, tmp_path
+):
+    lay_out(
+        tmp_path,
+        {
+            "parts/base.yaml": "_compose: [limits.yaml]\nmax_depth: 2\n",
+            "parts/limits.yaml": "max_iter: 7\n",
+            "names/research/papers.yaml": "system_suffix: Cite each paper.\n",
+            "names/research.yaml": "system_suffix: Look it up.\n",
+            "names/linked.yaml": "->parts/linked.yaml",
+            "parts/linked.yaml": "system_suffix: Linked.\n",
+        },
+    )
+    config = config_file(
+        tmp_path, "_compose: [parts/base.yaml]\nnamespaces_dir: names\n"
+    )
+    import_into(library, config)
+    with closing(open_library(library)) as connection:
+        stored = stored_config(connection)
+    assert (stored["max_iter"], stored["max_depth"]) == (7, 2)
+    assert {"linked", "research", "research.papers"} <= stored["namespaces"].keys()
+
+
+def test_within_a_folder_holding_the_config_an_import_reads_from_above_it(
+    library, tmp_path
+):
+    lay_out(
+        tmp_path,
+        {
+            "shared/limits.yaml": "max_iter: 7\n",
+            "cfg/config.yaml": "_compose: [../shared/limits.yaml]\n",
+        },
+    )
+    config = tmp_path / "cfg" / "config.yaml"
+    import_into(library, config, within=tmp_path)
+    with closing(open_library(library)) as connection:
+        assert stored_config(connection)["max_iter"] == 7
+
+
+@pytest.mark.parametrize("within", ["elsewhere", "cfg/config.yaml"])
+def test_within_must_be_a_folder_holding_the_config(library, tmp_path, within):
+    lay_out(tmp_path, {"cfg/config.yaml": "max_iter: 7\n", "elsewhere/x": ""})
+    config = tmp_path / "cfg" / "config.yaml"
+    said = (
+        f"--within {tmp_path / within} should be a folder holding the config, {config}."
+    )
+    refused_unchanged(library, config, said, within=tmp_path / within)
+
+
+@pytest.mark.parametrize(
+    ("entry", "meant"),
+    [("reseach", " (did you mean research?)"), ("billing", "")],
+)
+def test_import_refuses_an_entry_namespace_naming_none_there(
+    library, tmp_path, entry, meant
+):
+    text = f"entry_namespace: {entry}\nnamespaces:\n  research: {{vars: {{a: 1}}}}\n"
+    said = (
+        f'entry_namespace names "{entry}", which is not a namespace in the config or the'
+        f" Library{meant}: add it, or name one that is."
+    )
+    refused_unchanged(library, config_file(tmp_path, text), said)
+
+
+def test_an_entry_namespace_the_library_already_holds_is_imported(library, tmp_path):
+    import_into(library, config_file(tmp_path, "namespaces:\n  research: {}\n"))
+    said = import_into(library, config_file(tmp_path, "entry_namespace: research\n"))
+    assert "  New chats start in research, not root." in said
+
+
+READS_TERM = """\
+prompt_template_variables: {term: fall}
+namespaces:
+  root:
+    decompositions:
+    - name: this term
+      messages:
+      - {role: user, content: "Which courses run in {{ term }}?"}
+      - {role: assistant, content: "<think>List them.</think>\\n<repl>FinalAnswer(1)</repl>"}
+"""
+
+
+def test_import_refuses_to_take_away_a_variable_a_kept_worked_example_reads(
+    library, tmp_path
+):
+    (tmp_path / "first").mkdir()
+    import_into(library, config_file(tmp_path / "first", READS_TERM))
+    config = config_file(tmp_path, "prompt_template_variables: {season: spring}\n")
+    said = (
+        'Namespace root, decomposition "this term", kept: Turn 1 (user), line 1: the'
+        ' engine reads text holding {{ or {% as a Jinja template, and this one names "term"'
+    )
+    refused_unchanged(library, config, said)
+    refused_unchanged(library, config, KEEP_VARIABLES)
 
 
 def test_import_refuses_yaml_nested_too_deeply_in_words(library, tmp_path):
