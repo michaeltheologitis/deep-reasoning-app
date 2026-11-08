@@ -1,5 +1,4 @@
 import json
-import math
 import re
 import socket
 import sqlite3
@@ -9,13 +8,14 @@ from contextlib import closing
 from datetime import date
 from pathlib import Path
 
+import deep_reasoner.llm
 import pytest
 import yaml
-from deep_reasoner.config import load_cli_config, resolve_api_key
+from deep_reasoner.config import resolve_api_key
 from deep_reasoner.namespaces import ROOT, build_registry
 from deep_reasoner.tools import load_tool_factory
 from deep_reasoner.v2 import DeepReasoner
-from deep_reasoner.v2.agent import _render_context
+from deep_reasoner.v2.agent import _render_context, _rendered_turns
 from deep_reasoner.v2.cli import (
     V2Config,
     build_namespace_registry,
@@ -23,8 +23,10 @@ from deep_reasoner.v2.cli import (
     close_run,
     declared_tool_names,
 )
+from deep_reasoner.v2.messages import func, var
 from structlog.testing import capture_logs
 
+from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
     APP_TOOLS_FILE,
     BEFORE_EVENTS,
@@ -40,6 +42,7 @@ from deep_reasoning.library import (
     LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
+    NO_DESCRIPTION,
     PAGE_DESCRIPTION,
     UNREAD_SETTING,
     UPSERT_DECOMPOSITION,
@@ -61,11 +64,11 @@ from deep_reasoning.library import (
     engine_config,
     hand_off,
     handed_to,
-    import_config,
     open_library,
     panel,
     parsed,
     running_code,
+    sandbox_templates,
     store_tool,
     stored_config,
     turn_problems,
@@ -108,6 +111,9 @@ ADDED = "name: added\nmessages: [{role: user, content: hi}]\n"
 RESEARCH = "vars: {topic: ml}\nsystem_suffix: |\n  Cite each source.\n"
 WAIT_FOR_THE_LOCK_S = 0.3
 PANEL_READ_S = 5
+# A build stopped at 5 seconds, with time for its process to start and be stopped.
+WAIT_FOR_A_BUILD_S = 15
+RAISES_ON_BUILD = "def build(client, params):\n    raise RuntimeError('offline')\n"
 CONFIGS = Path(__file__).parent / "configs"
 # Each case's turns and the problems they have, shared with tests/turns.test.mjs.
 TURN_CASES = json.loads(
@@ -152,8 +158,9 @@ def run_config(library, tmp_path, namespace=ROOT):
 
 
 def import_into(library, config):
+    """What importing *config* into *library* changed, as the lines it says."""
     with closing(open_library(library)) as connection:
-        return import_config(connection, config)
+        return import_config(connection, config)["changes"]
 
 
 def dumped(library):
@@ -481,34 +488,6 @@ def test_a_read_only_library_with_an_empty_root_still_opens_as_it_is(
     assert [entry["event"] for entry in logs] == ["library.root_not_upgraded"]
 
 
-@pytest.mark.parametrize(
-    "root",
-    [
-        "{tools: []}",
-        "{vars: {term: fall}}",
-        "{decompositions: [{name: hi, messages: [{role: user, content: hi}]}]}",
-    ],
-)
-def test_a_root_that_was_imported_or_edited_keeps_what_it_has(library, tmp_path, root):
-    written = tmp_path / "root.yaml"
-    written.write_text(f"namespaces:\n  root: {root}\n")
-    import_into(library, written)
-    assert run_config(library, tmp_path).namespaces[ROOT].tools == []
-
-
-@pytest.mark.parametrize("root", ["{}", "{decompositions: []}"])
-def test_an_imported_root_that_sets_nothing_leaves_the_librarys_as_it_is(
-    library, tmp_path, root
-):
-    denied = tmp_path / "denied.yaml"
-    denied.write_text("namespaces:\n  root: {tools: []}\n")
-    nothing = tmp_path / "nothing.yaml"
-    nothing.write_text(f"namespaces:\n  root: {root}\n  helper: {{}}\n")
-    import_into(library, denied)
-    import_into(library, nothing)
-    assert run_config(library, tmp_path).namespaces[ROOT].tools == []
-
-
 def test_a_library_that_still_holds_a_model_and_client_opens_and_they_go_unread(
     library, tmp_path
 ):
@@ -570,67 +549,6 @@ def test_an_open_reader_does_not_hold_up_a_write(library):
         ] == [*(each.name for each in LIBRARIANS), "added"]
 
 
-def test_import_brings_the_configs_namespaces_decompositions_and_prompt(
-    imported, tmp_path
-):
-    config = run_config(imported, tmp_path)
-    router = config.namespaces["router"]
-    assert set(config.namespaces) == IMPORTED_NAMESPACES
-    # Its spawn list leaves the historian out, so it is shown root's hand-offs saying so.
-    assert [each.name for each in router.decompositions] == ROUTER_SHOWN
-    assert router.spawn == ["course_advisor", "health_advisor"]
-    assert config.namespaces["course_advisor"].vars["catalog"]["CS201"]["prereqs"] == [
-        "CS101"
-    ]
-    assert config.system_prompt.startswith("You solve each request")
-    assert default_namespace(imported) == "router"
-
-
-def test_import_brings_no_model_or_client(library, tmp_path):
-    written = tmp_path / "own_model.yaml"
-    written.write_text(
-        "model: qwen/qwen3-30b\nclient: {base_url: 'https://api.novita.ai/v3/openai'}\n"
-    )
-    import_into(library, written)
-    config = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)
-    assert "model" not in config and "client" not in config
-    assert run_config(library, tmp_path).llm_kwargs == {}
-
-
-def test_an_imported_llm_tool_runs_on_the_chats_model(library, tmp_path):
-    written = tmp_path / "tiers.yaml"
-    written.write_text(
-        "models: {coder: {model: qwen/qwen3-coder-30b-a3b-instruct}}\n"
-        "tools:\n"
-        "  code_reviewer: {factory: llm, model: coder, system_prompt: Review it.}\n"
-        "namespaces: {root: {tools: [llm, code_reviewer]}}\n"
-    )
-    import_into(library, written)
-    config = run_config(library, tmp_path)
-    assert config.tools["code_reviewer"] == {
-        "factory": "llm",
-        "system_prompt": "Review it.",
-    }
-    assert "models" not in engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)
-
-
-def test_an_import_reads_back_as_the_engine_loads_the_config(library, tmp_path):
-    written = tmp_path / "typed.yaml"
-    written.write_text(TYPED)
-    import_into(library, written)
-    expected = load_cli_config(written, schema=V2Config)
-    config = run_config(library, tmp_path)
-    assert config.system_prompt == expected.system_prompt == "Solve it.\n"
-    assert config.namespaces[ROOT].vars == expected.namespaces[ROOT].vars
-    assert config.namespaces[ROOT].vars["by_year"][2024] == 10
-    assert config.namespaces[ROOT].vars["due"] == date(2026, 10, 25)
-    assert config.namespaces[ROOT].vars["cap"] == math.inf
-    assert config.namespaces[ROOT].decompositions == [
-        *HAND_OFFS,
-        *expected.namespaces[ROOT].decompositions,
-    ]
-
-
 @pytest.mark.parametrize(
     "text",
     [
@@ -653,92 +571,6 @@ def test_dumped_text_reads_back_exactly(text):
 
 def test_dumped_non_ascii_text_stays_readable():
     assert "é中🚀" in dump({"note": "é中🚀"})
-
-
-def test_an_imported_var_holding_a_nel_keeps_it(library, tmp_path):
-    written = tmp_path / "nel.yaml"
-    written.write_text('namespaces:\n  root:\n    vars: {note: "a\\Nb"}\n')
-    import_into(library, written)
-    assert run_config(library, tmp_path).namespaces[ROOT].vars["note"] == "a\x85b"
-
-
-def test_a_configs_run_level_openings_are_left_out(library, tmp_path):
-    written = tmp_path / "openings.yaml"
-    written.write_text(
-        "decompositions:\n"
-        "  - name: full_triage\n"
-        "    messages: [{role: user, content: '{{ task }}'}]\n"
-    )
-    assert import_into(library, written)["decompositions"] == 0
-    assert run_config(library, tmp_path).namespaces[ROOT].decompositions == HAND_OFFS
-
-
-def test_import_replaces_same_named_items_and_keeps_the_rest(imported, tmp_path):
-    newer = tmp_path / "newer.yaml"
-    newer.write_text(
-        "max_iter: 3\n"
-        "namespaces:\n"
-        "  router:\n"
-        "    spawn: [course_advisor]\n"
-        "    decompositions:\n"
-        "      - name: decline anything else\n"
-        '        messages: [{role: user, content: "Only courses, please."}]\n'
-    )
-    import_into(imported, newer)
-    config = run_config(imported, tmp_path)
-    router = config.namespaces["router"]
-    assert router.spawn == ["course_advisor"]
-    assert [each.name for each in router.decompositions] == ROUTER_SHOWN
-    declining = router.decompositions[
-        ROUTER_DECOMPOSITIONS.index("decline anything else")
-    ]
-    assert declining.messages[0].content == "Only courses, please."
-    assert config.max_iter == 3
-    assert config.namespaces[ROOT].tools == ["llm"]
-    assert set(config.namespaces) == IMPORTED_NAMESPACES
-
-
-def test_a_failed_import_leaves_the_library_unchanged(imported, tmp_path):
-    broken = tmp_path / "broken.yaml"
-    broken.write_text(
-        "max_iter: 1\nnamespaces:\n  router: {tools: [ghost]}\n  extra: {}\n"
-    )
-    before = dumped(imported)
-    with pytest.raises(ValueError, match="grants unknown tool 'ghost'"):
-        import_into(imported, broken)
-    assert dumped(imported) == before
-
-
-@pytest.mark.parametrize(
-    ("block", "files", "problem"),
-    [
-        (
-            "{factory: build, factory_from: ./broken.py}",
-            {"broken.py": "def build(:\n"},
-            "broken.py is not valid Python",
-        ),
-        (
-            "{factory: telepathy}",
-            {},
-            'names factory "telepathy", which is not built in',
-        ),
-        ("{factory: [a, b]}", {}, "factory and factory_from should be text"),
-        (
-            "{factory: build, factory_from: 5}",
-            {},
-            "factory and factory_from should be text",
-        ),
-    ],
-)
-def test_import_refuses_a_tool_the_engine_could_not_build(
-    library, tmp_path, block, files, problem
-):
-    for name, text in files.items():
-        (tmp_path / name).write_text(text)
-    config = tmp_path / "tool.yaml"
-    config.write_text(f"tools:\n  mine: {block}\n")
-    with pytest.raises(LibraryError, match=problem):
-        import_into(library, config)
 
 
 def test_a_custom_tools_source_round_trips_and_the_engine_loads_its_factory(
@@ -818,7 +650,104 @@ def test_the_panel_lists_a_tool_whose_source_is_too_deep_to_parse(library):
     with closing(open_library(library)) as connection:
         connection.execute(UPSERT_TOOL, ("deep", block, deep))
         tools = {tool["name"]: tool for tool in panel(connection)["tools"]}
-    assert tools["deep"]["description"] == ""
+    assert tools["deep"]["description"] == NO_DESCRIPTION
+
+
+COUNT_WORDS = """from deep_reasoner.primitives import Func
+
+DESCRIPTION = "count_words(text) -> how many words text holds"
+
+
+class Counter:
+    \"\"\"Counts what it is shown.\"\"\"
+
+
+def build(client, params):
+    \"\"\"Build the word counter.\"\"\"
+
+    def count_words(text):
+        \"\"\"Count the words in text.\"\"\"
+        return len(text.split())
+
+    return {made}
+"""
+SHADOWED = """from deep_reasoner.primitives import Func
+
+
+def count_words(text):
+    \"\"\"Count the words in text.\"\"\"
+
+
+class Helper:
+    def build(self):
+        return Func(count_words, description="a method's")
+
+
+def build(client, params):
+    def helper():
+        def count_words(text):
+            \"\"\"A nested def's.\"\"\"
+
+    return Func(count_words)
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "description"),
+    [
+        (
+            COUNT_WORDS.format(made='Func(count_words, description="Counts.")'),
+            "Counts.",
+        ),
+        (COUNT_WORDS.format(made='Func(count_words, "Counts.")'), "Counts."),
+        (
+            COUNT_WORDS.format(made='Func(value=count_words, description="Counts.")'),
+            "Counts.",
+        ),
+        (
+            COUNT_WORDS.format(made="Func(count_words, description=DESCRIPTION)"),
+            "count_words(text) -> how many words text holds",
+        ),
+        (
+            COUNT_WORDS.format(
+                made='Func(count_words, description=params["description"])'
+            ),
+            "set when it's built: params['description']",
+        ),
+        (COUNT_WORDS.format(made="Func(count_words)"), "Count the words in text."),
+        (
+            COUNT_WORDS.format(made="Func(Counter(), description=None)"),
+            "Counts what it is shown.",
+        ),
+        (COUNT_WORDS.format(made="Func(lambda text: 0)"), NO_DESCRIPTION),
+        (COUNT_WORDS.format(made='Func(params["made"])'), NO_DESCRIPTION),
+        (SHADOWED, "Count the words in text."),
+        ("def build(client, params):\n    return 1\n", NO_DESCRIPTION),
+        ("def build(client, params) 1\n", NO_DESCRIPTION),
+    ],
+    ids=[
+        "keyword",
+        "positional",
+        "keyword-only",
+        "constant",
+        "set-when-built",
+        "function-docstring",
+        "class-docstring",
+        "lambda",
+        "unknown-value",
+        "shadowed",
+        "no-func",
+        "not-python",
+    ],
+)
+def test_a_custom_tools_description_is_what_its_source_tells_the_agent(
+    library, source, description
+):
+    block = dump({"factory": "build", "factory_from": "count_words.py"})
+    with closing(open_library(library)) as connection:
+        connection.execute(UPSERT_TOOL, ("count_words", block, source))
+        tools = {tool["name"]: tool for tool in panel(connection)["tools"]}
+    assert tools["count_words"]["description"] == description
 
 
 @pytest.mark.parametrize(
@@ -846,16 +775,6 @@ def test_a_runs_config_tells_each_app_tool_the_app_file_the_chat_and_the_run(
         "namespace": ROOT,
         "key_names": [],
     }
-    with closing(open_library(library)) as connection:
-        assert connection.execute("SELECT count(*) FROM tools").fetchone() == (0,)
-
-
-@pytest.mark.parametrize("tool", ["history", "library", "page"])
-def test_an_import_may_not_give_a_tool_an_app_tools_name(library, tmp_path, tool):
-    config = tmp_path / "tool.yaml"
-    config.write_text(f"tools:\n  {tool}: {{factory: llm}}\n")
-    with pytest.raises(LibraryError, match="one of the app's own tools"):
-        import_into(library, config)
     with closing(open_library(library)) as connection:
         assert connection.execute("SELECT count(*) FROM tools").fetchone() == (0,)
 
@@ -999,7 +918,13 @@ def test_a_namespace_the_panel_cannot_take_is_refused_with_a_plain_message(
             "tools: [ghost]\n",
             "The engine refuses it: namespace 'research' grants unknown tool 'ghost'",
         ),
-        ("spawn: [nowhere]\n", 'spawn names "nowhere", which is not a namespace'),
+        (
+            "spawn: [nowhere]\n",
+            (
+                'spawn names "nowhere", which is not a namespace in the Library: add'
+                " nowhere first, or take it out of spawn."
+            ),
+        ),
     ],
 )
 def test_a_namespace_granting_an_unknown_tool_or_spawning_nowhere_is_not_written(
@@ -1012,6 +937,19 @@ def test_a_namespace_granting_an_unknown_tool_or_spawning_nowhere_is_not_written
         LibraryError, match=re.escape(problem.replace("research", "router"))
     ):
         change(imported, change_namespace, "router", text)
+    assert dumped(imported) == before
+
+
+def test_a_new_namespace_spawning_one_to_go_under_it_says_in_which_order_to_add_them(
+    imported,
+):
+    before = dumped(imported)
+    refusal = (
+        'spawn names "team.a", which goes under team and isn\'t in the Library yet: add'
+        " team without it first, then team.a, then put team.a in the spawn of team."
+    )
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        change(imported, add_namespace, "team", "spawn: [team.a]\n")
     assert dumped(imported) == before
 
 
@@ -1064,7 +1002,7 @@ def test_deleting_the_default_namespace_starts_new_chats_in_root(imported):
         ("research", "Delete its namespaces first: research.papers."),
         ("course_advisor", "First take course_advisor out of the spawn of router"),
         (ROOT, "root can't be deleted"),
-        ("nowhere", 'The Library has no namespace "nowhere"'),
+        ("nowhere", 'The Library has no namespace "nowhere" to delete.'),
     ],
 )
 def test_a_refused_delete_says_why_and_changes_nothing(imported, name, problem):
@@ -1074,6 +1012,22 @@ def test_a_refused_delete_says_why_and_changes_nothing(imported, name, problem):
     with pytest.raises(LibraryError, match=re.escape(problem)):
         change(imported, delete_namespace, name, 0)
     assert dumped(imported) == before
+
+
+def test_each_namespace_row_gives_the_refusal_its_delete_would_get(imported):
+    change(imported, add_namespace, "research", RESEARCH)
+    change(imported, add_namespace, "research.papers", "")
+    for row in panel_of(imported)["namespaces"]:
+        if row["refusal"] is None:
+            continue
+        with pytest.raises(LibraryError) as refused:
+            change(imported, delete_namespace, row["name"], len(row["decompositions"]))
+        assert str(refused.value) == row["refusal"]
+    refusals = {row["name"]: row["refusal"] for row in panel_of(imported)["namespaces"]}
+    assert (refusals["research.papers"], refusals["router"]) == (None, None)
+    assert {"research", "course_advisor", ROOT} <= {
+        name for name, refusal in refusals.items() if refusal
+    }
 
 
 def test_a_delete_that_counted_fewer_decompositions_than_are_there_is_refused(
@@ -1231,28 +1185,48 @@ def test_an_edit_may_not_take_the_name_of_another_decomposition_there(imported):
     assert dumped(imported) == before
 
 
+BY_WHOM = "(by the librarian, another tab or an import)"
+NOT_SAVED = (
+    f"was changed after you opened it {BY_WHOM}, so nothing was saved: saving would undo"
+    " that change. Look at it as it is now, then save again."
+)
+
+
 @pytest.mark.parametrize(
-    "act",
+    ("act", "changed", "gone"),
     [
-        lambda connection, name, was: edit_decomposition(
-            connection, "router", name, was, ADDED
+        (
+            lambda connection, name, was: edit_decomposition(
+                connection, "router", name, was, ADDED
+            ),
+            NOT_SAVED,
+            NOT_SAVED,
         ),
-        lambda connection, name, was: delete_decomposition(
-            connection, "router", name, was
+        (
+            lambda connection, name, was: delete_decomposition(
+                connection, "router", name, was
+            ),
+            (
+                f"was changed after you opened it {BY_WHOM}, so it wasn't deleted. Look"
+                " at it as it is now, then delete it again if you still want to."
+            ),
+            f"was already deleted or renamed {BY_WHOM}.",
         ),
     ],
     ids=["edit", "delete"],
 )
 def test_an_edit_or_delete_of_a_decomposition_changed_or_deleted_meanwhile_is_refused(
-    imported, act
+    imported, act, changed, gone
 ):
     [(name, text), *_] = names_and_yaml(imported, "router")
     change(imported, add_decomposition, "router", text + "# changed\n", True)
     before = dumped(imported)
-    with pytest.raises(ChangedMeanwhile, match=f'"{name}" in router was changed'):
+    with pytest.raises(
+        ChangedMeanwhile, match=re.escape(f'"{name}" in router {changed}')
+    ):
         change(imported, act, name, text)
-    with pytest.raises(ChangedMeanwhile):
-        change(imported, act, "not there", text)
+    with pytest.raises(ChangedMeanwhile, match=re.escape(f'"gone" in router {gone}')):
+        change(imported, act, "gone", text)
     assert dumped(imported) == before
 
 
@@ -1285,8 +1259,13 @@ def test_a_tool_is_deleted_only_once_no_namespace_grants_it(library):
     assert dumped(library) == before
     [tally] = [each for each in panel_of(library)["tools"] if each["name"] == "tally"]
     assert (tally["stored"], tally["source"]) == (True, TOOL_SOURCE)
+    assert tally["refusal"] == (
+        "tally is granted in counting, counting.more: take it out of their tools first."
+    )
     change(library, delete_namespace, "counting.more", 0)
     change(library, change_namespace, "counting", "")
+    [tally] = [each for each in panel_of(library)["tools"] if each["name"] == "tally"]
+    assert tally["refusal"] is None
     change(library, delete_tool, "tally")
     assert "tally" not in [each["name"] for each in panel_of(library)["tools"]]
 
@@ -1303,9 +1282,11 @@ def test_a_tool_the_library_holds_no_row_for_is_not_deleted(library, name, refus
     shown = {each["name"]: each for each in panel_of(library)["tools"]}
     assert all(not each["stored"] and each["source"] is None for each in shown.values())
     before = dumped(library)
-    with pytest.raises(LibraryError, match=re.escape(refusal)):
+    with pytest.raises(LibraryError, match=re.escape(refusal)) as refused:
         change(library, delete_tool, name)
     assert dumped(library) == before
+    # rag, granted nowhere, is not listed at all.
+    assert name not in shown or shown[name]["refusal"] == str(refused.value)
 
 
 def test_a_run_setting_the_engine_doesnt_read_is_deleted_and_one_it_reads_stays(
@@ -1340,6 +1321,34 @@ def answering(name, code):
     )
 
 
+TURN_2_TEMPLATE = (
+    "Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a Jinja"
+    " template"
+)
+# Templates no run renders: each with why, as the check words it.
+INCLUDING = "includes another template, which a run can't"
+
+
+def reaching(name):
+    return f"reaches into Python internals ({name}), which a run refuses"
+
+
+REFUSED_TEMPLATES = {
+    "an-attribute-of-the-task": (
+        'print("{{ task.__class__ }}")',
+        reaching("__class__"),
+    ),
+    "an-attribute-of-a-jinja-global": (
+        'print("{{ cycler.__init__ }}")',
+        reaching("__init__"),
+    ),
+    "an-unsafe-name": ('print("{{ funcs.llm.mro }}")', reaching("mro")),
+    "a-key": ("print(\"{{ vars['_hidden'] }}\")", reaching("_hidden")),
+    "an-include": ("{% include 'x.html' %}", INCLUDING),
+    "an-extends": ("{% extends 'x.html' %}", INCLUDING),
+    "an-import": ("{% import 'x.html' as x %}", INCLUDING),
+    "a-from-import": ("{% from 'x.html' import x %}", INCLUDING),
+}
 # Templates that would stop the panel if rendered or compiled unguarded.
 NESTED_TOO_DEEP = "{% for a in [1] %}" * 21 + "x" + "{% endfor %}" * 21
 BILLIONS_OF_LOOPS = (
@@ -1353,14 +1362,14 @@ BILLIONS_OF_LOOPS = (
         (
             'print(f"{{{total}}}")',
             (
-                "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a"
+                "Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a"
                 " Jinja template, and this one doesn't parse (expected token ':', got '}')."
             ),
         ),
         (
             'print("{{ total }}")',
             (
-                "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a"
+                "Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a"
                 ' Jinja template, and this one names "total"; a template may name only'
                 " task, vars, funcs, coroutines and the run settings'"
                 " prompt_template_variables, which the engine fills in."
@@ -1369,25 +1378,29 @@ BILLIONS_OF_LOOPS = (
         (
             'print("{{ task }}")  {# a note',
             (
-                "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a"
+                "Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a"
                 " Jinja template, and this one doesn't parse (Missing end of comment tag)."
             ),
         ),
         (
             NESTED_TOO_DEEP,
             (
-                "Turn 2 (assistant): the engine reads a turn holding {{ or {% as a Jinja"
+                "Turn 2 (assistant): the engine reads text holding {{ or {% as a Jinja"
                 " template, and this one can't be compiled (too many statically nested"
                 " blocks)."
             ),
         ),
         (
             BILLIONS_OF_LOOPS,
-            'Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a Jinja template, and this one names "range"',
+            'Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a Jinja template, and this one names "range"',
         ),
         (
             "{{ lipsum(n=100000) }}",
-            'Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a Jinja template, and this one names "lipsum"',
+            'Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a Jinja template, and this one names "lipsum"',
+        ),
+        *(
+            (code, f"{TURN_2_TEMPLATE}, and this one {why}.")
+            for code, why in REFUSED_TEMPLATES.values()
         ),
     ],
     ids=[
@@ -1397,6 +1410,7 @@ BILLIONS_OF_LOOPS = (
         "nested-too-deep",
         "billions-of-loops",
         "a-jinja-global",
+        *REFUSED_TEMPLATES,
     ],
 )
 def test_a_decomposition_the_engine_cant_render_is_refused_naming_its_turn(
@@ -1457,7 +1471,7 @@ def test_a_shared_files_decomposition_the_engine_cant_render_is_marked_with_why(
         "braces": 'print(f"{{{total}}}")',
         "nested": NESTED_TOO_DEEP,
         "loops": BILLIONS_OF_LOOPS,
-    }
+    } | {name: code for name, (code, _) in REFUSED_TEMPLATES.items()}
     with closing(open_library(library)) as connection, writing(connection):
         for name, code in stored.items():
             connection.execute(
@@ -1471,7 +1485,7 @@ def test_a_shared_files_decomposition_the_engine_cant_render_is_marked_with_why(
     for name in stored:
         [problem] = marked[name]
         assert problem.startswith("Turn 2 (assistant)")
-        assert "the engine reads a turn holding {{ or {% as a Jinja template" in problem
+        assert "the engine reads text holding {{ or {% as a Jinja template" in problem
     monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
     monkeypatch.chdir(tmp_path)
     reasoner, _alias = build_reasoner(run_config(library, tmp_path), run_dir=tmp_path)
@@ -1521,6 +1535,28 @@ def test_a_decomposition_past_a_million_characters_is_refused(library):
         ("vars: {1abc: 1}\n", 'Var "1abc" needs a Python name, like "year"'),
         ("vars: {my var: 1}\n", 'Var "my var" needs a Python name'),
         ("vars: {class: 1}\n", 'Var "class" is a Python keyword'),
+        (
+            "vars: {_hidden: 1}\n",
+            (
+                'Var "_hidden" starts with _, which templates may not read; rename it,'
+                ' like "hidden".'
+            ),
+        ),
+        (
+            "system_suffix: 'Answer for {{ dept }}.'\n",
+            (
+                "The system_suffix of research, line 1: the engine reads text holding {{ or {% as a"
+                ' Jinja template, and this one names "dept"'
+            ),
+        ),
+        (
+            "system_suffix: 'Answer as {{ task.__class__ }}.'\n",
+            (
+                "The system_suffix of research, line 1: the engine reads text holding {{ or {% as a"
+                " Jinja template, and this one reaches into Python internals"
+                " (__class__), which a run refuses."
+            ),
+        ),
         ("vars: {1: a}\n", 'A var\'s name should be text, like "year", not 1.'),
         (
             "vars: {llm: 1}\n",
@@ -1534,9 +1570,14 @@ def test_a_decomposition_past_a_million_characters_is_refused(library):
 def test_a_namespace_that_would_fail_its_runs_or_hide_a_var_is_refused(
     library, text, problem
 ):
+    change(library, add_namespace, "drafts", "")
     before = dumped(library)
     with pytest.raises(LibraryError, match=re.escape(problem)):
         change(library, add_namespace, "research", text)
+    with pytest.raises(
+        LibraryError, match=re.escape(problem.replace("research", "drafts"))
+    ):
+        change(library, change_namespace, "drafts", text)
     assert dumped(library) == before
 
 
@@ -1581,6 +1622,61 @@ def test_the_names_a_template_may_read_are_those_the_engine_fills_in():
     assert set(FILLED_IN) == set(_render_context([], {}, "a task"))
 
 
+# Templates as the engine's docs and the panel's template write them, each rendered
+# against TICKETS, a topic var and a word_count tool.
+WRITTEN_TEMPLATES = {
+    "the task": ("Count the tickets: {{ task }}", "Count the tickets: open tickets"),
+    "a filter": ("{{ task|upper }}", "OPEN TICKETS"),
+    "a var": ("{{ vars.topic.value }}", "ml"),
+    "each tool": (
+        "{% for f in funcs.values() %}{{ f.name }} {% endfor %}",
+        "word_count ",
+    ),
+    "a loop": (
+        "{% for word in task.split() %}{{ loop.index }}:{{ word }} {% endfor %}",
+        "1:open 2:tickets ",
+    ),
+    "a template variable": ("{{ term }}", "fall"),
+    "a list it builds": (
+        "{% set seen = [] %}{{ seen.append(task) }} {{ seen|join }}",
+        "None open tickets",
+    ),
+}
+TICKETS = "open tickets"
+
+
+def test_each_worked_example_a_run_renders_renders_the_same_sandboxed(
+    library, tmp_path, monkeypatch
+):
+    for config in ("catalog/advisors.yaml", "examples/experience/experience.yaml"):
+        import_into(library, CONFIGS / config)
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(
+            UPSERT_SETTING, ("prompt_template_variables", dump({"term": "fall"}))
+        )
+    for name, (template, _) in WRITTEN_TEMPLATES.items():
+        example = {"name": name, "messages": [{"role": "user", "content": template}]}
+        change(library, add_decomposition, ROOT, dump(example))
+    registry = registry_of(library, tmp_path)
+    bindings = [var("topic", "ml", "a topic"), func("word_count", len, "words")]
+    context = _render_context(bindings, {"term": "fall"}, TICKETS)
+
+    def rendered():
+        return {
+            (namespace, example.name): _rendered_turns(example, context, namespace)
+            for namespace in registry.names
+            for example in registry.resolve(namespace).decompositions
+        }
+
+    unsandboxed = rendered()
+    # restored after the test
+    monkeypatch.setattr(deep_reasoner.llm, "_JinjaEnv", deep_reasoner.llm._JinjaEnv)
+    sandbox_templates()
+    assert rendered() == unsandboxed
+    for name, (_, expected) in WRITTEN_TEMPLATES.items():
+        assert unsandboxed[ROOT, name] == [("user", expected)]
+
+
 def test_a_reasoner_the_engine_doesnt_know_elsewhere_holds_up_no_other_change(library):
     with closing(open_library(library)) as connection, writing(connection):
         connection.execute(UPSERT_NAMESPACE, ("odd", "reasoner: {type: chatgpt}\n"))
@@ -1591,14 +1687,3 @@ def test_a_reasoner_the_engine_doesnt_know_elsewhere_holds_up_no_other_change(li
         change(library, add_namespace, "odd.child", "")
     with pytest.raises(LibraryError, match="namespace 'odd': unknown reasoner type"):
         change(library, change_namespace, "odd", "reasoner: {type: chatgpt}\n")
-
-
-def test_an_import_with_a_reasoner_the_engine_doesnt_know_is_refused(library, tmp_path):
-    config = tmp_path / "odd.yaml"
-    config.write_text(
-        "namespaces:\n  odd:\n    reasoner: {type: chatgpt}\n", encoding="utf-8"
-    )
-    before = dumped(library)
-    with pytest.raises(LibraryError, match="namespace 'odd': unknown reasoner type"):
-        import_into(library, config)
-    assert dumped(library) == before
