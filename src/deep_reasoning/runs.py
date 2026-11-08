@@ -387,13 +387,14 @@ def ended_as_lost(connection: sqlite3.Connection, run: str) -> bool:
     return True
 
 
-def raised_error(output: str) -> str | None:
+def raised_error(output: str, raised: bool = False) -> str | None:
     """What a cell raised, as its traceback's exception lines, or None when it raised
     nothing. repl.execute logs no sign of it but the observation, which the engine ends
     with the traceback, in format_exc's shape, then at most a FinalAnswer line. A raised
     traceback starts at the REPL's exec, and its message may run on over lines; one the
     cell printed starts in the cell, so it must end at its exception line. A printed repr,
-    such as a recorded step's, escapes its newlines."""
+    such as a recorded step's, escapes its newlines. *raised*: the cell is known to have
+    raised, so its last traceback is the one, the REPL's frame atop it or not."""
     body, _, last = output.rpartition("\n")
     if not last.startswith(FINAL_ANSWER):
         body = output
@@ -407,7 +408,7 @@ def raised_error(output: str) -> str | None:
     rest = lines[len(frames) :]
     if not frames or not rest or not EXCEPTION_LINE.fullmatch(rest[0]):
         return None
-    if len(rest) > 1 and REPL_EXEC.fullmatch(frames[0]) is None:
+    if len(rest) > 1 and not raised and REPL_EXEC.fullmatch(frames[0]) is None:
         return None
     return "\n".join(rest)
 

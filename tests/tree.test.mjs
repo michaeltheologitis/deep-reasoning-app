@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { CLAMPS, COST_NA, SANITIZE, UNFINISHED, WAITING, clamped, costView, element, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
+import { CLAMPS, COST_NA, SANITIZE, UNFINISHED, WAITING, clamped, costView, element, formatTotal, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
 
 globalThis.marked = createRequire(import.meta.url)("../src/deep_reasoning/web/vendor/marked.min.js");
 
@@ -167,6 +167,13 @@ test("a run whose only calls never finished costs N/A, saying why, not $0", () =
   assert.equal(costView({ cost: 0, unpriced: false, unfinished: false }), "$0");
 });
 
+test("a chat's total shows the decimals of its finest turn's cost, so it reads as their sum", () => {
+  assert.equal(formatTotal(Array(23).fill(0.0011)), "$0.0253");
+  assert.equal(formatTotal([0.25, 0.31]), "$0.56");
+  assert.equal(formatTotal([0.25, 0.0011, null]), "$0.2511");
+  assert.equal(formatTotal([0, null]), null);
+});
+
 // A provider's errors as the OpenAI client words them, and what each shows first.
 const PROVIDER_ERRORS = [
   ["NotFoundError: Error code: 404 - {'error': {'message': 'The model `gpt-6-lun` does not exist or you do not have access to it.'}}", "The provider has no model gpt-6-lun (404)"],
@@ -313,6 +320,18 @@ test("an image inside a link is the link's text, so no link holds another", () =
   const html = markdownHtml("[![badge](https://img.example/b.png)](https://target.example)");
   assert.equal(anchors(html).length, 1);
   assert.match(html, /href="https:\/\/target\.example">badge<\/a>/);
+});
+
+test("a link or image to an address DOMPurify would drop shows as its text and the address, not as a link", () => {
+  const html = markdownHtml("See [the chart](sandbox:/mnt/data/chart.svg), ![plot](sandbox:/x.png), ![](sandbox:/y.png) and [run](javascript:alert(1)).");
+  assert.equal(anchors(html).length, 0);
+  assert.match(html, /the chart \(sandbox:\/mnt\/data\/chart\.svg\), plot \(sandbox:\/x\.png\), sandbox:\/y\.png and run \(javascript:alert\(1\)\)\./);
+});
+
+test("a link to an address DOMPurify keeps stays a link, its address shown only by the link", () => {
+  const html = markdownHtml("[home](https://a.example) and [mail](mailto:me@a.example) and [page](/pages/x)");
+  assert.equal(anchors(html).length, 3);
+  assert.doesNotMatch(html, /\(https:|\(mailto:|\(\/pages/);
 });
 
 test("an answer's links may be web, mail or relative addresses only", () => {

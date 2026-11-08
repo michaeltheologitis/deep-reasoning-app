@@ -1,5 +1,5 @@
 // The settings panel: the providers, with each key's status, the custom servers, and the default folder. Keys go to the server, which keeps them in ~/.deep-reasoning/.env and never sends one back.
-import { PANEL_CLOSE, PANEL_OPEN, caret, closeOtherPanels, element, folderPicker, request, settingsChanged } from "./app.js";
+import { PANEL_CLOSE, PANEL_OPEN, SETTINGS_CHANGED, caret, closeOtherPanels, element, folderPicker, forgetModelLists, request, settingsChanged, showPanel } from "./app.js";
 
 const ENV_FILE = "~/.deep-reasoning/.env";
 // Ollama's, as an example: not the app's own port
@@ -10,6 +10,8 @@ const ADDING = Symbol("adding");
 const NO_FOLDER = "each chat's own scratch folder";
 const FOLDER_MISSING = "missing: new chats use a scratch folder";
 const STATUS = { set: "key ✓", shell: "key from your shell" };
+// what each status means for a key set in the shell too
+const STATUS_TITLE = { set: `saved in ${ENV_FILE}, which wins over one set in your shell`, shell: "set in your shell; a key saved here would win over it" };
 
 const panel = document.getElementById("settings");
 const toggleButton = document.getElementById("settings-toggle");
@@ -98,7 +100,7 @@ function providerRow(provider, key, detail, form) {
       { type: "button", class: "row", "aria-expanded": String(open), "data-key": key, onclick: () => flip(provider.name, key) },
       caret(open),
       element("span", { class: "lib-name" }, provider.name, detail && [" ", element("span", { class: "lib-detail" }, detail)]),
-      element("span", { class: "meta" }, keyStatus(provider)),
+      element("span", { class: "meta", title: STATUS_TITLE[provider.key] }, keyStatus(provider)),
     ),
     open && form(provider),
   );
@@ -122,7 +124,7 @@ function vendorForm(vendor) {
   return element(
     "form",
     { class: "children lib-open lib-form", method: "dialog", novalidate: "", onsubmit: (e) => saveKey(e, vendor, key, problem) },
-    element("div", { class: "set-fields" }, element("label", { for: key.id }, "API key"), key, element("span", { id: "vendor-key-where", class: "set-note" }, `${vendor.key_env} in `, element("span", { class: "set-path" }, ENV_FILE))),
+    element("div", { class: "set-fields" }, element("label", { for: key.id }, "API key"), key, element("span", { id: "vendor-key-where", class: "set-note" }, `${vendor.key_env} in `, element("span", { class: "set-path" }, ENV_FILE), vendor.key === "set" ? ", which wins over your shell's" : "")),
     problem,
     element("div", { class: "lib-actions" }, element("button", { type: "submit", class: "lib-action lib-primary" }, "Save"), remove),
   );
@@ -258,9 +260,7 @@ async function loadProviders() {
 }
 
 async function setOpen(open) {
-  if (!open && panel.contains(document.activeElement)) toggleButton.focus();
-  panel.hidden = !open;
-  toggleButton.setAttribute("aria-expanded", String(open));
+  showPanel(panel, toggleButton, open);
   if (!open) return;
   closeOtherPanels(panel);
   render("v:0");
@@ -268,9 +268,24 @@ async function setOpen(open) {
   if (!panel.hidden) render(panel.contains(document.activeElement) ? undefined : "v:0");
 }
 
+// read ahead, so a change another tab makes shows as one
+const firstRead = loadProviders();
+
+// Back in this window: what another tab changed shows, and the model menu reads its lists again once the providers changed;
+// the chats are read anyway. A form open in the panel keeps what is typed in it; the rows follow when it closes.
+async function readAgain() {
+  await firstRead;
+  const before = JSON.stringify(providers);
+  await Promise.all([loadProviders(), loadDefaultFolder()]);
+  if (JSON.stringify(providers) === before) return;
+  if (!panel.hidden && opened === null) render();
+  forgetModelLists();
+}
+
 toggleButton.addEventListener("click", () => setOpen(panel.hidden));
 panel.addEventListener(PANEL_CLOSE, () => setOpen(false));
 panel.addEventListener(PANEL_OPEN, () => setOpen(true));
+panel.addEventListener(SETTINGS_CHANGED, readAgain);
 // Esc inside the panel takes back a Remove first, else closes it, and stops there, so it never also stops a run.
 panel.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;

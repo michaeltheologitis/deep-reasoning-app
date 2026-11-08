@@ -121,14 +121,18 @@ def starting_folder(default: str | None) -> str | None:
     return default
 
 
+def folder_gone(folder: str | None) -> bool:
+    """Whether the *folder* a chat chose is no longer there, so its next run is refused."""
+    return folder is not None and not os.path.isdir(folder)
+
+
 def working_folder(data: Path, chat: dict[str, Any]) -> Path:
     """Where the chat's next run works: the folder it chose, which must still be there, or
     its scratch folder, made if new."""
+    if folder_gone(chat["folder"]):
+        raise FolderError(GONE)
     if chat["folder"] is not None:
-        folder = Path(chat["folder"])
-        if not os.path.isdir(folder):
-            raise FolderError(GONE)
-        return folder
+        return Path(chat["folder"])
     scratch = scratch_folder(data, chat["id"])
     scratch.mkdir(parents=True, exist_ok=True)
     return scratch

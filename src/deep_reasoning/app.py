@@ -34,6 +34,7 @@ from deep_reasoning.folders import (
     FolderError,
     chosen_folder,
     data_folder,
+    folder_gone,
     holds_files,
     list_folders,
     remove_unless_kept,
@@ -52,7 +53,6 @@ from deep_reasoning.library import (
     built_grants,
     change_namespace,
     check_namespace,
-    config_and_registry,
     default_namespace,
     delete_decomposition,
     delete_namespace,
@@ -60,7 +60,7 @@ from deep_reasoning.library import (
     delete_tool,
     edit_decomposition,
     engine_config,
-    in_chain_order,
+    menu_of,
     open_library,
     panel,
     read_namespaces,
@@ -161,6 +161,11 @@ def same_origin(
         raise HTTPException(
             HTTPStatus.FORBIDDEN, "Requests from other sites are refused."
         )
+
+
+def gone_provider(name):
+    """Why a chat's model can't be picked or run: its provider was removed from settings."""
+    return f"There is no provider {name} any more; pick another model."
 
 
 def create_app(library, home):
@@ -264,13 +269,11 @@ def create_app(library, home):
             return library_panel(connection)
 
     # What the namespace menu under the message box lists, lighter than the whole panel:
-    # each the engine reads, which a chat may run in, as the panel's rows say (usable).
+    # each namespace, and whether a chat may run in it, as the panel's rows say (usable).
     @app.get("/api/namespaces")
     def namespace_menu():
         with closing(open_library(library)) as connection, reading(connection):
-            config, registry = config_and_registry(connection)
-        names = [{"name": name, "usable": True} for name in in_chain_order(registry)]
-        return {"namespaces": names, "default_namespace": config.entry_namespace}
+            return menu_of(connection)
 
     def built_first(name, yaml, adding, was=NOT_OPENED):
         """The write's *allowed* for namespace *name* as its YAML *yaml* makes it, once
@@ -405,7 +408,8 @@ def create_app(library, home):
 
     def shown(chat, starts):
         """A chat as the API gives it: with the id of its run that is going, if one is, its
-        latest run's, and the namespace and model its next message runs on."""
+        latest run's, the namespace and model its next message runs on, and whether the
+        folder it chose is missing, as its next message would be refused there."""
         namespace, model = starts
         if chat["model"] is not None:
             model = {"provider": chat["provider"], "name": chat["model"]}
@@ -418,6 +422,7 @@ def create_app(library, home):
             "namespace": chat["namespace"] or namespace,
             "model": model,
             "folder": shown_folder(chat["folder"]),
+            "folder_missing": folder_gone(chat["folder"]),
             "scratch_folder": short_path(scratch_folder(data, chat["id"])),
         }
 
@@ -460,7 +465,7 @@ def create_app(library, home):
                 check_namespace(connection, change.namespace)
         model = change.model
         if model is not None and find_provider(library, model.provider) is None:
-            raise SettingsError(f"There is no provider {model.provider}.")
+            raise SettingsError(gone_provider(model.provider))
         moved = "folder" in change.model_fields_set
         folder = chosen_folder(change.folder) if moved else None
         if change.title is not None:
@@ -516,9 +521,7 @@ def create_app(library, home):
             raise SettingsError("Pick a model for this chat, under the message box.")
         provider = find_provider(library, model["provider"])
         if provider is None:
-            raise SettingsError(
-                f"There is no provider {model['provider']} any more; pick another model."
-            )
+            raise SettingsError(gone_provider(model["provider"]))
         key = run_key(home, provider)
         folder = working_folder(data, chat)
         client = {"base_url": provider.base_url, "api_key_env": provider.key_env}

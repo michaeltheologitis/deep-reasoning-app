@@ -2775,6 +2775,25 @@ def chain_of(name):
     return chain[::-1]
 
 
+def usable(name, left):
+    """Whether a chat may run in namespace *name*, given those *left* out: the engine
+    supplies a bare root when the file's is left out."""
+    return name == ROOT or name not in left
+
+
+def menu_of(connection):
+    """What the namespace menu lists: each namespace, each after the ones above it, with
+    whether a chat may run there, as the panel's rows say; and where new chats start."""
+    read = read_library(connection)
+    config, registry = run_config_and_registry(config_of(read))
+    left = read["namespaces_left"]
+    names = sorted({*registry.names, *left}, key=chain_of)
+    return {
+        "namespaces": [{"name": name, "usable": usable(name, left)} for name in names],
+        "default_namespace": config.entry_namespace,
+    }
+
+
 def in_chain_order(registry):
     """The namespaces' names, each after the ones above it."""
     return sorted(registry.names, key=chain_of)
@@ -2808,8 +2827,7 @@ def namespace_rows(read, config, registry):
             "decompositions": checked(decompositions[name]),
             "yaml": own_yaml(read["namespace_yaml"].get(name, "")),
             "handed_to": handed[name],
-            # The engine supplies a bare root when the file's is left out.
-            "usable": name == ROOT or name not in left,
+            "usable": usable(name, left),
             "problems": left[name].splitlines() if name in left else [],
             "refusal": namespace_refusal(spawns, name),
         }
@@ -2830,10 +2848,15 @@ def hand_offs_made(registry, targets):
 
 def checked(rows):
     """A namespace's stored decompositions, *rows* as read_decompositions() reads them,
-    each with its problems as a worked example; or, for one left out, why: its templates
-    were checked as it was read."""
+    each with its problems as a worked example; or, for one left out, which agents aren't
+    shown (read: false), why: its templates were checked as it was read."""
     return [
-        {"name": row["name"], "yaml": row["yaml"], "problems": problems_of(row)}
+        {
+            "name": row["name"],
+            "yaml": row["yaml"],
+            "problems": problems_of(row),
+            "read": row["decomposition"] is not None,
+        }
         for row in rows
     ]
 
