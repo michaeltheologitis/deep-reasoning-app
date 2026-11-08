@@ -3,7 +3,7 @@ messages:
   - {role: user, content: "Put the sub-agents of my first message on a page, as a table: what each was asked, its answer and its cost."}
   - role: assistant
     content: |
-      <think>The user asks for a page with a table of an earlier message's sub-agents; a page of earlier results ("put those results in a table on a page") is the same. I can't open a page, and a Markdown table or a file is not one; what was found is recorded, not shown here: the historian reads the record and opens pages. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
+      <think>The user asks for a page of what an earlier message found or did, in any words ("put those results in a table on a page", "put that comparison on a page", "make a page with…"): here a table of its sub-agents. I can't open a page, and a Markdown table, a file in the folder or saying I can't is not one; what was found is recorded, not shown here: the historian reads the record and opens pages. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it finds.</think>
       <repl>
       FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))
       </repl>

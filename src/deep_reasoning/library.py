@@ -140,15 +140,19 @@ UPSERT_TOOL = (
 FRESH_ROOT = {"tools": ["llm"]}
 # What app its agents are in, which every namespace inherits; a fresh Library's only.
 ROOT_SUFFIX = """\
-You are an agent of Deep Reasoning, an app where agents like you answer each chat \
-message, reasoning in Python and handing parts to sub-agents. What its agents know (each \
-namespace's instructions, tools and worked examples, root's reaching every chat) is its \
-Library, which the user edits in the Library panel (top right).
+You are an agent of Deep Reasoning, an app on the user's own computer: agents like you \
+answer each chat message in Python, run unsandboxed in the chat's working folder (write \
+files there, never /mnt/data; no sandbox: links), handing parts to sub-agents; the ✻ \
+line under each answer opens its tree of steps. What they know is the app's Library, \
+saved with the chats in its file and edited by the user in the Library panel (top \
+right): each namespace's system_suffix (root's and yours included: the user's own text, \
+no secret), tools and worked examples, root's reaching every chat.
 Compute each number in Python and print it, then answer from the variables, in that cell \
-or a later one, as FinalAnswer(f"It grows to ${total:,.2f} in {years} years."): never \
-type a number you computed. Asked if an earlier answer was right, check its record \
-rather than work it out again. Combine sub-agents' results into one answer in words, \
-prose or a Markdown table, and pass FinalAnswer a string, never a raw dict or list.
+or a later one, as FinalAnswer(f"The mean of {n} values is {mean:.2f}."): never type a \
+number you computed. Asked if an earlier answer was right, check its record rather than \
+work it out again. Combine sub-agents' results into one answer in prose or a Markdown \
+table, never a raw dict or list, and no LaTeX. Only your FinalAnswer reaches whoever \
+asked: put your results in it, and leave out your failed cells unless asked.
 """
 # library writes the Library, so it is granted in a namespace of its own, which a chat
 # picks when it wants edits, and which no namespace inherits from.
@@ -164,16 +168,18 @@ namespaces, library.tools() the tools. Write only what the user asked for: to ch
 text such as a system_suffix, start from its current text (show(name)) and keep every \
 line they didn't ask to remove; leave spawn unset unless they ask to restrict it, and \
 then keep historian and librarian in it, as root hands them questions about earlier \
-messages and about the Library. Answer by saying what changed, as the tool's result \
-says, and anything you removed. The user sees only your answer: quote what they asked \
-to see from a value, or from what an earlier cell printed. A change applies from the \
-user's next message.
+messages and about the Library. Make team members siblings, not children of their \
+planner, unless they should inherit its suffix and worked examples; say which you did. \
+Answer by saying what changed, as the tool's result says, and anything you removed. \
+Quote what the user asked to see from a value, or from what an earlier cell printed. A \
+change applies from the user's next message.
 To change a worked example already stored, take its yaml from library.show(name) and \
 edit it with .replace(...) in your cell; never type it out again, as its own repl tags \
 would end your cell and run its code instead. To undo a change, find it with \
 library.changes() and write its before back; never write a before from memory.
-Only the user can change what the tool locks, or delete anything: say so plainly, and \
-how, as the tool's refusals and description do.
+Say when a worked example disagrees with its namespace's suffix. Only the user can \
+change what the tool locks, or delete anything: say so plainly, and how, as the tool's \
+refusals and description do.
 """
 # It may hand questions about earlier messages to the historian, but never spawn itself:
 # copying root's hand-off into its own namespace would nest it until max_depth. A
@@ -265,6 +271,21 @@ SPAWN_LINE = jinja2.Template(
     ' anext(subagent(namespace="{{ allowed[0] }}").send(t)) for k, t in {"a": "first'
     ' task", "b": "second task"}.items()}){% if above %}. This replaces any line above'
     " on sub-agents{% endif %}.",
+    undefined=jinja2.StrictUndefined,
+)
+# A task asking for a namespace by name reaches it still asking, and agents that may spawn
+# into their own namespace handed it on again; one under another reads that one's line too.
+HERE_LINE = jinja2.Template(
+    "You are in the {{ name }} namespace{% if above %}, not the one named above{% endif %}"
+    '{% if loops %}: a task asking for {{ name }} ("hand this to {{ name }}") is already'
+    " where it was sent, so do it here rather than hand it on{% endif %}.",
+    undefined=jinja2.StrictUndefined,
+)
+# Root's suffix says Python runs unsandboxed, as the local REPL does; any other is a sandbox.
+LOCAL_REPL = "local"
+SANDBOX_LINE = jinja2.Template(
+    "Here your Python runs {% if type == local %}unsandboxed, in the local REPL{% else %}"
+    "in the {{ type }} REPL, a sandbox{% endif %}, whatever is said above.",
     undefined=jinja2.StrictUndefined,
 )
 NO_SUB_AGENTS = (
@@ -1246,6 +1267,52 @@ def spawn_lines(registry):
     return lines
 
 
+def here_line(registry, name):
+    """What the agents of namespace *name* are told of which namespace they are in; None
+    in root."""
+    if name == ROOT:
+        return None
+    return HERE_LINE.render(
+        name=name,
+        above=len(registry.chain(name)) > 2,
+        loops=spawnable(registry, name, name),
+    )
+
+
+def sandbox_line(registry, name):
+    """What the agents of namespace *name* are told of where their Python runs, when its
+    REPL is another than the one above it, or than the local REPL root's suffix speaks of;
+    None otherwise."""
+    chain = registry.chain(name)
+    above = registry.resolve(chain[-2]).repl.type if len(chain) > 1 else LOCAL_REPL
+    repl = registry.resolve(name).repl.type
+    if repl == above:
+        return None
+    return SANDBOX_LINE.render(type=repl, local=LOCAL_REPL)
+
+
+def run_line_parts(registry):
+    """Each line the agents of each namespace are told at run time, by namespace, for
+    those told any."""
+    spawns = spawn_lines(registry)
+    parts = {
+        name: [
+            here_line(registry, name),
+            sandbox_line(registry, name),
+            spawns.get(name),
+        ]
+        for name in registry.names
+    }
+    return {name: [*filter(None, each)] for name, each in parts.items() if any(each)}
+
+
+def run_lines(registry):
+    """What the agents of each namespace are told at run time, after its own
+    system_suffix, by namespace, for those told any: which namespace they are in, where
+    their Python runs, and where they can hand work."""
+    return {name: " ".join(parts) for name, parts in run_line_parts(registry).items()}
+
+
 def hand_off_kind(registry, namespace, target):
     """What *namespace*'s agents do with a question they can't hand to *target*:
     "here" when it is *target* or under it, "record" when *target* reads the chat's
@@ -1388,7 +1455,7 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
             name for name in registry.names if sees(registry, name, LIBRARY_TOOL)
         ]
         config = without_impossible_hand_offs(config, resolved, registry)
-        config = with_spawn_lines(config, registry)
+        config = with_run_lines(config, registry)
     except ValueError as error:
         # The worker refuses such a Library itself, in its own words.
         log.warning("library.not_checked", error=str(error))
@@ -1398,10 +1465,10 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     return config | {"entry_namespace": namespace}
 
 
-def with_spawn_lines(config, registry):
-    """*config* with each of spawn_lines() after its namespace's own system_suffix, a
+def with_run_lines(config, registry):
+    """*config* with each of run_lines() after its namespace's own system_suffix, a
     blank line between, for its run only: the Library holds none."""
-    for name, line in spawn_lines(registry).items():
+    for name, line in run_lines(registry).items():
         fields = config["namespaces"][name]
         own = (fields.get("system_suffix") or "").rstrip("\n")
         fields["system_suffix"] = "\n\n".join(filter(None, [own, line]))
@@ -2446,7 +2513,7 @@ def backbone(resolved, run):
 
 def namespace_fields(registry, name, run, targets, lines):
     """Each field of namespace *name* as the engine resolves it, with where it comes from;
-    *lines* as spawn_lines() gives them."""
+    *lines* as run_lines() gives them."""
     resolved = registry.resolve(name)
     sources = resolved.sources
     repl = repl_text(resolved.repl)
@@ -2747,7 +2814,7 @@ def namespace_rows(read, config, registry):
     handed = Counter(hand_offs_made(registry, targets))
     readable = set(registry.names)
     spawns = own_spawns(registry, left)
-    lines = spawn_lines(registry)
+    lines = run_lines(registry)
     return [
         {
             "name": name,

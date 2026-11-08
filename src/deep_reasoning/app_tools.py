@@ -47,7 +47,7 @@ import structlog
 import yaml
 from deep_reasoner.namespaces import ROOT, NamespaceConfig, NamespaceRegistry
 from deep_reasoner.primitives import Func
-from deep_reasoner.v2.cli import V2Config
+from deep_reasoner.v2.cli import V2Config, build_namespace_registry
 
 from deep_reasoning import tool_check
 from deep_reasoning.library import (
@@ -56,6 +56,7 @@ from deep_reasoning.library import (
     HISTORY_DESCRIPTION,
     LIBRARY_DESCRIPTION,
     LIBRARY_TOOL,
+    LOCAL_REPL,
     PAGE_DESCRIPTION,
     TAKEN_NAMES,
     LibraryError,
@@ -82,6 +83,7 @@ from deep_reasoning.library import (
     reading,
     refuse_keys,
     run_config_and_registry,
+    run_line_parts,
     running_code,
     same_grants,
     sees,
@@ -179,14 +181,20 @@ CHECKS = "checks"
 # What wasn't done when a tool doesn't build: written, or granted.
 WRITTEN = "wasn't written"
 GRANTED = f"wasn't granted ({STOPS_EVERY_CHAT}; fix it with write_tool first)"
-# Any other REPL is a sandbox, and building a tool runs its code outside it.
-LOCAL_REPL = "local"
 # Told to the library tool's agents in a chat that can't write, such as a sub-agent's.
 READ_ONLY_HERE = jinja2.Template(
     "\nIn this chat you may only read the Library: its namespace, {{ namespace }}, doesn't"
     " grant library, so the tool refuses every write, here and in any sub-agent. Asked"
     " for a change, don't try it: answer, with FinalAnswer, what you would change, and"
-    " that the user should {{ pick }} and ask there.",
+    " that the user should {{ pick }} and ask there; but root, which every chat builds"
+    " on, only the user changes, in the Library panel: Namespaces → root → Edit YAML for"
+    " its instructions, Decompositions for its examples.",
+    undefined=jinja2.StrictUndefined,
+)
+# show(name) lists the lines a run adds after a suffix, which the librarian may copy.
+RUN_TIME_LINE = jinja2.Template(
+    "system_suffix holds “{{ line }}”, which the app adds at run time: leave it out, or"
+    " its agents read it twice.",
     undefined=jinja2.StrictUndefined,
 )
 NOT_LOCAL = (
@@ -1142,6 +1150,33 @@ def check_locks(
         check_inherited(config, registry, name, above)
 
 
+def check_no_run_lines(
+    config: V2Config, registry: NamespaceRegistry, namespace: NamespaceConfig
+) -> None:
+    """Raise if *namespace*'s system_suffix holds a line a run adds after a suffix, as
+    show(name) lists them, before the write or after it, that its stored one doesn't."""
+    name, suffix = namespace.name, namespace.system_suffix or ""
+    stored = ""
+    if name in registry.names:
+        stored = registry.config(name).system_suffix or ""
+    for lines in [*run_line_parts(registry).values(), *lines_after(config, namespace)]:
+        for line in lines:
+            if line in suffix and line not in stored:
+                raise LibraryError(RUN_TIME_LINE.render(line=line))
+
+
+def lines_after(config: V2Config, namespace: NamespaceConfig) -> list[list[str]]:
+    """The lines run_line_parts() gives each namespace of *config*, a run's, once
+    *namespace* is written into it; none when the engine can't resolve it so, as the
+    write is then refused for why."""
+    namespaces = config.namespaces | {namespace.name: namespace}
+    written = config.model_copy(update={"namespaces": namespaces})
+    try:
+        return [*run_line_parts(build_namespace_registry(written)).values()]
+    except ValueError:
+        return []
+
+
 def check_inherited(
     config: V2Config, registry: NamespaceRegistry, name: str, above: str
 ) -> None:
@@ -1424,6 +1459,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         config, registry = config_and_registry(connection)
         check_grant(registry)
         check_locks(config, registry, namespace)
+        check_no_run_lines(config, registry, namespace)
         if afresh:
             check_local(registry)
 

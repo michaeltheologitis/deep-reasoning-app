@@ -16,7 +16,7 @@ from deep_reasoner.namespaces import CONFIG_SOURCE, ROOT
 from deep_reasoner.v2.cli import V2Config, build_namespace_registry
 from pydantic import ValidationError
 
-from deep_reasoning.app_tools import LOCAL_REPL, claude_code_tools
+from deep_reasoning.app_tools import claude_code_tools
 from deep_reasoning.library import (
     APP_TOOLS,
     BUILDERS,
@@ -25,6 +25,7 @@ from deep_reasoning.library import (
     ENTRY_NAMESPACE,
     HISTORIAN,
     LIBRARIAN,
+    LOCAL_REPL,
     MAX_YAML_CHARS,
     NAMESPACE_NAME,
     NOT_RUN_SETTINGS,

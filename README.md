@@ -156,8 +156,10 @@ deep-reasoning`. A module file in the chat's folder imports too.
 - A save or delete is refused if what you opened changed meanwhile (the librarian, another tab or an import): your
   draft stays beside what is stored. A delete the panel knows would be refused says why at once. The panel and the
   namespace menu read the Library again when you open the panel or come back to the window.
-- A namespace that sets `spawn` has its agents told, each run, where they can hand work; the panel shows that line
-  under its System suffix and marks a listed namespace that is gone.
+- Each run tells the agents of every namespace but root which namespace they are in, so "hand this to stats" reaching
+  `stats` is done there; of one whose REPL isn't the one above it (root: the local one), where their Python runs;
+  and, when it sets `spawn`, where they can hand work. The panel shows that line under its System suffix and marks a
+  listed namespace that is gone; the librarian can't store it in a suffix.
 - A shared Library's rows the engine can't read are left out, so the rest works, and so are worked examples whose
   template a save would refuse and namespaces whose name could pass for another (`Root`, or one holding anything but
   printable ASCII, as no saved name does); the panel marks each ✗ with why, to fix or delete. Its templates run
@@ -166,16 +168,17 @@ deep-reasoning`. A module file in the chat's folder imports too.
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never
   runs, but to check it builds.
-- A new Library's root has a `system_suffix`, which every namespace inherits, telling agents what app they are in,
-  to answer each number from what Python computed and printed, and to combine sub-agents' results in words; edit or
-  delete it in the panel.
+- A new Library's root has a `system_suffix`, which every namespace inherits, telling agents about the app and how to
+  answer; read, edit or delete it in the panel.
 
 **The librarian**
 - In a chat in `librarian`, the agent adds or edits worked examples, adds namespaces and changes their
   `system_suffix`, `vars`, `tools` and `spawn`, and writes Python tools of its own and grants them, with the app's
   `library` tool. A chat in another namespace can't, even through a sub-agent.
-- It changes only what you name, keeps every line of a text you didn't ask to remove (saying what it removed), and
-  leaves `spawn` unset unless you ask.
+- It changes only what you name, keeps every line of a text you didn't ask to remove (saying what it removed),
+  leaves `spawn` unset unless you ask, makes team members siblings rather than children of the planner, unless
+  they should inherit its suffix and worked examples, and says when a worked example disagrees with its namespace's
+  suffix.
 - Each change shows under its answer and in the tree, opens onto its YAML (or a tool's Python) before and after, and
   applies from your next message; the panel and namespace menu show it at once. Ask it to undo one and it writes the
   before back from the record.
