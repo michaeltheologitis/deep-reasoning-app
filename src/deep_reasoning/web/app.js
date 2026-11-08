@@ -596,9 +596,10 @@ async function libraryChanged(found) {
 
 // A popover opened by its button into host. Esc closes it and stops there, so it never also stops a run or closes a panel;
 // focus leaving it (a click elsewhere, Tab) closes it too. Its buttons keep focus in it on mousedown, so a click toggles it.
-function openPopover(button, host, el, focus) {
+// closed: what else goes with it, as a timer of its own.
+function openPopover(button, host, el, focus, closed = () => {}) {
   closePopover(false);
-  popover = { button, el };
+  popover = { button, el, closed };
   el.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     e.preventDefault();
@@ -622,6 +623,7 @@ function closePopover(refocus) {
   const open = popover;
   if (!open) return;
   popover = null;
+  open.closed();
   open.el.remove();
   open.button.setAttribute("aria-expanded", "false");
   if (refocus) open.button.focus();
@@ -743,7 +745,7 @@ function folderPicker(button, host, spec) {
     picker.timer = setTimeout(() => fillBrowser(picker), LIST_DELAY_MS);
   });
   fillBrowser(picker);
-  openPopover(button, host, el, field);
+  openPopover(button, host, el, field, () => clearTimeout(picker.timer));
 }
 
 const cleanFolder = (path) => path.trim().replace(/(.)\/+$/, "$1");
@@ -790,8 +792,9 @@ function submitFolder(e, picker) {
   useFolder(picker, cleanFolder(picker.field.value) || null);
 }
 
-// path: null for the scratch folder
+// path: null for the scratch folder. A listing due after typing is dropped, so its note doesn't follow the refusal.
 async function useFolder(picker, path) {
+  clearTimeout(picker.timer);
   try {
     await picker.spec.pick(path);
   } catch (error) {
