@@ -68,7 +68,7 @@ It applies from the next message. The librarian never changes root; asked to, it
 
 **One message at a time:** a tab runs one message at a time, across all its chats. A message sent while another
 chat's run is going stays in the box, and the hint names the chat whose run is going; open that chat and press Esc
-to stop it.
+(on a touch screen, **stop**) to stop it. A run another tab started shows here, and stops here, but holds up nothing.
 
 **The agent's Python** runs on your computer by default, unsandboxed, in the chat's working folder, with the app's
 own Python packages: numpy, pandas (with tabulate, so `to_markdown()` works) and requests are there; scipy, sympy
@@ -80,19 +80,23 @@ deep-reasoning`. A module file in the chat's folder imports too.
 **Chats**
 - Chats on the left: new, rename, delete. Saved in the Library file with every message's run, they come back after a
   restart; deleting one wipes its messages from the file, and its scratch folder (it says so first if that holds
-  files).
-- The chat used last is listed first, and a reload opens it; **+ New chat** reuses an empty chat; an unsent message
-  stays with its chat; a title is cut past 200 characters.
+  files, or a run going in it, in any tab, may yet write some).
+- The chat used last is listed first, and a reload opens it; **+ New chat** reuses an empty chat, the one on screen or
+  one this tab made, never one another tab is setting up; an unsent message stays with its chat, and one sent while
+  its chat loads goes once it has; a title is cut past 200 characters, and one cut to fit shows whole in its tooltip.
 - Several tabs on one app keep in step: coming back to a tab shows the chats, messages, runs, picks, settings and
   theme another tab changed, and follows a run another tab started; a chat deleted in another tab leaves the list
   with a note.
 - Each message's run shows live as a tree of sub-agents you open level by level; what you open stays open after a
   reload. A sub-agent on another model than the chat's names it on its row.
-- Esc stops a run, saying so at once, though a cell busy in C (a long `time.sleep`) holds it up a few seconds.
+- Esc stops a run, saying so at once, even pressed just as the message goes, though a cell busy in C (a long
+  `time.sleep`) holds it up a few seconds. A run the app stopped under reads failed, and what it left going, cut off.
 - Each run shows its time, sub-agent count, cost and model. A call is priced by the server's own figure where it sends
   one (OpenRouter does), else from the price list of the vendor whose address it went to (OpenAI, OpenRouter,
   Anthropic, Google). "cost N/A" means a call was cut off before it finished, or its price isn't known, as for a
-  vendor's model on a server of your own; a run that made no call costs $0.
+  vendor's model on a server of your own; a run that made no call costs $0. Costs read to a hundredth of a cent
+  under a dollar ($0.0123; one less than $0.0001 as <$0.0001) and to the cent from a dollar ($1,234.56), so a
+  chat's runs add up to its total.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
   its own words after.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,
@@ -104,16 +108,20 @@ deep-reasoning`. A module file in the chat's folder imports too.
   the chat draws them), linked under its answer and opening in a new tab; pages are deleted with their chat. A new
   Library grants this to the historian, so "show me on a page how you got that" goes there.
 - Each chat has its own model, namespace and working folder, picked under the message box (typing filters the
-  menus); a change applies from the next message.
+  menus); a change applies from the next message. A folder that is gone, or a model whose provider was removed, is
+  marked missing; a namespace named with more than plain ASCII, as only a shared file may hold, shows escaped
+  (`'r\u043eot'`), as the Library panel writes it.
 - Light and dark themes with text at WCAG AA contrast; phone width, where the chats are a drawer (☰; Esc shuts it)
-  and the Library and settings fill the screen; on a touch screen a **send** button sends and Enter makes a new line.
+  and the Library and settings fill the screen, each leaving what is under it out of reach; on a touch screen a
+  **send** button sends, Enter makes a new line, a chat picked from the list leaves the keyboard down, and rows and
+  tree lines are a finger's height. A skip link leads to the message box.
   No internet needed: the page loads nothing but the app.
 
 **Models and keys**
 - The vendors above, and custom servers (any OpenAI-compatible URL, with an optional key).
 - The model menu shows the current models of each vendor you have a key for, and all of a custom server's; typing
   searches every provider's whole list of chat models, in any case, and Enter picks the first model listed (an exact
-  name first); any other name is accepted, after every listed one.
+  name first); any other name is accepted, after every listed one, on the chat's own provider first.
   The model shows with its provider.
 - Settings keeps keys in `~/.deep-reasoning/.env`, readable only by you, and never shows them again; a saved key wins
   over the shell's.
@@ -154,7 +162,8 @@ deep-reasoning`. A module file in the chat's folder imports too.
   keyword or built-in, or is a tool's; and a namespace granting a tool of yours that no namespace granted yet, if it
   doesn't build (built first, up to a minute).
 - A save or delete is refused if what you opened changed meanwhile (the librarian, another tab or an import): your
-  draft stays beside what is stored. A delete the panel knows would be refused says why at once. The panel and the
+  draft stays beside what is stored. Any refusal stays shown, and any but that one keeps Save off, until you change
+  what you wrote. A delete the panel knows would be refused says why at once. The panel and the
   namespace menu read the Library again when you open the panel or come back to the window.
 - Each run tells the agents of every namespace but root which namespace they are in, so "hand this to stats" reaching
   `stats` is done there; of one whose REPL isn't the one above it (root: the local one), where their Python runs;

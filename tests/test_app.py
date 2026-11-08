@@ -357,14 +357,16 @@ def test_a_valid_decomposition_is_stored_and_listed_under_its_namespace(client):
         "/api/decompositions", json={"namespace": "course_advisor", "yaml": VALID}
     )
     assert response.status_code == 201
-    assert response.json() == {
-        "namespace": "course_advisor",
+    # the whole Library, as a read gives it, so the panel shows the new one as it shows any
+    assert response.json() == client.get("/api/library").json()
+    stored = namespaces(client)["course_advisor"]["decompositions"]
+    assert [each["name"] for each in stored] == ["catalog lookup", "next course"]
+    assert stored[-1] == {
         "name": "next course",
         "yaml": VALID,
         "problems": ["Turn 2 (assistant) has no <think>…</think>."],
+        "read": True,
     }
-    stored = namespaces(client)["course_advisor"]["decompositions"]
-    assert [each["name"] for each in stored] == ["catalog lookup", "next course"]
 
 
 @pytest.mark.parametrize(
@@ -508,23 +510,31 @@ async def test_a_chat_whose_namespace_was_deleted_is_refused_on_its_next_run(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("name", "yaml", "shown"),
+    [
+        ("coder", "reasoner: claude_code\n", "coder"),
+        # a shared file's look-alike, written as the panel writes it
+        ("rоot", "system_suffix: Answer as root.\n", "'r\\u043eot'"),
+    ],
+)
 async def test_a_chat_in_a_namespace_the_engine_cant_read_is_refused_saying_so(
-    library_on, connect
+    library_on, connect, name, yaml, shown
 ):
     with FakeOpenAI(scripted(PLAN)) as fake:
         library = library_on(fake)
-        plant_row(library, "namespaces", ("coder", "reasoner: claude_code\n"))
+        plant_row(library, "namespaces", (name, yaml))
         async with connect(library) as api:
             chat = await new_chat(api)
-            await api.patch(f"/api/chats/{chat}", json={"namespace": "coder"})
+            await api.patch(f"/api/chats/{chat}", json={"namespace": name})
             refused = await api.post(
                 f"/api/chats/{chat}/runs", json={"prompt": "Count to two."}
             )
     assert (refused.status_code, refused.json()) == (
         400,
         {
-            "detail": "This chat's namespace coder is one the engine can't read (the"
-            " Library panel says why) — pick another."
+            "detail": f"This chat's namespace {shown} is one the engine can't read"
+            " (the Library panel says why) — pick another."
         },
     )
     assert fake.calls == []
@@ -2498,9 +2508,13 @@ async def test_a_run_that_is_going_shows_in_the_list_and_in_its_chat(
             run = await send(api, chat, "Count to two.")
             listed = (await api.get("/api/chats")).json()
             read = (await api.get(f"/api/chats/{chat}")).json()
+            scratch = (await api.get(f"/api/chats/{chat}/scratch")).json()
             release.set()
             await run_events(api, run)
             after = (await api.get("/api/chats")).json()
+            ended = (await api.get(f"/api/chats/{chat}/scratch")).json()
+    # what the delete confirm reads: a run going may yet write in the scratch folder
+    assert (scratch["live"], ended["live"]) == (True, False)
     assert {each["id"]: each["live"] for each in listed} == {chat: run, idle: None}
     assert read["live"] == run and [turn["run"] for turn in read["turns"]] == [run]
     assert read["turns"][0]["events"][0]["kind"] == "turn.start"
@@ -3227,6 +3241,21 @@ def test_a_provider_or_server_that_is_not_there_is_refused(client):
     assert client.delete("/api/servers/OpenAI").status_code == 404
 
 
+def test_a_chat_whose_models_provider_was_removed_is_marked_before_its_next_message(
+    client,
+):
+    client.post("/api/servers", json={"name": "vllm", "base_url": VLLM})
+    chat = client.post("/api/chats").json()["id"]
+    model = {"provider": "vllm", "name": "qwen"}
+    picked = client.patch(f"/api/chats/{chat}", json={"model": model}).json()
+    client.delete("/api/servers/vllm")
+    [listed] = client.get("/api/chats").json()
+    read = client.get(f"/api/chats/{chat}").json()
+    assert picked["provider_missing"] is False
+    assert (listed["model"], listed["provider_missing"]) == (model, True)
+    assert read["provider_missing"] is True
+
+
 def test_a_custom_server_is_added_changed_and_removed_with_its_key(client, home):
     server = {"name": "vllm", "base_url": VLLM, "key": "sk-vllm"}
     added = client.post("/api/servers", json=server)
@@ -3252,6 +3281,9 @@ def test_a_custom_server_is_added_changed_and_removed_with_its_key(client, home)
     removed = client.delete("/api/servers/vllm")
     assert "vllm" not in by_name(removed.json())
     assert "DEEP_REASONING_VLLM_KEY" not in (home / ENV_FILE).read_text()
+    # as when another tab removed it first
+    again = client.delete("/api/servers/vllm")
+    assert (again.status_code, again.json()) == (200, removed.json())
 
 
 @pytest.mark.anyio
@@ -3470,7 +3502,10 @@ async def test_a_chat_without_a_folder_works_in_its_scratch_folder_across_messag
             written = (await api.get(f"/api/chats/{chat}/scratch")).json()
     scratch = data / "work" / chat
     assert not before
-    assert (empty, written) == ({"files": False}, {"files": True})
+    assert (empty, written) == (
+        {"files": False, "live": False},
+        {"files": True, "live": False},
+    )
     assert (read["folder"], read["scratch_folder"]) == (
         None,
         f"~/files/{data.name}/work/{chat}",
@@ -3557,13 +3592,16 @@ def test_a_folder_that_is_not_there_is_refused_and_the_chat_keeps_its_own(
     assert client.get("/api/chats").json() == [chat]
 
 
-def test_folders_are_listed_for_the_picker_and_a_missing_one_is_refused(client, home):
+def test_folders_are_listed_for_the_picker_and_a_missing_one_says_so_unrefused(
+    client, home
+):
     (home / "code" / "thesis").mkdir(parents=True)
     (home / ".cache").mkdir()
     (home / "notes.txt").write_text("not a folder")
     listed = client.get("/api/folders")
     code = client.get("/api/folders", params={"path": "~/code"})
     missing = client.get("/api/folders", params={"path": "~/gone"})
+    a_file = client.get("/api/folders", params={"path": "~/notes.txt"})
     assert listed.json() == {
         "path": "~",
         "parent": str(home.parent),
@@ -3571,11 +3609,21 @@ def test_folders_are_listed_for_the_picker_and_a_missing_one_is_refused(client, 
             {"name": "code", "path": "~/code"},
             {"name": ".cache", "path": "~/.cache"},
         ],
+        "problem": None,
     }
     assert code.json()["folders"] == [{"name": "thesis", "path": "~/code/thesis"}]
     assert (missing.status_code, missing.json()) == (
+        200,
+        {
+            "path": "~/gone",
+            "parent": None,
+            "folders": [],
+            "problem": "There is no folder ~/gone.",
+        },
+    )
+    assert (a_file.status_code, a_file.json()) == (
         400,
-        {"detail": "There is no folder ~/gone."},
+        {"detail": "~/notes.txt is a file, not a folder."},
     )
 
 

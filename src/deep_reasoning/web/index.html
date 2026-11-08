@@ -9,14 +9,15 @@
 <link rel="stylesheet" href="library.css">
 </head>
 <body>
+<a class="skip" id="skip" href="#input">Skip to the message box</a>
 <div class="app" id="app">
-  <aside class="sidebar" id="sidebar" aria-label="Chats">
+  <div class="sidebar" id="sidebar" role="complementary" aria-label="Chats">
     <div class="brand"><span aria-hidden="true">✻</span> Deep Reasoning</div>
     <button type="button" class="new-chat" id="new-chat">+ New chat</button>
     <div class="label" id="chats-label">Chats</div>
     <ul class="chats" id="chats" aria-labelledby="chats-label"></ul>
     <button type="button" class="settings-toggle" id="settings-toggle" aria-expanded="false" aria-controls="settings">settings</button>
-  </aside>
+  </div>
   <main class="main" id="main">
     <header class="topbar">
       <button type="button" class="menu" id="menu" aria-label="Chats" aria-expanded="false" aria-controls="sidebar">☰</button>
@@ -31,7 +32,7 @@
         <span class="prompt" aria-hidden="true">&gt;</span>
         <textarea id="input" rows="1" placeholder="Ask anything" aria-label="Message"></textarea>
         <button type="submit" class="send" id="send">send</button>
-        <button type="button" class="stop" id="stop" hidden>esc to interrupt</button>
+        <button type="button" class="stop" id="stop" hidden>stop</button>
       </div>
       <div class="hints">
         <span id="hint" aria-live="polite"></span>
@@ -39,9 +40,9 @@
           <span class="choices" id="choices" hidden>
             <button type="button" class="choice" id="folder" aria-haspopup="dialog" aria-expanded="false"><span id="folder-name"></span><span class="set-missing" id="folder-missing"></span><span aria-hidden="true"> ▾</span></button>
             <span aria-hidden="true">·</span>
-            <button type="button" class="choice" id="namespace" aria-haspopup="listbox" aria-expanded="false"><span id="namespace-name"></span><span aria-hidden="true"> ▾</span></button>
+            <button type="button" class="choice" id="namespace" aria-haspopup="listbox" aria-expanded="false"><span class="ns-name" id="namespace-name"></span><span aria-hidden="true"> ▾</span></button>
             <span aria-hidden="true">·</span>
-            <button type="button" class="choice" id="model" aria-haspopup="listbox" aria-expanded="false"><span id="model-name"></span><span class="provider" id="model-provider"></span><span aria-hidden="true"> ▾</span></button>
+            <button type="button" class="choice" id="model" aria-haspopup="listbox" aria-expanded="false"><span id="model-name"></span><span class="provider" id="model-provider"></span><span class="set-missing" id="model-missing"></span><span aria-hidden="true"> ▾</span></button>
           </span>
           <span id="total"></span>
         </span>

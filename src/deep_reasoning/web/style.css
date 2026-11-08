@@ -59,6 +59,10 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 :focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 /* read by a screen reader, never seen */
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+/* the first Tab stop, seen only while it has focus */
+.skip { position: absolute; left: 8px; top: 8px; z-index: 10; padding: 4px 8px; background: var(--bg); color: var(--fg); border: 1px solid var(--accent); border-radius: 4px; transform: translateY(-200%); }
+.skip:focus { transform: none; }
+.loading { margin: 0; color: var(--dim); font-style: italic; }
 
 .app { display: grid; grid-template-columns: 270px minmax(0, 1fr); height: 100%; }
 
@@ -115,7 +119,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .line, .think, .summary { display: grid; grid-template-columns: 2ch 2ch minmax(0, 1fr); width: 100%; }
 .glyph.done { color: var(--ok); }
 .glyph.failed { color: var(--err); }
-.glyph.stopped, .glyph.running { color: var(--dim); }
+.glyph.stopped, .glyph.cut-off, .glyph.running { color: var(--dim); }
 .glyph.running { animation: blink 1s steps(2) infinite; }
 .head { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .head b { font-weight: 600; }
@@ -237,6 +241,8 @@ textarea::placeholder { color: var(--dim); }
 /* only where Enter makes a new line: a touch screen */
 .send { display: none; flex: none; align-self: flex-end; margin: -4px -6px -4px 0; padding: 4px 8px; color: var(--accent); }
 @media (pointer: coarse) { .send:not([hidden]) { display: block; } }
+/* on a touch screen each tree line and row is a finger's target, at least 24px tall (WCAG 2.5.8) */
+@media (pointer: coarse) { .line, .think, .summary, .row, .show-code { padding-block: 2px; } }
 .hints { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 2ch; padding: 4px 2px 0; color: var(--dim); font-size: 0.92em; }
 .hints .err { color: var(--err); }
 .state { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; column-gap: 1ch; min-width: 0; max-width: 100%; margin-left: auto; }
@@ -253,8 +259,12 @@ textarea::placeholder { color: var(--dim); }
 /* already cut in app.js, so its name needs no least width, which would leave a gap after a short one such as ~ */
 #folder { flex-shrink: 0; }
 #folder > span:first-child { min-width: 0; }
-#folder-missing { flex: none; white-space: pre; }
+.choice > .set-missing { flex: none; white-space: pre; }
 .choice:hover, .choice[aria-expanded="true"] { color: var(--fg); }
+/* a dotted namespace's parents give way first, so its own last name stays in view (nameParts in tree.js) */
+.ns-name { display: inline-flex; min-width: 0; }
+.ns-parents { flex: 0 1000 auto; min-width: 2ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ns-own { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* popovers: the composer's menus open above its box, the settings panel's in place */
 .menu-pop {
@@ -270,6 +280,7 @@ textarea::placeholder { color: var(--dim); }
 .menu-head { color: var(--dim); padding: 4px 6px 2px; }
 .menu-note { margin: 0; padding: 0 6px 2px 3ch; color: var(--dim); overflow-wrap: anywhere; }
 .menu-option { display: flex; gap: 1ch; padding: 1px 6px; border-radius: 3px; cursor: pointer; overflow-wrap: anywhere; }
+.menu-label { min-width: 0; }
 .menu-option:hover, .menu-option.active { background: var(--hover); }
 .menu-option .gone { color: var(--err); }
 .folder-pop .menu-note, .menu-pop > .menu-note { padding-left: 0; }

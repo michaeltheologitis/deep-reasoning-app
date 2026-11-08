@@ -1,5 +1,5 @@
 // The settings panel: the providers, with each key's status, the custom servers, and the default folder. Keys go to the server, which keeps them in ~/.deep-reasoning/.env and never sends one back.
-import { PANEL_CLOSE, PANEL_OPEN, SETTINGS_CHANGED, caret, closeOtherPanels, element, folderPicker, forgetModelLists, request, settingsChanged, showPanel } from "./app.js";
+import { PANEL_CLOSE, PANEL_OPEN, SETTINGS_CHANGED, caret, closeOtherPanels, element, folderPicker, providersChanged, request, settingsChanged, showPanel } from "./app.js";
 
 const ENV_FILE = "~/.deep-reasoning/.env";
 // Ollama's, as an example: not the app's own port
@@ -10,6 +10,7 @@ const ADDING = Symbol("adding");
 const NO_FOLDER = "each chat's own scratch folder";
 const FOLDER_MISSING = "missing: new chats use a scratch folder";
 const STATUS = { set: "key ✓", shell: "key from your shell" };
+const NOT_FOUND = 404;
 // what each status means for a key set in the shell too
 const STATUS_TITLE = { set: `saved in ${ENV_FILE}, which wins over one set in your shell`, shell: "set in your shell; a key saved here would win over it" };
 
@@ -31,6 +32,7 @@ const addToggle = element(
   "+ Custom server",
 );
 const addArea = element("div", { class: "lib-add" }, addToggle);
+const removedMeanwhile = element("p", { class: "lib-note", role: "status" });
 const folderName = element("span", { id: "default-folder-name" }, NO_FOLDER);
 const folderMissing = element("span", { id: "default-folder-missing", class: "set-missing" });
 const folderHost = element("div");
@@ -47,7 +49,7 @@ panel.append(
   element(
     "div",
     { class: "lib-body" },
-    element("section", { class: "lib-group" }, element("h3", { class: "lib-label" }, "Providers"), providerRows, addArea),
+    element("section", { class: "lib-group" }, element("h3", { class: "lib-label" }, "Providers"), providerRows, removedMeanwhile, addArea),
     element("p", { class: "lib-note" }, `Keys are kept in ${ENV_FILE}, readable only by you. Keys already set in your shell keep working; one saved here wins.`),
     pickerSection("default-folder", "Default folder", [folderButton, " ", folderMissing], folderHost, "New chats work in it; each chat can pick its own under the message box."),
   ),
@@ -84,6 +86,7 @@ function render(focusKey) {
 }
 
 function flip(target, focusKey) {
+  removedMeanwhile.textContent = "";
   opened = opened === target ? null : target;
   render(focusKey);
 }
@@ -164,16 +167,20 @@ function serverForm(server) {
   );
 }
 
-// Each change goes to the server, which answers with every provider's status; the panel and the model menu follow that.
+// Each change goes to the server, which answers with every provider's status; the panel and the model menu follow that. A
+// server another tab removed meanwhile is gone already (removing it again is no refusal): saving it reads the rows again.
 async function change(method, url, body, problem, focusName) {
-  let answer;
   try {
-    answer = await request(method, url, body);
+    providers = await request(method, url, body);
+    removedMeanwhile.textContent = "";
   } catch (error) {
-    problem.textContent = error.message;
-    return false;
+    if (error.status !== NOT_FOUND) {
+      problem.textContent = error.message;
+      return false;
+    }
+    await loadProviders();
+    removedMeanwhile.textContent = `${focusName} was removed in another tab, so nothing was saved.`;
   }
-  providers = answer;
   opened = null;
   render(rowKey(focusName));
   settingsChanged();
@@ -279,7 +286,7 @@ async function readAgain() {
   await Promise.all([loadProviders(), loadDefaultFolder()]);
   if (JSON.stringify(providers) === before) return;
   if (!panel.hidden && opened === null) render();
-  forgetModelLists();
+  providersChanged();
 }
 
 toggleButton.addEventListener("click", () => setOpen(panel.hidden));

@@ -1,6 +1,6 @@
 // The Deep Reasoning chat: chats and their runs from the app's API, each run's events folded into its tree, live as they stream.
 import { asText, clip, field, foldEvent, foldEvents, newFold, nodesOf } from "./fold.js";
-import { modelGroups, namespaceGroups } from "./models.js";
+import { modelGroups, namespaceGroups, shownName } from "./models.js";
 import {
   COST_NA,
   MS_PER_SECOND,
@@ -21,6 +21,7 @@ import {
   formatTotal,
   join,
   known,
+  nameParts,
   opened,
   out,
   pageLink,
@@ -58,6 +59,8 @@ const PHONE = matchMedia("(max-width: 720px)");
 const SCRATCH_NAME = "scratch";
 const SCRATCH_PICK = "Use a scratch folder";
 const FOLDER_NAME_CHARS = 24;
+// the pause in typing a folder after which the picker lists it
+const LIST_DELAY_MS = 200;
 const FOLDER_MISSING = ", which is missing: pick another before the next message";
 const POPOVER_MARGIN_PX = 8;
 const NOT_ANSWERING = "the app isn't answering; is deep-reasoning still running?";
@@ -73,19 +76,32 @@ const OUTCOME = {
   // in this tab or another: each tab following the run reads the same
   stopped: ["stopped", ""],
 };
-const STOP_LABEL = "esc to interrupt";
 const STOPPING = "stopping…";
 const OPEN_PREFIX = "open:";
-// A touch keyboard has no shift+enter to speak of, so there Enter makes a new line and a send button sends.
+// the run this tab started, kept for the tab as it reloads, so its one-run lock still holds for it
+const OWN_RUN = "own-run";
+// A touch keyboard has no shift+enter to speak of, so there Enter makes a new line and a send button sends; nor an Esc,
+// so there the stop button says "stop", and the summary of a run going says nothing of it.
 const TOUCH = matchMedia("(pointer: coarse)").matches;
 const SEND_HINT = TOUCH ? "enter for a new line" : "enter to send · shift+enter for a new line";
+const STOP_LABEL = TOUCH ? "stop" : "esc to interrupt";
+const STOP_HINT = TOUCH ? null : STOP_LABEL;
+const STOP_HOW = TOUCH ? "tap stop" : "press Esc";
+const LOADING = "Loading…";
+const SEND_ON_LOAD = "sending once this chat has loaded…";
+// how a chat picked from the list takes focus: on a touch screen, not in the message box, whose keyboard would cover the chat
+const PICKED = TOUCH ? "menu" : "input";
+const PROVIDER_MISSING = "its provider is no longer in settings: pick another before the next message";
 const SETTINGS_CHANGED = "settings-changed";
 
 const byId = (id) => document.getElementById(id);
-// sending: the chat whose message is on its way; problem shows in red, notice in plain words
-const state = { chats: [], current: null, live: null, sending: null, problem: null, problemWhileDown: false, notice: null };
+// sending: the chat whose message is on its way, stopOnStart whether Esc asked to stop its run before it was there; sendOnLoad
+// whether a message waits for the chat on screen to load; problem shows in red, notice in plain words
+const state = { chats: [], current: null, live: null, sending: null, stopOnStart: false, sendOnLoad: false, problem: null, problemWhileDown: false, notice: null };
 const ui = { renaming: null, deleting: null };
 const drafts = new Map();
+// the ids of the chats this tab made, which "+ New chat" may reuse while they are empty
+const madeHere = new Set();
 // this page's changes on their way: a list read meanwhile may predate them
 const inflight = new Set();
 let changes = 0;
@@ -134,7 +150,7 @@ function summary(turn, switched) {
 
 function liveSummary(turn, live, switched) {
   const running = countAgents(turn, (agent) => agent.status === "running");
-  const stop = live && (live.stopping ? element("span", { class: "working" }, STOPPING) : STOP_LABEL);
+  const stop = live && (live.stopping ? element("span", { class: "working" }, STOPPING) : STOP_HINT);
   const facts = [clock(turn.started), running > 0 && `${plural(running, "sub-agent")} running`, modelView(turn), switched, stop];
   return [element("span", { class: "working" }, "Reasoning… "), "(", join(facts.filter(Boolean), " · "), ")"];
 }
@@ -249,9 +265,10 @@ function renderChat(chat) {
     { class: `chat ${current ? "current" : ""}` },
     element(
       "button",
-      { type: "button", class: "pick", "data-key": `chat:${chat.id}`, "aria-current": current && "page", onclick: () => select(chat), ondblclick: () => setUi({ renaming: chat }) },
+      { type: "button", class: "pick", "data-key": `chat:${chat.id}`, "aria-current": current && "page", onclick: () => select(chat, { focus: PICKED }), ondblclick: () => setUi({ renaming: chat }) },
       element("span", { class: "mark" }, live ? spinner() : current ? "●" : ""),
-      element("span", { class: "name" }, chat.title),
+      // cut to fit, whole in its tooltip
+      element("span", { class: "name", title: chat.title }, chat.title),
     ),
     element("button", { type: "button", class: "icon", title: "Rename", "aria-label": `Rename “${chat.title}”`, onclick: () => setUi({ renaming: chat }) }, "✎"),
     element("button", { type: "button", class: "icon", title: "Delete", "aria-label": `Delete “${chat.title}”`, "data-key": `chat-delete:${chat.id}`, onclick: () => askDelete(chat) }, "✕"),
@@ -276,7 +293,7 @@ function askDelete(chat) {
 }
 
 // The scratch folder goes with the chat, so the question names it unless the server says it holds no files. A run going
-// in the chat may yet write some, so the question names it until the run ends, when it is asked again.
+// in the chat, here or in another tab, may yet write some, so the question names it until the run ends, when it is asked again.
 async function checkScratch(chat) {
   if (chat.live != null) return;
   let scratch;
@@ -286,7 +303,7 @@ async function checkScratch(chat) {
     lostWith(error, chat);
     return;
   }
-  if (ui.deleting !== chat || chat.live != null || scratch.files) return;
+  if (ui.deleting !== chat || chat.live != null || scratch.files || scratch.live) return;
   chat.scratch_files = false;
   renderList();
 }
@@ -329,11 +346,18 @@ function showPanel(panel, toggle, open) {
   (opener?.isConnected && opener.checkVisibility() ? opener : toggle).focus();
 }
 
-// At phone width a side panel covers the whole page, so nothing behind it takes focus, as the shut drawer takes none.
+// At phone width a side panel covers the whole page, and the open drawer the chat, so nothing behind either takes focus, as
+// the shut drawer takes none.
 function coverPage() {
   const covered = PHONE.matches && document.querySelector(".library:not([hidden])") !== null;
-  byId("main").inert = covered;
-  byId("sidebar").inert = PHONE.matches && (covered || !byId("app").classList.contains("list-open"));
+  const sidebar = byId("sidebar");
+  byId("main").inert = covered || drawerOpen();
+  byId("skip").inert = byId("main").inert;
+  sidebar.inert = PHONE.matches && (covered || !drawerOpen());
+  // the open drawer is a modal dialog, the page under it out of reach
+  sidebar.setAttribute("role", drawerOpen() ? "dialog" : "complementary");
+  if (drawerOpen()) sidebar.setAttribute("aria-modal", "true");
+  else sidebar.removeAttribute("aria-modal");
 }
 
 function keepScroll(scroll, draw) {
@@ -344,24 +368,30 @@ function keepScroll(scroll, draw) {
 }
 
 function logOf(chat) {
-  if (!chat.turns) return [];
+  if (!chat.turns) return [element("p", { class: "loading", role: "status" }, LOADING)];
   return chat.turns.length ? chat.turns.map((turn, i) => renderTurn(turn, chat.turns[i - 1])) : [renderWelcome()];
+}
+
+// cut to fit, whole in its tooltip
+function showTitle(chat) {
+  byId("title").textContent = byId("title").title = chat?.title ?? "";
 }
 
 function renderLog(scroll) {
   const chat = state.current;
-  byId("title").textContent = chat?.title ?? "";
+  showTitle(chat);
   if (!chat) return byId("log").replaceChildren();
   const focused = document.activeElement?.dataset?.key;
   keepScroll(scroll, () => byId("log").replaceChildren(...logOf(chat)));
   refocus(focused);
 }
 
-const runElsewhere = (live) => `a run is going in “${live.chat.title}”: wait for it, or open it and press Esc to stop it`;
+const runElsewhere = (live) => `a run is going in “${live.chat.title}”: wait for it, or open it and ${STOP_HOW} to stop it`;
 
+// Only a run this tab started holds up a message in another chat: one it follows, started elsewhere, doesn't.
 function usualHint(live, here) {
   if (here) return "";
-  if (live) return runElsewhere(live);
+  if (live?.own) return runElsewhere(live);
   return SEND_HINT;
 }
 
@@ -398,14 +428,17 @@ function renderChoices(chat) {
   const ready = library.namespaces && chat?.turns;
   byId("choices").hidden = !ready;
   if (!ready) return;
+  const namespace = shownName(chat.namespace);
   const model = chat.model && servedBy(chat.model.name, chat.model.provider);
-  byId("namespace-name").textContent = chat.namespace;
-  byId("namespace").title = `${chat.namespace}: this chat's namespace, from its next message`;
-  byId("namespace").setAttribute("aria-label", `Namespace: ${chat.namespace}`);
+  if (byId("namespace-name").textContent !== namespace) byId("namespace-name").replaceChildren(...nameParts(namespace).filter(Boolean));
+  byId("namespace").title = `${namespace}: this chat's namespace, from its next message`;
+  byId("namespace").setAttribute("aria-label", `Namespace: ${namespace}`);
   byId("model-name").textContent = chat.model?.name ?? "pick a model";
   byId("model-provider").textContent = chat.model ? ` · ${chat.model.provider}` : "";
-  byId("model").title = `${model ?? "No model"}: this chat's model, from its next message`;
-  byId("model").setAttribute("aria-label", `Model: ${model ?? "none"}`);
+  // marked, as the folder is, since its next message would be refused
+  byId("model-missing").textContent = chat.provider_missing ? " missing" : "";
+  byId("model").title = `${model ?? "No model"}: ${chat.provider_missing ? PROVIDER_MISSING : "this chat's model, from its next message"}`;
+  byId("model").setAttribute("aria-label", `Model: ${model ?? "none"}${chat.provider_missing ? ", missing" : ""}`);
   renderFolder(chat);
 }
 
@@ -421,7 +454,7 @@ async function choose(chat, change) {
     if (change.model) byId("settings").dispatchEvent(new Event(SETTINGS_CHANGED));
     return;
   }
-  Object.assign(chat, { namespace: chosen.namespace, model: chosen.model });
+  Object.assign(chat, { namespace: chosen.namespace, model: chosen.model, provider_missing: chosen.provider_missing });
   report(null);
 }
 
@@ -434,8 +467,9 @@ function renderFolder(chat) {
   const button = byId("folder");
   byId("folder-name").textContent = clip(name, FOLDER_NAME_CHARS);
   byId("folder-missing").textContent = chat.folder_missing ? " missing" : "";
+  // the path is in the title, which describes it, so its name stays short
   button.title = full;
-  button.setAttribute("aria-label", full);
+  button.setAttribute("aria-label", `Working folder: ${name}${chat.folder_missing ? ", missing" : ""}`);
 }
 
 function pickFolder() {
@@ -461,10 +495,10 @@ function pickFolder() {
 function pickNamespace() {
   const chat = state.current;
   const star = element("span", { class: "lib-star" }, "★ new chats start here");
-  const options = library.namespaces.map((name) => ({ value: name, label: [name, name === library.defaultNamespace && star] }));
+  const options = library.namespaces.map((name) => ({ value: name, label: [name, name === library.defaultNamespace && [" ", star]] }));
   if (!library.namespaces.includes(chat.namespace)) {
     const why = library.leftOut.includes(chat.namespace) ? "can't be read now: see the Library panel" : "no longer exists";
-    options.unshift({ value: chat.namespace, label: [chat.namespace, element("span", { class: "gone" }, why)] });
+    options.unshift({ value: chat.namespace, label: [shownName(chat.namespace), " ", element("span", { class: "gone" }, why)] });
   }
   showMenu(byId("namespace"), byId("above"), {
     label: "Namespaces",
@@ -529,15 +563,19 @@ function openSettings() {
   byId("settings").dispatchEvent(new Event(PANEL_OPEN));
 }
 
-// The providers changed, here or in another tab: the model menu reads its lists again when next opened.
-function forgetModelLists() {
+// The providers changed, here or in another tab: the model menu reads its lists again when next opened, and a hint about what
+// the chat could run on, as "Pick a model" when there was none to pick, goes.
+function providersChanged() {
   modelLists = null;
+  if (state.problem == null) return;
+  state.problem = null;
+  renderComposer();
 }
 
 // After a change in settings here the lists are read again, and each chat's model too: one that never picked follows what new
 // chats start on. Coming back to the tab reads the chats anyway.
 async function settingsChanged() {
-  forgetModelLists();
+  providersChanged();
   await refresh();
 }
 
@@ -622,7 +660,9 @@ function menuGroup(open, group, number) {
       const current = isCurrentOption(open, option);
       const id = `menu-option-${open.options.indexOf(option)}`;
       const mark = element("span", { class: "mark" }, current ? "✓" : "");
-      return element("div", { class: "menu-option", id, role: "option", "aria-selected": String(current), onclick: () => chooseOption(open, option) }, mark, option.label);
+      // the label wraps as one line of text, between words, so a name never breaks beside its note
+      const label = element("span", { class: "menu-label" }, option.label);
+      return element("div", { class: "menu-option", id, role: "option", "aria-selected": String(current), onclick: () => chooseOption(open, option) }, mark, label);
     }),
   );
 }
@@ -672,7 +712,7 @@ function folderPicker(button, host, spec) {
   const use = element("button", { type: "submit", class: "lib-action lib-primary" });
   // beside "Use this folder", so the scratch folder is a click away whatever the field holds
   const scratch = element("button", { type: "button", class: "lib-action", onclick: () => useFolder(picker, null) }, SCRATCH_PICK);
-  const picker = { button, spec, field, problem, browser, use, scratch, asked: null };
+  const picker = { button, spec, field, problem, browser, use, scratch, asked: null, timer: 0 };
   // a form may not be a dialog, so the dialog holds it
   const el = element(
     "div",
@@ -690,7 +730,9 @@ function folderPicker(button, host, spec) {
   );
   field.addEventListener("input", () => {
     problem.textContent = "";
-    fillBrowser(picker);
+    labelUse(picker);
+    clearTimeout(picker.timer);
+    picker.timer = setTimeout(() => fillBrowser(picker), LIST_DELAY_MS);
   });
   fillBrowser(picker);
   openPopover(button, host, el, field);
@@ -698,12 +740,18 @@ function folderPicker(button, host, spec) {
 
 const cleanFolder = (path) => path.trim().replace(/(.)\/+$/, "$1");
 
-// Each keystroke asks again; an answer to an older question is dropped.
-async function fillBrowser(picker) {
-  const here = cleanFolder(picker.field.value) || HOME_FOLDER;
+function labelUse(picker) {
   const typed = picker.field.value.trim() !== "";
   picker.use.textContent = typed ? "Use this folder" : SCRATCH_PICK;
   picker.scratch.hidden = !typed;
+}
+
+// Asked again at each pause in typing; an answer to an older question is dropped. A path with no folder there, as one half
+// typed, lists none and says so (problem), as no refusal.
+async function fillBrowser(picker) {
+  clearTimeout(picker.timer);
+  const here = cleanFolder(picker.field.value) || HOME_FOLDER;
+  labelUse(picker);
   picker.asked = here;
   let listing;
   try {
@@ -713,6 +761,7 @@ async function fillBrowser(picker) {
     return;
   }
   if (picker.asked !== here) return;
+  if (listing.problem) return picker.browser.replaceChildren(element("div", { class: "folder-here" }, listing.path), element("p", { class: "menu-note" }, listing.problem));
   const row = (label, path) => element("button", { type: "button", class: "row", onclick: () => goToFolder(picker, path) }, label);
   const up = listing.parent == null ? [] : [row("..", listing.parent)];
   const rows = listing.folders.length ? listing.folders.map(({ name, path }) => row(`${name}/`, path)) : [element("p", { class: "menu-note" }, "no folders in here")];
@@ -841,12 +890,20 @@ async function readAll(scroll) {
     try {
       await readTurns(chat);
     } catch (error) {
-      if (!lostWith(error, chat) && state.current === chat) return report(`Could not open this chat: ${error.message}`);
-      continue;
+      if (lostWith(error, chat) || state.current !== chat) continue;
+      state.sendOnLoad = false;
+      return report(`Could not open this chat: ${error.message}`);
     }
-    if (state.current === chat) return render(scroll);
+    if (state.current !== chat) continue;
+    render(scroll);
+    // a message sent while the chat loaded goes now
+    if (state.sendOnLoad) {
+      state.notice = null;
+      send();
+    }
+    return;
   }
-  byId("title").textContent = state.current?.title ?? "";
+  showTitle(state.current);
   renderComposer();
 }
 
@@ -880,13 +937,23 @@ function adopt(chat, listed) {
 // Read again when another tab ran something in it, or while its run goes on unfollowed, so its turn never stays half-folded.
 const stale = (chat) => !chat.turns || (state.live?.chat !== chat && (chat.live != null || chat.last_run !== chat.read_run));
 
-// A run still going in a chat is followed from where its turns end, unless the page follows another or the chat is gone.
+// A run still going in a chat is followed from where its turns end, unless the page follows another or the chat is gone. It is
+// this tab's own only if this tab started it, before a reload too.
 async function readTurns(chat) {
   const { turns, ...rest } = await request("GET", `api/chats/${chat.id}`);
   const folds = turns.map((turn) => foldEvents(turn.events));
   for (const fold of folds) reopen(fold.turn);
   Object.assign(chat, rest, { turns: folds.map((fold) => fold.turn), read_run: rest.last_run });
-  if (rest.live && !state.live && state.chats.includes(chat)) follow(chat, rest.live, folds.at(-1));
+  if (rest.live && !state.live && state.chats.includes(chat)) follow(chat, rest.live, folds.at(-1), ownRun() === rest.live);
+}
+
+function ownRun() {
+  try {
+    return sessionStorage.getItem(OWN_RUN);
+  } catch {
+    // storage can be blocked; a reload then forgets the run was this tab's
+    return null;
+  }
 }
 
 // Any 404 for a chat means it is gone: deleted in another tab.
@@ -924,27 +991,32 @@ function showDraft(chat) {
   grow();
 }
 
-// focus: "input" (shutting the drawer), "row", or null when the page picked it, leaving focus and the notice.
+// focus: "input" or "menu" (shutting the drawer: "menu" focuses ☰ at phone width, as Esc does, else leaves focus), "row", or
+// null when the page picked it, leaving focus and the notice.
 async function select(chat, { focus = "input" } = {}) {
   keepDraft();
   state.current = chat;
   state.problem = null;
+  state.sendOnLoad = false;
   if (focus) state.notice = null;
   ui.deleting = null;
   showDraft(chat);
-  if (focus === "input") setDrawer(false);
+  if (focus === "input" || focus === "menu") setDrawer(false);
   render("bottom");
   revealCurrent();
   if (focus === "input") byId("input").focus();
+  if (focus === "menu" && PHONE.matches) byId("menu").focus();
   if (focus === "row") focusRow(chat);
   await refresh("bottom");
 }
 
-// A chat with no messages and its first title is reused, so clicking "+ New chat" never piles up empty ones.
+// A chat with no messages and its first title is reused, so clicking "+ New chat" never piles up empty ones: the one on screen,
+// or one this tab made, never another tab's, which that tab may be setting up.
 const isEmpty = (chat) => chat.last_run == null && chat.live == null && chat.title === NEW_TITLE && chat !== state.sending;
+const reusable = (chat) => isEmpty(chat) && (chat === state.current || madeHere.has(chat.id));
 
 async function newChat(how) {
-  const empty = state.chats.find(isEmpty);
+  const empty = state.chats.find(reusable);
   if (empty) return select(empty, how);
   let made;
   try {
@@ -953,6 +1025,7 @@ async function newChat(how) {
     report(`No new chat: ${error.message}`);
     return;
   }
+  madeHere.add(made.id);
   // a list read meanwhile may have it already
   const chat = state.chats.find(({ id }) => id === made.id) ?? Object.assign(made, { turns: [], read_run: null });
   if (!state.chats.includes(chat)) state.chats.unshift(chat);
@@ -1015,9 +1088,10 @@ async function finishRename(chat, typed, backToRow) {
   render();
 }
 
-function follow(chat, run, fold) {
+// own: whether this tab started the run, which then holds up a message in another chat until it ends
+function follow(chat, run, fold, own) {
   const source = new EventSource(`api/runs/${run}/events?after=${fold.seq}`);
-  const live = { chat, run, fold, turn: fold.turn, source, stopping: false };
+  const live = { chat, run, fold, turn: fold.turn, source, stopping: false, own };
   state.live = live;
   chat.live = run;
   source.onopen = () => {
@@ -1070,17 +1144,26 @@ function lost(live) {
   else render();
 }
 
-// A run going here or in another chat keeps the message, and the hint says why.
+// A run going here, or one this tab started in another chat, keeps the message, and the hint says why; a chat still loading
+// sends it once loaded. Following another tab's run elsewhere gives way to this one, which the list still shows going.
 async function send() {
   const input = byId("input");
   const prompt = input.value.trim();
   const chat = state.current;
-  if (!prompt || state.sending || !chat?.turns) return;
-  if (state.live) {
-    report(`Not sent: ${state.live.chat === chat ? "this chat's run is going: wait for it, or press Esc to stop it" : runElsewhere(state.live)}.`);
+  if (!prompt || state.sending || !chat) return;
+  if (!chat.turns) {
+    state.sendOnLoad = true;
+    state.notice = SEND_ON_LOAD;
+    renderComposer();
     return;
   }
-  state.sending = chat;
+  state.sendOnLoad = false;
+  const live = state.live;
+  if (live?.chat === chat || live?.own) {
+    report(`Not sent: ${live.chat === chat ? `this chat's run is going: wait for it, or ${STOP_HOW} to stop it` : runElsewhere(live)}.`);
+    return;
+  }
+  Object.assign(state, { sending: chat, stopOnStart: false });
   let run, title;
   try {
     ({ run, title } = await request("POST", `api/chats/${chat.id}/runs`, { prompt }));
@@ -1105,8 +1188,20 @@ async function send() {
   Object.assign(fold.turn, { prompt, started: Date.now() / MS_PER_SECOND });
   chat.turns.push(fold.turn);
   state.problem = null;
-  follow(chat, run, fold);
+  state.live?.source.close();
+  keepOwnRun(run);
+  follow(chat, run, fold, true);
   render("bottom");
+  // Esc pressed before the run was there
+  if (state.stopOnStart) stop();
+}
+
+function keepOwnRun(run) {
+  try {
+    sessionStorage.setItem(OWN_RUN, run);
+  } catch {
+    // storage can be blocked; a reload then forgets the run was this tab's
+  }
 }
 
 // Says so at once: a cell blocked in C holds the stop up until the app ends its worker.
@@ -1161,6 +1256,10 @@ function wire() {
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", labelTheme);
   byId("theme").addEventListener("click", toggleTheme);
   byId("new-chat").addEventListener("click", () => newChat());
+  byId("skip").addEventListener("click", (e) => {
+    e.preventDefault();
+    byId("input").focus();
+  });
   byId("stop").addEventListener("click", stop);
   byId("namespace").addEventListener("click", pickNamespace);
   byId("model").addEventListener("click", pickModel);
@@ -1194,17 +1293,20 @@ function wire() {
   byId("input").setAttribute("enterkeyhint", TOUCH ? "enter" : "send");
   // a click or tap leaves focus in the message box, so a touch keyboard stays up
   for (const id of ["send", "stop"]) byId(id).addEventListener("mousedown", (e) => e.preventDefault());
-  // Esc keeps a chat it was asked to delete, else shuts the drawer, else stops this chat's run; the Library closes on an Esc left unused
+  // Esc keeps a chat it was asked to delete, else shuts the drawer, else stops this chat's run, or the one on its way, once it
+  // is there; the Library closes on an Esc left unused
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     const runHere = state.live?.chat === state.current;
-    if (!ui.deleting && !drawerOpen() && !runHere) return;
+    const startingHere = state.sending != null && state.sending === state.current;
+    if (!ui.deleting && !drawerOpen() && !runHere && !startingHere) return;
     e.preventDefault();
     if (ui.deleting) keep(ui.deleting);
     else if (drawerOpen()) {
       setDrawer(false);
       byId("menu").focus();
-    } else stop();
+    } else if (runHere) stop();
+    else state.stopOnStart = true;
   });
   setInterval(() => {
     if (state.live) tick();
@@ -1277,7 +1379,7 @@ async function start() {
   else newChat();
 }
 
-export { LIBRARY_CHANGED, PANEL_CLOSE, PANEL_OPEN, SETTINGS_CHANGED, TOUCH, caret, chatNamespace, closeOtherPanels, element, folderPicker, forgetModelLists, libraryChanged, request, settingsChanged, showPanel };
+export { LIBRARY_CHANGED, PANEL_CLOSE, PANEL_OPEN, SETTINGS_CHANGED, TOUCH, caret, chatNamespace, closeOtherPanels, element, folderPicker, libraryChanged, nameParts, providersChanged, request, settingsChanged, showPanel };
 
 wire();
 start();
