@@ -1385,14 +1385,14 @@ def test_a_decomposition_past_a_million_characters_is_refused(library):
         (
             "system_suffix: 'Answer for {{ dept }}.'\n",
             (
-                "Its system_suffix, line 1: the engine reads text holding {{ or {% as a"
+                "The system_suffix of research, line 1: the engine reads text holding {{ or {% as a"
                 ' Jinja template, and this one names "dept"'
             ),
         ),
         (
             "system_suffix: 'Answer as {{ task.__class__ }}.'\n",
             (
-                "Its system_suffix, line 1: the engine reads text holding {{ or {% as a"
+                "The system_suffix of research, line 1: the engine reads text holding {{ or {% as a"
                 " Jinja template, and this one reaches into Python internals"
                 " (__class__), which a run refuses."
             ),

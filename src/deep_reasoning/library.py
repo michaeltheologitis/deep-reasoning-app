@@ -1550,7 +1550,8 @@ def suffix_problem(connection, namespace):
     if not _has_jinja(suffix):
         return None
     config, _ = config_and_registry(connection)
-    return template_problem("Its system_suffix", suffix, template_names(config))
+    label = f"The system_suffix of {namespace.name}"
+    return template_problem(label, suffix, template_names(config))
 
 
 def check_fields(connection, namespace):

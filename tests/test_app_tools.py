@@ -672,10 +672,10 @@ SHELL_KEY_ENV = "A_PROVIDERS_KEY"
 SHELL_KEY = "sk-a-key-from-the-shell"
 # The key in YAML's double quotes with its "s" escaped: the text never holds it, the data does.
 ESCAPED_KEY = '"\\x73' + SHELL_KEY[1:] + '"'
-# How a namespace whose system_suffix reads a Python internal is refused.
+# How a namespace whose system_suffix reads a Python internal is refused, after its name.
 SUFFIX_REFUSED = (
-    "Its system_suffix, line 1: the engine reads text holding {{ or {% as a Jinja"
-    " template, and this one reaches into Python internals (_x), which a run refuses."
+    ", line 1: the engine reads text holding {{ or {% as a Jinja template, and this one"
+    " reaches into Python internals (_x), which a run refuses."
 )
 
 
@@ -1158,7 +1158,8 @@ def test_a_namespace_whose_yaml_spells_a_key_with_an_escape_is_refused(
 )
 def test_a_namespace_whose_suffix_no_run_renders_is_refused(fresh, method, name):
     before = stored_namespaces(fresh)
-    with pytest.raises(LibraryError, match=re.escape(SUFFIX_REFUSED)):
+    refused = f"The system_suffix of {name}{SUFFIX_REFUSED}"
+    with pytest.raises(LibraryError, match=re.escape(refused)):
         getattr(library_tool(fresh), method)(name, {"system_suffix": "{{ task._x }}"})
     assert stored_namespaces(fresh) == before
 

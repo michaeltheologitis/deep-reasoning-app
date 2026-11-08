@@ -143,7 +143,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   run settings into the Library (each chat keeps its own model), replacing items of the same name and the root fields
   it sets, and prints what it changed and what it left out. It refuses, changing nothing, a file that isn't a config,
   the app's `historian` and `librarian` namespaces or one under them, a tool named as a built-in, a key anywhere in
-  it, and a tool a namespace grants that doesn't build: it builds each such tool once to check it, from its own file
+  it, a `system_suffix` the panel would refuse, and a tool a namespace grants that doesn't build: it builds each such tool once to check it, from its own file
   alone and without your keys, so a file or module beside the config isn't carried in. Import only configs you trust.
 - `uv run deep-reasoning reset` starts afresh: it deletes the Library file (`--library PATH` for another), with its
   chats and settings, and its run and scratch folders, after listing them and asking you to type `delete`
