@@ -6,6 +6,7 @@ import socket
 import sqlite3
 import stat
 import threading
+import time
 from contextlib import closing
 from dataclasses import replace
 from functools import partial
@@ -651,10 +652,11 @@ def test_a_granted_tool_is_not_deleted_and_the_refusal_names_who_grants_it(
 ):
     block = dump({"factory": "build", "factory_from": "tally.py"})
     with closing(open_library(imported)) as connection, writing(connection):
-        connection.execute(UPSERT_TOOL, ("tally", block, "def build(c, p): pass\n"))
-    client.post(
+        connection.execute(UPSERT_TOOL, ("tally", block, BUILDS))
+    granted = client.post(
         "/api/namespaces", json={"name": "counting", "yaml": "tools: [tally]\n"}
     )
+    assert granted.status_code == 201, granted.text
     response = client.delete("/api/tools/tally")
     assert (response.status_code, response.json()) == (
         400,
@@ -1539,7 +1541,7 @@ NAMESPACE_REFUSALS = [
     ),
     (
         library_cell("add_namespace", "re search", ""),
-        "A namespace name is words of letters, digits, _ and -, joined by dots",
+        "A namespace name is words of letters, digits, _ and -, each starting with a letter",
     ),
     (
         library_cell("add_namespace", "research.papers", ""),
@@ -1664,6 +1666,93 @@ async def test_a_tool_the_library_tool_writes_and_grants_is_called_from_the_next
 
 
 RAISES = "def build(client, params):\n    raise RuntimeError('no index')\n"
+# Well under SLOW's sleep.
+SLOW_BUILD_SECONDS = 10
+BUILDS = (
+    "from deep_reasoner.primitives import Func\n\n"
+    "def build(client, params):\n    return Func(lambda: 1)\n"
+)
+REFUSED_GRANT = (
+    "Tool broken doesn't build, so it wasn't granted (granted, it would stop every"
+    " chat): build in broken.py raised RuntimeError: no index"
+)
+
+
+def test_the_panel_builds_each_custom_tool_it_grants_afresh_and_refuses_a_broken_one(
+    client, imported
+):
+    with closing(open_library(imported)) as connection, writing(connection):
+        for name, source in [("broken", RAISES), ("tally", BUILDS)]:
+            block = dump({"factory": "build", "factory_from": f"{name}.py"})
+            connection.execute(UPSERT_TOOL, (name, block, source))
+    added = client.post(
+        "/api/namespaces", json={"name": "counting", "yaml": "tools: [broken]\n"}
+    )
+    assert (added.status_code, added.json()) == (400, {"detail": REFUSED_GRANT})
+    tallies = client.post(
+        "/api/namespaces", json={"name": "counting", "yaml": "tools: [tally]\n"}
+    )
+    assert tallies.status_code == 201, tallies.text
+    both = {"yaml": "tools: [tally, broken]\n", "was": "tools: [tally]\n"}
+    changed = client.put("/api/namespaces/counting", json=both)
+    assert (changed.status_code, changed.json()) == (400, {"detail": REFUSED_GRANT})
+    namespaces = client.get("/api/library").json()["namespaces"]
+    assert next(each for each in namespaces if each["name"] == "counting")["yaml"] == (
+        "tools: [tally]\n"
+    )
+
+
+# Would take far longer to build than a refusal that runs no tool.
+SLOW = "import time\n\ndef build(client, params):\n    time.sleep(30)\n"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "refused"),
+    [
+        (
+            "POST",
+            "/api/namespaces",
+            {"name": "counting", "yaml": "tools: [slow]\nvars: {max: 1}\n"},
+            'Var "max" would hide Python\'s own max',
+        ),
+        (
+            "POST",
+            "/api/namespaces",
+            {"name": "router", "yaml": "tools: [slow]\n"},
+            'There is already a namespace "router"',
+        ),
+        (
+            "PUT",
+            "/api/namespaces/router",
+            {"yaml": "tools: [slow]\n", "was": "spawn: [elsewhere]\n"},
+            "Namespace router was changed",
+        ),
+    ],
+    ids=["a var", "a name taken", "changed meanwhile"],
+)
+def test_a_panel_save_refused_for_what_costs_nothing_builds_no_tool(
+    client, imported, method, path, body, refused
+):
+    with closing(open_library(imported)) as connection, writing(connection):
+        block = dump({"factory": "build", "factory_from": "slow.py"})
+        connection.execute(UPSERT_TOOL, ("slow", block, SLOW))
+    started = time.monotonic()
+    response = client.request(method, path, json=body)
+    assert response.status_code in (400, 409)
+    assert refused in response.json()["detail"]
+    assert time.monotonic() - started < SLOW_BUILD_SECONDS
+
+
+def test_the_panel_mends_a_namespace_granting_a_tool_the_library_lacks(
+    client, imported
+):
+    with closing(open_library(imported)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("router", "tools: [gone]\n"))
+    mended = {"yaml": "tools: []\n", "was": "tools: [gone]\n"}
+    response = client.put("/api/namespaces/router", json=mended)
+    assert response.status_code == 200, response.text
+
+
 TOOL_REFUSALS = [
     (
         library_cell("write_tool", "counter", "def build(:\n", "build"),
@@ -1712,7 +1801,7 @@ TOOL_REFUSALS = [
     ),
     (
         repl("print(library.write_tool('counter', '#' * 1_000_001, 'build'))"),
-        "may each be at most 1,000,000 characters",
+        "The source may be at most 1,000,000 characters; this has 1,000,001.",
     ),
 ]
 
@@ -1750,9 +1839,10 @@ async def test_a_tool_no_namespace_grants_never_runs_so_a_broken_one_fails_runs_
                 connection.execute(UPSERT_TOOL, ("broken", broken, RAISES))
             chat = await new_chat(api)
             ungranted = await run_events(api, await send(api, chat, "Hi."))
-            grant = {"name": "uses_broken", "yaml": "tools: [broken]\n"}
-            response = await api.post("/api/namespaces", json=grant)
-            assert response.status_code == 201, response.text
+            # As a shared file may grant it: the panel builds a tool before it grants it.
+            with closing(open_library(library)) as connection:
+                grant = ("uses_broken", "tools: [broken]\n")
+                connection.execute(UPSERT_NAMESPACE, grant)
             granted = await run_events(api, await send(api, chat, "Hi."))
             ungrant = {"yaml": "", "was": "tools: [broken]\n"}
             response = await api.put("/api/namespaces/uses_broken", json=ungrant)
