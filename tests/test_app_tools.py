@@ -12,6 +12,7 @@ import yaml
 from deep_reasoner.core import capture_debug_logs
 from deep_reasoner.stopping import DriveTable, StopRequested
 from fake_model import RESEARCH_CHANGED, SPLIT_COUNT, WORD_COUNT
+from structlog.contextvars import bound_contextvars
 from structlog.testing import capture_logs
 
 from deep_reasoning import app_tools
@@ -79,6 +80,7 @@ CURRENT = "20261027-235959-000000"
 RUN_NUMBERS = count()
 EXHAUSTED = "Agent failed to produce a final answer within 3 iterations."
 STOPPED_NODE = 1
+CALLING_AGENT = 7
 COMMIT_WITHIN_S = 30
 # Long past the few bytecodes between a write's COMMIT being traced and its wait in C.
 WAITING_IN_C_S = 0.2
@@ -921,9 +923,9 @@ def test_a_moved_app_file_is_never_made_afresh(fresh, tmp_path):
 
 
 def stopped_while_committing(library, monkeypatch, write):
-    """What *write* logs, run as a cell that a Stop reaches as its write commits, as one
-    the user presses then does: a reader holds the commit up, in C, until the engine has
-    raised StopRequested in the cell's thread, which it does at the next bytecode."""
+    """What *write* logs when it runs in a cell that is stopped while its write commits.
+    A reader keeps the commit waiting until the Stop has been sent, so the Stop arrives
+    while the cell's thread is inside the commit."""
     committing = threading.Event()
 
     def note_commit(sql):
@@ -985,6 +987,24 @@ def test_a_stop_as_a_write_commits_leaves_it_written_and_logged(
     logs = stopped_while_committing(fresh, monkeypatch, lambda: write(tool))
     assert [log["event"] for log in logs] == ["library.change"]
     assert library_dump(fresh) != before
+
+
+def add_research(library):
+    library_tool(library).add_namespace("research", "system_suffix: Be brief.\n")
+
+
+def open_notes(library):
+    p = page_of(library).new("Notes")
+    p.text("Kept.")
+    p.open()
+
+
+@pytest.mark.parametrize("write", [add_research, open_notes])
+def test_a_write_is_logged_with_the_calling_agents_context(fresh, write):
+    with capture_debug_logs() as logs, bound_contextvars(agent_id=CALLING_AGENT):
+        write(fresh)
+    [logged] = [log for log in logs if log["event"] in ("library.change", "page.open")]
+    assert logged["agent_id"] == CALLING_AGENT
 
 
 def test_a_stop_as_a_page_is_saved_leaves_it_saved_and_logged(fresh, monkeypatch):

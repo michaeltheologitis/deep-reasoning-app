@@ -23,9 +23,7 @@ can't, and never a key. It guards the tool, not the file: a cell can open the fi
 A tool it writes, or a custom tool a namespace it writes grants afresh, is built first as
 another chat's run would build it: in a process of its own (tool_check.py), from an empty
 folder. Each change is logged as library.change, which the worker records as a run event,
-and changes() reads this chat's back, so the agent can write a before back. A write and its
-log, a change's or a page's, run on a thread a Stop can't reach (done_whole), so a stopped
-cell leaves nothing written but unlogged.
+and changes() reads this chat's back, so the agent can write a before back.
 """
 
 import copy
@@ -35,7 +33,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Callable, Iterable, Iterator
-from concurrent.futures import Future, wait
+from concurrent.futures import Future
 from contextlib import closing, contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass, field
@@ -472,29 +470,38 @@ def app_file(library: str, mode: str) -> Iterator[sqlite3.Connection]:
         ) from error
 
 
-def done_whole[T](work: Callable[[], T]) -> T:
+def written[T](library: str, write: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """What *write* returns, given the app file opened to write and *args*."""
+    with app_file(library, "rw") as connection:
+        return write(connection, *args, **kwargs)
+
+
+def stop_proof[T](work: Callable[[], T]) -> T:
     """What *work* returns, worked out on a thread of its own, in this thread's context.
     The engine stops a cell by raising StopRequested in the cell's thread, once, at its
     next bytecode: one that arrives during a commit, in C, is raised as the commit
     returns. Here it is raised before the other thread takes *work* up, which it then
     never does, or once *work* is done; so a Stop never falls between a write and the
-    event that logs it."""
+    event that logs it. The server's kill, 5 s after a Stop, still could, were a write
+    still going then and the kill to land between its commit and its log."""
     future = Future()
 
     def take_up() -> None:
-        if future.set_running_or_notify_cancel():
-            try:
-                future.set_result(work())
-            # Handed on whole, as result() raises it in the caller's thread.
-            except BaseException as error:  # noqa: BLE001
-                future.set_exception(error)
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            future.set_result(work())
+        # Handed on whole, as result() raises it in the caller's thread.
+        except BaseException as error:  # noqa: BLE001
+            future.set_exception(error)
 
+    thread = threading.Thread(target=copy_context().run, args=(take_up,))
     try:
-        threading.Thread(target=copy_context().run, args=(take_up,)).start()
-        wait([future])
+        thread.start()
+        thread.join()
     except BaseException:
         if not future.cancel():
-            wait([future])
+            thread.join()
         raise
     return future.result()
 
@@ -848,14 +855,13 @@ class Page:
                 f'Saved the page "{title}" again, as it stands now; the chat still'
                 " links it."
             )
-        self._page = done_whole(partial(self._opened, title, blocks))
+        stop_proof(partial(self._open_anew, title, blocks))
         return f'Opened the page "{title}"; the chat links it under your answer.'
 
-    def _opened(self, title: str, blocks: str) -> str:
-        """Save the page anew and log page.open; its id."""
-        page = self._add_page(title, blocks)
-        log.info("page.open", page=page, title=title)
-        return page
+    def _open_anew(self, title: str, blocks: str) -> None:
+        """Save the page anew, as this page, and log page.open."""
+        self._page = self._add_page(title, blocks)
+        log.info("page.open", page=self._page, title=title)
 
     def _add(self, block: dict[str, Any]) -> None:
         if len(self._blocks) == MAX_BLOCKS:
@@ -900,13 +906,11 @@ def build_page(client: Any, params: dict[str, Any]) -> Func:
         """Save a new page of this run's, its *blocks* as JSON; its id."""
         # The agent whose cell opens the page, as its page.open event names it.
         node = structlog.contextvars.get_contextvars().get("agent_id")
-        with app_file(library, "rw") as connection:
-            return add_page(connection, chat, run, node, title, blocks)
+        return written(library, add_page, chat, run, node, title, blocks)
 
     def update(page: str, blocks: str) -> None:
         """Save page *page* of this run's again, with *blocks*, as JSON."""
-        with app_file(library, "rw") as connection:
-            update_page(connection, chat, run, page, blocks)
+        written(library, update_page, chat, run, page, blocks)
 
     def new(title: str) -> Page:
         """A page titled *title*, saved when its open() is called."""
@@ -1363,10 +1367,14 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         check_writable(namespace, text, key_names)
 
         def write() -> tuple[dict[str, Any], Event]:
-            with app_file(library, "rw") as connection:
-                stored, before = add_decomposition(
-                    connection, namespace, text, replace=True, allowed=may_write
-                )
+            stored, before = written(
+                library,
+                add_decomposition,
+                namespace,
+                text,
+                replace=True,
+                allowed=may_write,
+            )
             done = "added" if before is None else "replaced"
             change = logged(
                 done,
@@ -1378,7 +1386,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             )
             return stored, change
 
-        stored, change = done_whole(write)
+        stored, change = stop_proof(write)
         broken = code_problems(text)
         return {**change, "problems": stored["problems"]} | (
             {"code_problems": broken} if broken else {}
@@ -1391,15 +1399,13 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         built = built_grants(name, text, adding=True)
 
         def write() -> Event:
-            with app_file(library, "rw") as connection:
-                stored = add_namespace(
-                    connection, name, text, allowed=partial(may_grant, built)
-                )
+            allowed = partial(may_grant, built)
+            stored = written(library, add_namespace, name, text, allowed=allowed)
             return logged(
                 "added", None, stored, what="namespace", namespace=name, name=name
             )
 
-        return done_whole(write)
+        return stop_proof(write)
 
     def change(name: str, yaml: Any, replace: bool = False) -> dict[str, Any]:
         """Give namespace *name* the fields *yaml* sets, keeping the others, or with
@@ -1410,22 +1416,19 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         built = built_grants(name, text, adding=False, merge=merge)
         at = {"what": "namespace", "namespace": name, "name": name}
 
-        def write() -> Event:
-            with app_file(library, "rw") as connection:
-                before, stored = change_namespace(
-                    connection,
-                    name,
-                    text,
-                    allowed=partial(may_grant, built),
-                    merge=merge,
-                )
-            if stored == before:
-                return {"done": "unchanged", **at}
-            changed, kept = field_changes(before, stored)
-            done = logged("changed", before, stored, **at)
-            return done | {"changed": cut(changed), "kept": kept}
+        def write() -> tuple[str, str, Event | None]:
+            allowed = partial(may_grant, built)
+            before, stored = written(
+                library, change_namespace, name, text, allowed=allowed, merge=merge
+            )
+            done = None if stored == before else logged("changed", before, stored, **at)
+            return before, stored, done
 
-        return done_whole(write)
+        before, stored, done = stop_proof(write)
+        if done is None:
+            return {"done": "unchanged", **at}
+        changed, kept = field_changes(before, stored)
+        return done | {"changed": cut(changed), "kept": kept}
 
     def write_tool(
         name: str, source: str, factory: str, settings: dict[str, Any] | None = None
@@ -1445,20 +1448,14 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         check_builds({name: (block, source)}, tools_dir, WRITTEN)
 
         def write() -> Event:
-            with app_file(library, "rw") as connection:
-                found = store_tool(
-                    connection,
-                    name,
-                    block,
-                    source,
-                    allowed=lambda locked: may_write_tool(locked, name),
-                )
+            allowed = partial(may_write_tool, name=name)
+            found = written(library, store_tool, name, block, source, allowed=allowed)
             before = None if found is None else tool_text(name, *found)
             after = tool_text(name, dump(block), source)
             done = "added" if found is None else "replaced"
             return logged(done, before, after, what="tool", name=name)
 
-        return done_whole(write)
+        return stop_proof(write)
 
     tool = SimpleNamespace(
         show=show,
