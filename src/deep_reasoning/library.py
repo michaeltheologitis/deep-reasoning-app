@@ -761,9 +761,7 @@ def written_by_an_earlier_version(found, names):
 def seed_new_library(connection):
     for name, fields in FRESH_NAMESPACES.items():
         connection.execute(UPSERT_NAMESPACE, (name, dump(fields)))
-    # Root's hand-offs to the historian come last: nearer the task, they are followed more.
-    examples = [(ROOT, text) for text in LIBRARIAN_HAND_OFFS]
-    examples += [(ROOT, hand_off(text)) for text in HISTORIANS_EXAMPLES]
+    examples = [(ROOT, text) for text in ROOTS_EXAMPLES]
     examples += [(HISTORIAN, text) for text in HISTORIANS_EXAMPLES]
     examples += [(LIBRARIAN, text) for text in LIBRARIANS_EXAMPLES]
     rows = [(namespace, parsed(text).name, text) for namespace, text in examples]
@@ -1526,6 +1524,11 @@ def check_decomposition_name(name):
             f"The name holds a character you can't see (U+{ord(hidden[0]):04X}); take it"
             " out, so it reads as it looks."
         )
+
+
+# Root's worked examples in a new Library, as YAML: its hand-offs to the librarian, then
+# to the historian, last as nearer the task they are followed more.
+ROOTS_EXAMPLES = [*LIBRARIAN_HAND_OFFS, *map(hand_off, HISTORIANS_EXAMPLES)]
 
 
 def check_size(text, what):
