@@ -67,6 +67,7 @@ from deep_reasoning.library import (
     SPAWN_LINE,
     TOO_LONG_ROW,
     UNREAD_DECOMPOSITION,
+    UNRENDERED_DECOMPOSITION,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
@@ -817,13 +818,14 @@ async def ask_plainly(library, connect):
 @pytest.mark.parametrize(
     ("template", "why"),
     [
-        (PROBES["through a jinja global"], "access to attribute '__init__' of 'type'"),
-        (PROBES["through the task alone"], "access to attribute '__class__' of 'str'"),
-        ("{% include 'x.html' %}", "x.html"),
+        (PROBES["through a jinja global"], "reaches into Python internals (__name__)"),
+        (PROBES["through the task alone"], "reaches into Python internals (__name__)"),
+        ("{{ task.__class__.__mro__ }}", "reaches into Python internals (__mro__)"),
+        ("{% include 'x.html' %}", "includes another template"),
     ],
-    ids=[*PROBES, "including another template"],
+    ids=[*PROBES, "through the task's classes", "including another template"],
 )
-async def test_a_shared_files_worked_example_no_run_renders_fails_the_run_naming_it(
+async def test_a_shared_files_worked_example_no_run_renders_is_left_out_so_runs_answer(
     template, why, library_on, connect
 ):
     example = {
@@ -837,13 +839,14 @@ async def test_a_shared_files_worked_example_no_run_renders_fails_the_run_naming
         library = library_on(fake)
         stored(library, UPSERT_DECOMPOSITION, "root", "innocent", dump(example))
         events = await ask_plainly(library, connect)
-    end = events[-1]
-    assert end["outcome"] == "failed"
-    assert end["detail"].startswith(
-        "ValueError: decomposition 'innocent' in namespace 'root' could not be"
-        f" rendered: {why}"
-    )
-    assert fake.calls == []
+        async with connect(library) as api:
+            shown = (await api.get("/api/library")).json()
+    assert events[-1]["outcome"] == "answered", events[-1]
+    assert not any("Example:" in each["content"] for each in fake.calls[0].messages)
+    [root, *_] = shown["namespaces"]
+    [heading, problem] = by_name(root["decompositions"])["innocent"]["problems"]
+    assert heading == UNRENDERED_DECOMPOSITION
+    assert problem.startswith("Turn 1 (user), line 1:") and why in problem
 
 
 @pytest.mark.anyio
@@ -3663,6 +3666,19 @@ def past_the_limit(start):
     return start + "A" * (MAX_YAML_CHARS + 1 - len(start))
 
 
+def answering_with(text):
+    """A worked example's YAML whose assistant turn holds *text* before its cell."""
+    turn = f"<think>walk</think>\n{text}\n{repl('FinalAnswer(1)')}"
+    example = {
+        "name": "evil",
+        "messages": [
+            {"role": "user", "content": "Count them."},
+            {"role": "assistant", "content": turn},
+        ],
+    }
+    return dump(example)
+
+
 NOT_AN_INTEGER = "max_iter: Input should be a valid integer"
 # Rows a shared file may hold that no version of the app writes, as (table, row, why the
 # panel says it is left out).
@@ -3686,6 +3702,11 @@ UNREADABLE_ROWS = {
         "decompositions",
         (ROOT, "huge", past_the_limit("name: huge\nmessages: [{role: user, content: ")),
         TOO_LONG_ROW,
+    ),
+    "a-decomposition-no-run-renders": (
+        "decompositions",
+        (ROOT, "evil", answering_with("The class is {{ task.__class__.__mro__ }}.")),
+        "a run refuses",
     ),
     "a-decomposition-whose-yaml-isnt-text": (
         "decompositions",

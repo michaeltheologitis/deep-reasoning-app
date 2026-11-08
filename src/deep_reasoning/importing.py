@@ -564,7 +564,7 @@ def import_config(connection, path, secrets=(), environment=None):
         store_changes(connection, changes)
         later = accepted(connection)
         check_namespaces(connection, before, changes)
-        names = template_names(later[0])
+        names = template_names(later[0].prompt_template_variables)
         check_renders(changes, decompositions, names)
         built = to_build(before, imported, changes)
         files = {

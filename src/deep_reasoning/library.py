@@ -588,8 +588,10 @@ YAML_NOT_TEXT = "Its YAML isn't text."
 GRANT_IGNORED = "Runs ignore its grants until it is fixed or deleted."
 NAME_NOT_TEXT = "Its name isn't text."
 NOT_A_RUN_SETTING = "The Library never holds it: each chat or run sets it, or the Library's own tables do."
-# What heads the problems of a decomposition the engine can't read.
+# What heads the problems of a decomposition left out: one the engine can't read, or
+# can't render, which would fail every run in its namespace and below.
 UNREAD_DECOMPOSITION = "Agents aren't shown it: the engine can't read it."
+UNRENDERED_DECOMPOSITION = "Agents aren't shown it: a run can't render it."
 FIELDS_MAPPING = 'The YAML should be a mapping of fields, like "tools: [llm]".'
 # A var named as one of these hides it from the agent's code, as max: 10 breaks max(numbers).
 BUILTIN_NAMES = frozenset(dir(builtins))
@@ -1032,10 +1034,10 @@ def read_namespaces(connection):
     return namespaces, left, shown
 
 
-def read_decompositions(connection):
+def read_decompositions(connection, names):
     """Each decomposition row, in the order they were added, as {namespace, name, yaml,
     decomposition, why}: yaml None for one the panel can't show, and decomposition, as
-    the engine's model reads it, None for one left out, with why."""
+    the engine's model reads it, None for one left out, with why (decomposition_read())."""
     query = (
         f"SELECT namespace, name, {fitting('yaml')} FROM decompositions ORDER BY rowid"
     )
@@ -1044,15 +1046,26 @@ def read_decompositions(connection):
         if type(namespace) is not str or type(name) is not str:
             warn_left_out("decompositions", (namespace, name), NAME_NOT_TEXT)
             continue
-        row = {"namespace": namespace, "name": name, "yaml": None}
-        row |= {"decomposition": None, "why": None}
-        try:
-            row["yaml"] = row_text(text, size)
-            row["decomposition"] = decomposition_in(row["yaml"])
-        except LibraryError as error:
-            row["why"] = warn_left_out("decompositions", (namespace, name), str(error))
-        rows.append(row)
+        decomposition, why = decomposition_read(text, size, names)
+        if why:
+            warn_left_out("decompositions", (namespace, name), why)
+        row = {"namespace": namespace, "name": name, "yaml": shown_text(text, size)}
+        rows.append(row | {"decomposition": decomposition, "why": why})
     return rows
+
+
+def decomposition_read(text, size, names):
+    """The decomposition a row's *text*, *size* bytes, as fitting() read them, describes,
+    as the engine's model reads it, and None; or None, and why it is left out, as the
+    panel lists it: the engine can't read it, or can't render a turn, its templates
+    reading only *names*."""
+    try:
+        decomposition = decomposition_in(row_text(text, size))
+    except LibraryError as error:
+        return None, f"{UNREAD_DECOMPOSITION}\n{error}"
+    if problems := template_problems(decomposition, names):
+        return None, "\n".join([UNRENDERED_DECOMPOSITION, *problems])
+    return decomposition, None
 
 
 def read_library(connection):
@@ -1061,6 +1074,7 @@ def read_library(connection):
     namespaces, namespaces_left, namespace_yaml = read_namespaces(connection)
     settings, settings_left = read_run_settings(connection, namespaces)
     tools, tools_left = read_tools(connection)
+    names = template_names(settings.get("prompt_template_variables", {}))
     return {
         "settings": settings,
         "settings_left": settings_left,
@@ -1069,7 +1083,7 @@ def read_library(connection):
         "namespaces": namespaces,
         "namespaces_left": namespaces_left,
         "namespace_yaml": namespace_yaml,
-        "decompositions": read_decompositions(connection),
+        "decompositions": read_decompositions(connection, names),
     }
 
 
@@ -1599,10 +1613,10 @@ def sandbox_templates():
     deep_reasoner.llm._JinjaEnv = SANDBOXED
 
 
-def template_names(config):
+def template_names(variables):
     """The names a turn's template may read: what the engine fills in, and the run
-    settings' prompt_template_variables in *config*."""
-    return {*FILLED_IN, *config.prompt_template_variables}
+    settings' prompt_template_variables, *variables*."""
+    return {*FILLED_IN, *variables}
 
 
 def first_use(template, name):
@@ -1685,7 +1699,8 @@ def template_problems(decomposition, names):
 def check_templates(connection, decomposition):
     """Raise unless every turn of *decomposition* is a template the engine renders."""
     config, _ = config_and_registry(connection)
-    problems = template_problems(decomposition, template_names(config))
+    names = template_names(config.prompt_template_variables)
+    problems = template_problems(decomposition, names)
     if problems:
         raise LibraryError("\n".join(problems))
 
@@ -1979,7 +1994,9 @@ def suffix_problem(connection, namespace):
         return None
     config, _ = config_and_registry(connection)
     label = f"The system_suffix of {namespace.name}"
-    return template_problem(label, suffix, template_names(config))
+    return template_problem(
+        label, suffix, template_names(config.prompt_template_variables)
+    )
 
 
 def check_fields(connection, namespace, adding):
@@ -2668,7 +2685,7 @@ def namespace_rows(read, config, registry):
     for row in read["decompositions"]:
         decompositions[row["namespace"]].append(row)
     left = read["namespaces_left"]
-    names = template_names(config)
+    names = template_names(config.prompt_template_variables)
     targets = hand_off_targets(config)
     handed = Counter(hand_offs_made(registry, targets))
     readable = set(registry.names)
@@ -2720,7 +2737,7 @@ def checked(rows, names):
 def problems_of(row, names):
     decomposition = row["decomposition"]
     if decomposition is None:
-        return [UNREAD_DECOMPOSITION, *row["why"].splitlines()]
+        return row["why"].splitlines()
     return decomposition_problems(decomposition, names)
 
 

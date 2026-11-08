@@ -54,6 +54,7 @@ from deep_reasoning.library import (
     SHAPES,
     SPAWN_LINE,
     UNREAD_SETTING,
+    UNRENDERED_DECOMPOSITION,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
@@ -1806,15 +1807,17 @@ def test_a_shared_files_decomposition_the_engine_cant_render_is_marked_with_why(
     assert time.monotonic() - started < PANEL_READ_S
     marked = {each["name"]: each["problems"] for each in root["decompositions"]}
     for name in stored:
-        [problem] = marked[name]
+        [heading, problem] = marked[name]
+        assert heading == UNRENDERED_DECOMPOSITION
         assert problem.startswith("Turn 2 (assistant)")
         assert "the engine reads text holding {{ or {% as a Jinja template" in problem
     monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
     monkeypatch.chdir(tmp_path)
     reasoner, _alias = build_reasoner(run_config(library, tmp_path), run_dir=tmp_path)
-    with pytest.raises(ValueError, match="'braces' in namespace 'root' could not be"):
-        reasoner.send("Count the tickets.")._start()
+    reasoner.send("Count the tickets.")._start()
+    shown = {each["example"] for each in reasoner.ctx.examples}
     close_run(reasoner)
+    assert shown and not shown & stored.keys()
 
 
 @pytest.mark.parametrize(
