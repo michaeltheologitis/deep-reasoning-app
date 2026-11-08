@@ -34,7 +34,13 @@ import structlog
 import yaml
 
 from deep_reasoning.folders import remove_unless_kept
-from deep_reasoning.library import RUN_ID, RUN_ID_FORMAT, open_library, writing
+from deep_reasoning.library import (
+    RUN_ID,
+    RUN_ID_FORMAT,
+    SURROGATE,
+    open_library,
+    writing,
+)
 
 log = structlog.get_logger()
 
@@ -88,8 +94,8 @@ FIRST_SEQ = 1
 UNREADABLE = (TypeError, ValueError, RecursionError, OverflowError)
 NOT_ENDED = (*UNREADABLE, KeyError, IndexError, sqlite3.Error)
 # JSON's escape of half a character (a surrogate). An emoji's pair loads as one character;
-# a half alone, as a cell may print or a file from someone else hold, loads as text that
-# can't be written as UTF-8, so no response or run's spec can carry it.
+# a half alone, as a file from someone else, or from before runs escaped them, may hold,
+# loads as text that can't be written as UTF-8, so no response or run's spec can carry it.
 SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")
 FINAL_ANSWER = "FinalAnswer: "
 TRACEBACK_HEAD = re.compile(
@@ -436,6 +442,21 @@ def secrets_of(env: dict[str, str], names: Sequence[str]) -> list[str]:
     return sorted(values, key=len, reverse=True)
 
 
+def escaped(value: Any) -> Any:
+    """*value* with each half of a character in its text, keys included, written as its
+    escape, such as \\udce9: a cell may print one, as a file name that isn't UTF-8 decodes
+    with, and no response or run's spec can carry it."""
+    if isinstance(value, str):
+        if SURROGATE.search(value):
+            return value.encode("utf-8", "backslashreplace").decode()
+        return value
+    if isinstance(value, dict):
+        return {escaped(name): escaped(each) for name, each in value.items()}
+    if isinstance(value, list):
+        return [escaped(each) for each in value]
+    return value
+
+
 def withheld(value: Any, secrets: Sequence[str]) -> Any:
     """*value* with each of *secrets* replaced in all its text, all the way down."""
     if isinstance(value, str):
@@ -667,9 +688,10 @@ class Runs:
         )
 
     def _record(self, run: str, live: _Live, event: dict[str, Any]) -> None:
-        """Number and stamp *event*, send it to the run's streams, and save it. Sent
-        first: a run whose event can't be saved ends, and its streams still see it end."""
-        event = {"seq": len(live.events) + FIRST_SEQ, "t": time.time()} | event
+        """Number and stamp *event*, its text escaped, send it to the run's streams, and
+        save it. Sent first: a run whose event can't be saved ends, and its streams still
+        see it end."""
+        event = {"seq": len(live.events) + FIRST_SEQ, "t": time.time()} | escaped(event)
         if event["kind"] == "turn.end":
             event |= totals(live.events, event["t"])
             if live.chat_deleted:

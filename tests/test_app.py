@@ -2935,7 +2935,7 @@ async def test_the_history_tool_reads_a_run_without_the_steps_holding_a_lone_sur
 
 
 @pytest.mark.anyio
-async def test_a_chat_whose_cell_printed_a_name_that_isnt_utf_8_still_reads(
+async def test_a_cell_printing_a_name_that_isnt_utf_8_is_saved_escaped_as_streamed(
     library_on, connect
 ):
     # A file name that isn't UTF-8 decodes with a lone surrogate standing for each byte.
@@ -2943,12 +2943,12 @@ async def test_a_chat_whose_cell_printed_a_name_that_isnt_utf_8_still_reads(
     with FakeOpenAI(scripted(plan)) as fake:
         async with connect(library_on(fake)) as api:
             chat = await new_chat(api)
-            await run_events(api, await send(api, chat, "List it."))
+            streamed = await run_events(api, await send(api, chat, "List it."))
             read = await api.get(f"/api/chats/{chat}")
     assert read.status_code == 200
     [turn] = read.json()["turns"]
-    kinds_read = [event["kind"] for event in turn["events"]]
-    assert "cell.start" in kinds_read and "cell.end" not in kinds_read
+    assert turn["events"] == streamed
+    assert kinds(streamed, "cell.end")[0]["output"] == "caf\\udce9"
 
 
 TEXT_ONLY = [{"type": "text", "text": "It **counted**."}]
