@@ -149,9 +149,12 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   write a new tool of its own in Python (or replace one) that it then grants to a namespace, with the app's own
   `library` tool; a chat in a namespace without it can't, even through a sub-agent. It reads the namespaces (in brief,
   or one whole), the tools with their Python, and what this chat changed; a change touches only the fields it names,
-  and says what changed. A new Library's `librarian` knows what it is for, has worked examples of writing a worked
-  example and of undoing a change, and may hand questions about earlier messages to the historian but not delegate to
-  itself (its `spawn`, which you may widen in the panel). A tool it writes, or a tool of yours it grants that no
+  and says what changed. Changing a text such as a system suffix, it starts from the one stored and keeps every line
+  you didn't ask it to remove, saying what it removed; a new namespace's own suffix holds only what it adds to its
+  parent's; and it leaves `spawn` unset unless you ask, then keeping `historian` and `librarian` in it. A new
+  Library's `librarian` knows what it is for, has worked examples of reading the Library, of writing a worked example
+  and of undoing a change, and may hand questions about earlier messages to the historian but not delegate to itself
+  (its `spawn`, which you may widen in the panel). A tool it writes, or a tool of yours it grants that no
   namespace granted yet, is built first to check it, as another chat would build it (in a process of its own, from an
   empty folder), and one that doesn't build there is refused: granted, it would stop every chat. That works only in a chat
   whose namespace runs the local REPL. A tool it writes can't take a built-in's or the app's name or replace a tool
@@ -161,6 +164,16 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   subscription; adds no namespace under one that grants `library` or runs Claude Code; never deletes, and never
   writes a key. A change applies from your next message. These limits guard the tool, not the file: the agent's Python isn't sandboxed, and could open the file
   itself. A new Library has `librarian`; in an older one, add a namespace with `tools: [library]`.
+- Any chat can be asked about the Library ("what namespaces do I have?", "what does the historian's suffix say?",
+  "add a namespace for legal questions", "make every chat answer in British English"): a new Library's root hands
+  such questions to a `librarian` sub-agent, with your message as you wrote it. Outside a `librarian` chat it only
+  reads: asked for a change, it says what it would change and that you pick `librarian` under the message box and ask
+  there, or, for what the tool never does, how to do it in the panel (what every chat should do goes in root's
+  `system_suffix`, with Edit YAML in the Namespaces tab). A namespace that can't reach `librarian` (left out of its
+  `spawn` list, or deleted) answers such questions itself as best it can, as for the historian. A new Library's root
+  also has a `system_suffix` saying what app its agents are in, which every namespace inherits; edit or delete it in
+  the panel. An older Library keeps what it has: to have the same, give root a new Library's `system_suffix`, `read
+  the Library` and `add a namespace with a worked example`, and `librarian` a new Library's `read the Library`.
 - Each Library change the agent makes shows in the chat, under its answer and where it was made in the tree, and opens
   onto its YAML (or a tool's block and Python) before and after; ask the librarian to undo it, and it writes the
   before back from the record. The library panel and the
