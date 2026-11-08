@@ -87,6 +87,10 @@ FIRST_SEQ = 1
 # What an event row from a file someone else wrote may fail with.
 UNREADABLE = (TypeError, ValueError, RecursionError, OverflowError)
 NOT_ENDED = (*UNREADABLE, KeyError, IndexError, sqlite3.Error)
+# JSON's escape of half a character (a surrogate). An emoji's pair loads as one character;
+# a half alone, as a cell may print or a file from someone else hold, loads as text that
+# can't be written as UTF-8, so no response or run's spec can carry it.
+SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")
 FINAL_ANSWER = "FinalAnswer: "
 TRACEBACK_HEAD = re.compile(
     r"^(?:Traceback|  \+ Exception Group Traceback) \(most recent call last\):$",
@@ -224,6 +228,9 @@ def loaded_event(run: str, seq: Any, data: Any) -> dict[str, Any] | None:
     written, as a file from someone else may hold."""
     try:
         event = json.loads(data, **NUMBERS)
+        # Bytes, which the app never writes, may hold a half unescaped.
+        if type(data) is not str or SURROGATE_ESCAPE.search(data):
+            json.dumps(event, ensure_ascii=False).encode()
     except UNREADABLE:
         event = None
     if well_formed(event, seq):

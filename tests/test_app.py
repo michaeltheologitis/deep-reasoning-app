@@ -2821,6 +2821,120 @@ async def test_the_page_and_a_follow_ups_turns_agree_on_how_each_run_started_and
     ]
 
 
+LONE_SURROGATE = "\ud800"
+FOLLOW_UP = {"What did I ask?": [repl("FinalAnswer('to count')")]}
+
+
+def test_an_event_holding_a_lone_surrogate_is_left_out_so_its_chat_still_reads(
+    client,
+):
+    chat = client.post("/api/chats").json()["id"]
+    rows = [
+        STARTED,
+        row(2, "think", node=1, text=f"Half a character: {LONE_SURROGATE}"),
+        row(3, "think", node=1, text="An emoji, escaped as a pair: \U0001f600"),
+        answered(4, "2"),
+    ]
+    plant(client.app.state.runs.library, chat, GOOD, rows)
+    read = client.get(f"/api/chats/{chat}")
+    assert read.status_code == 200
+    events = read.json()["turns"][0]["events"]
+    assert [event["seq"] for event in events] == [1, 3, 4]
+    assert events[1]["text"].endswith("\U0001f600")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("rows", "told"),
+    [
+        pytest.param(
+            [row(1, "turn.start", prompt=f"Again{LONE_SURROGATE}"), answered(2, "3")],
+            [],
+            id="in its message",
+        ),
+        pytest.param(
+            [row(1, "turn.start", prompt="Again."), answered(2, LONE_SURROGATE)],
+            [("user", "Again."), ("assistant", f"(No answer: the run failed: {LOST})")],
+            id="in its answer",
+        ),
+        pytest.param(
+            [
+                row(1, "turn.start", prompt="Again."),
+                row(2, "turn.end", outcome="failed", detail=LONE_SURROGATE),
+            ],
+            [("user", "Again."), ("assistant", f"(No answer: the run failed: {LOST})")],
+            id="in why it failed",
+        ),
+    ],
+)
+async def test_a_run_holding_a_lone_surrogate_is_read_without_it_so_follow_ups_run(
+    library_on, connect, rows, told
+):
+    with FakeOpenAI(scripted(FOLLOW_UP)) as fake:
+        library = library_on(fake)
+        async with connect(library) as api:
+            chat = await new_chat(api)
+            counted = [row(1, "turn.start", prompt="Count to two."), answered(2, "2")]
+            plant(library, chat, GOOD, counted)
+            plant(library, chat, BROKEN, rows)
+            read = await api.get(f"/api/chats/{chat}")
+            events = await run_events(api, await send(api, chat, "What did I ask?"))
+    assert read.status_code == 200 and events[-1]["outcome"] == "answered"
+    messages = fake.calls[-1].messages[-(4 + len(told)) :]
+    assert [(message["role"], message["content"]) for message in messages] == [
+        ("system", EARLIER_TURNS_NOTE),
+        ("user", "Count to two."),
+        ("assistant", folded_answer("'2'")),
+        *told,
+        ("user", "What did I ask?"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_the_history_tool_reads_a_run_without_the_steps_holding_a_lone_surrogate(
+    library_on, connect
+):
+    printed = (
+        "print('\\n'.join(s.get('text') or s['output'] for s in history.steps(1)))"
+    )
+    plan = {"How did you count?": [repl(printed), repl("FinalAnswer('by printing')")]}
+    rows = [
+        row(1, "turn.start", prompt="Count to two."),
+        row(2, "agent.start", node=1, parent=None, cell=None, task="Count to two."),
+        row(3, "think", node=1, text=f"Counting{LONE_SURROGATE}"),
+        row(4, "cell.start", node=1, cell=1, code="print(2)"),
+        row(5, "cell.end", node=1, cell=1, code="print(2)", output="2", status="done"),
+        row(6, "agent.end", node=1, status="done", result="2", detail=None),
+        answered(7, "2"),
+    ]
+    with FakeOpenAI(scripted(plan)) as fake:
+        library = library_on(fake)
+        async with connect(library) as api:
+            chat = await chat_in(api, HISTORIAN)
+            plant(library, chat, GOOD, rows)
+            events = await run_events(api, await send(api, chat, "How did you count?"))
+    # The cell's output ends with what it printed, after the left-out step's warning.
+    assert kinds(events, "cell.end")[0]["output"].splitlines()[-1] == "2"
+    assert events[-1]["outcome"] == "answered", events[-1]
+
+
+@pytest.mark.anyio
+async def test_a_chat_whose_cell_printed_a_name_that_isnt_utf_8_still_reads(
+    library_on, connect
+):
+    # A file name that isn't UTF-8 decodes with a lone surrogate standing for each byte.
+    plan = {"List it.": [repl("import os", "print(os.fsdecode(b'caf\\xe9'))")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        async with connect(library_on(fake)) as api:
+            chat = await new_chat(api)
+            await run_events(api, await send(api, chat, "List it."))
+            read = await api.get(f"/api/chats/{chat}")
+    assert read.status_code == 200
+    [turn] = read.json()["turns"]
+    kinds_read = [event["kind"] for event in turn["events"]]
+    assert "cell.start" in kinds_read and "cell.end" not in kinds_read
+
+
 TEXT_ONLY = [{"type": "text", "text": "It **counted**."}]
 
 
