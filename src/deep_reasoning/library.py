@@ -438,15 +438,15 @@ task, namespace, status, result, seconds (from its start to its end, to the tent
 failed).
   history.steps(turn, node=None): the thoughts, cells, Library changes and pages, in \
 order, of message `turn`'s top agent, or of the sub-agent whose node is `node`: {kind: \
-"think", text}, {kind: "cell", code, output, status ("done", "failed" or "stopped"), \
-agents: the nodes of the sub-agents it started}, {kind: "change", what, namespace, name, \
-before (None when added), after} or {kind: "page", page, title} (a page opened for the \
-user), each with its drive.
+"think", text}, {kind: "cell", code, output, status ("done", "failed", "stopped", or "cut \
+off" by a run that ended otherwise), agents: the nodes of the sub-agents it started}, \
+{kind: "change", what, namespace, name, before (None when added), after} or {kind: \
+"page", page, title} (a page opened for the user), each with its drive.
   history.errors(turn=None): what went wrong anywhere in message `turn`, or in every \
 earlier message: each failed cell of any agent, the top one included, as turn, node, \
 namespace (the agent's), task, index (its place in history.steps(turn, node)), error \
-(what it raised) and code; then each agent that ended failed, stopped or exhausted, with \
-index None. Start here for any question about an error.
+(what it raised) and code; then each agent that ended failed, stopped, cut off or \
+exhausted, with index None. Start here for any question about an error.
   history.find(text, turn=None): where `text` is, ignoring case, in any agent's task, \
 thoughts, code, outputs and result: turn, node, index (None for a task or result), kind \
 and a snippet. Use it to find anything the user names.
@@ -2176,7 +2176,8 @@ def edit_decomposition(connection, namespace, name, was, text):
     """Put the decomposition written as YAML *text* in the place of *namespace*'s
     decomposition *name*, which the person opened as *was*; it may take another name
     that *namespace* doesn't hold. Raises LibraryError saying why not, and
-    ChangedMeanwhile if *name* is no longer stored as *was*."""
+    ChangedMeanwhile if *name* is no longer stored as *was*. The name it is stored
+    under."""
     check_size(text, "A decomposition's YAML")
     decomposition = parsed(text)
     with writing(connection):
@@ -2192,6 +2193,7 @@ def edit_decomposition(connection, namespace, name, was, text):
             raise already_has(namespace, decomposition.name) from error
         if edited.rowcount == 0:
             raise changed_meanwhile(f'"{name}" in {namespace}')
+    return decomposition.name
 
 
 def delete_decomposition(connection, namespace, name, was):
@@ -2429,6 +2431,13 @@ def not_plain(char):
 
 def reads_as_root(name):
     return ROOT in [part.strip().lower() for part in name.split(".")]
+
+
+def shown_name(name):
+    """A namespace's *name* as the app writes it: as it is in printable ASCII, else as
+    ascii() writes it, as check_stored_name() does, so a look-alike never passes for
+    another."""
+    return name if name.isascii() and name.isprintable() else ascii(name)
 
 
 def check_stored_name(name):

@@ -181,6 +181,16 @@ for (const name of ["stopped", "killed"]) {
   });
 }
 
+test("what a run left going reads cut off, not stopped, when it ended without a stop, as when the app stopped under it", () => {
+  const events = recorded("killed").slice(0, -1);
+  const lost = { seq: last(events).seq + 1, t: last(events).t, kind: "turn.end", outcome: "failed", answer: null, detail: "The run's end wasn't saved." };
+  const { turn } = foldEvents([...events, lost]);
+  assert.equal(turn.outcome, "failed");
+  assert.ok(allRows(turn).length > 0);
+  assert.ok(allRows(turn).every((row) => row.status === "cut off"));
+  assert.ok(allCells(turn).every((cell) => cell.status !== "running" && cell.status !== "stopped"));
+});
+
 test("a row the run's end stopped is timed to that end", () => {
   const events = recorded("killed");
   const { turn } = foldEvents(events);

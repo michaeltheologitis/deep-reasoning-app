@@ -43,8 +43,10 @@
 .lib-group, .lib-rows { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .lib-label { margin: 0 0 2px; font: inherit; color: var(--dim); }
 .lib-name { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* an open row shows its whole name, which its closed row may cut */
+/* an open row shows its whole name, which its closed row may cut, whole in its tooltip */
 .row[aria-expanded="true"] > .lib-name { white-space: normal; overflow-wrap: anywhere; }
+.row[aria-expanded="true"] > .ns-name { display: block; }
+.row[aria-expanded="true"] > .ns-name > span { white-space: normal; overflow-wrap: anywhere; }
 .lib-detail { color: var(--dim); }
 .lib-star { flex: none; color: var(--accent); }
 .lib-tree .row { padding-left: calc(4px + min(var(--depth, 0), var(--deepest-indent)) * 2ch); }
@@ -52,7 +54,8 @@
 .lib-open { gap: 8px; padding-block: 4px 6px; }
 
 .lib-fields { display: grid; grid-template-columns: var(--label-width) minmax(0, 1fr); gap: 3px 1ch; margin: 0; }
-.lib-fields dt { color: var(--dim); }
+/* a label longer than its column, as a run setting's key may be, wraps within it rather than over its value */
+.lib-fields dt { min-width: 0; color: var(--dim); overflow-wrap: anywhere; }
 .lib-fields dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 /* a value of many lines, a system suffix, takes the whole width under its label */
 .lib-fields dd:has(.lib-block) { grid-column: 1 / -1; }
