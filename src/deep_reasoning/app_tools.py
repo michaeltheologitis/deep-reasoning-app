@@ -72,6 +72,7 @@ from deep_reasoning.library import (
     dump,
     fields_of,
     in_chain_order,
+    left_out_note,
     literals,
     loaded,
     namespace_rows,
@@ -90,6 +91,7 @@ from deep_reasoning.library import (
     tool_file,
     tool_rows,
     tool_text,
+    without_impossible_hand_offs,
 )
 from deep_reasoning.pages import (
     DRIVE,
@@ -1182,8 +1184,8 @@ def field_changes(before: str, after: str) -> tuple[dict[str, Any], list[str]]:
 
 
 def in_brief(row: dict[str, Any], registry: NamespaceRegistry) -> dict[str, Any]:
-    """A namespace as show() lists it: what it sets itself and the tools its agents get,
-    and each of its decompositions with how many problems it has, each text cut short."""
+    """A namespace as show() lists it, each text cut short: what it sets itself, the
+    tools its agents get, and each of its own decompositions with its problem count."""
     brief = {
         "name": row["name"],
         "depth": row["depth"],
@@ -1195,6 +1197,55 @@ def in_brief(row: dict[str, Any], registry: NamespaceRegistry) -> dict[str, Any]
         ],
     }
     return cut(brief, limit=BRIEF_CHARS)
+
+
+def whole(
+    row: dict[str, Any],
+    read: dict[str, Any],
+    run: V2Config,
+    registry: NamespaceRegistry,
+) -> dict[str, Any]:
+    """Namespace *row* (namespace_rows()) of the Library *read* as show(name) gives it;
+    *run* and *registry* as run_config_and_registry(config_of(*read*)) makes them."""
+    name = row["name"]
+    held = registry.resolve(name).sources.decompositions
+    own, left_out = shown_here(read, row, held)
+    stored = {each.name: each for each in registry.resolve(name).decompositions}
+    as_run = without_impossible_hand_offs(config_of(read), run, registry)
+    decompositions = []
+    for example in run_config_and_registry(as_run)[1].resolve(name).decompositions:
+        entry = {"name": example.name, "from": held[example.name]}
+        entry |= own.get(example.name, {})
+        if example != stored[example.name]:
+            entry["rewritten"] = True
+        decompositions.append(entry)
+    left = read["namespaces_left"]
+    return {
+        "name": name,
+        "depth": row["depth"],
+        "yaml": left_out_note(left[name]) if name in left else row["yaml"],
+        "fields": row["fields"],
+        "decompositions": decompositions,
+        "decompositions_left_out": left_out,
+    }
+
+
+def shown_here(
+    read: dict[str, Any], row: dict[str, Any], held: dict[str, str]
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Namespace *row*'s own decompositions: the YAML and problems of each its agents
+    are shown, by the name the engine reads, as *held* says where each comes from; and
+    the rest, which none is, as a shared file's unreadable row or a root left out."""
+    name = row["name"]
+    rows = [each for each in read["decompositions"] if each["namespace"] == name]
+    own, left_out = {}, []
+    for each, entry in zip(rows, row["decompositions"], strict=True):
+        found = each["decomposition"]
+        if found is not None and held.get(found.name) == name:
+            own[found.name] = {"yaml": entry["yaml"], "problems": entry["problems"]}
+        else:
+            left_out.append(entry)
+    return own, left_out
 
 
 def tool_entries(connection: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -1311,7 +1362,10 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     pick = PICK_AN_EDITOR.render(editors=editors)
 
     def show(name: str | None = None) -> Any:
-        """Every namespace in brief, or namespace *name* as the Library panel shows it."""
+        """Every namespace in brief, or namespace *name* whole: its fields as the panel
+        shows them, and the decompositions its agents are shown, as a run resolves them.
+        Not the panel's Delete refusals: an agent that can't delete took them as reasons
+        not to edit."""
         with app_file(library, "ro") as connection, reading(connection):
             read = read_library(connection)
             config, registry = run_config_and_registry(config_of(read))
@@ -1323,7 +1377,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             ]
         if name is None:
             return [in_brief(row, registry) for row in rows]
-        return named(rows, name, "namespace", "show()")
+        return whole(named(rows, name, "namespace", "show()"), read, config, registry)
 
     def tools(name: str | None = None) -> Any:
         """Every tool in brief, or tool *name* whole, with its source."""
