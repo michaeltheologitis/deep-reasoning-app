@@ -497,7 +497,7 @@ def test_an_imported_suffix_may_read_the_configs_own_template_variables(
     )
     import_into(library, written)
     namespace = run_config(library, tmp_path).namespaces["research"]
-    assert namespace.system_suffix == "Answer for {{ dept }}."
+    assert namespace.system_suffix.startswith("Answer for {{ dept }}.\n\n")
 
 
 NOT_A_MAPPING = 'is not a deep_reasoner config: it should be a mapping of settings, like "max_iter: 20".'

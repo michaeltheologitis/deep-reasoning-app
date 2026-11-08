@@ -184,7 +184,8 @@ READ_ONLY_HERE = jinja2.Template(
     "\nIn this chat you may only read the Library: its namespace, {{ namespace }}, doesn't"
     " grant library, so the tool refuses every write, here and in any sub-agent. Asked"
     " for a change, don't try it: answer, with FinalAnswer, what you would change, and"
-    " that the user should {{ pick }} and ask there.",
+    " that the user should {{ pick }} and ask there; but root, which every chat builds"
+    " on, only the user changes, in the Library panel (Namespaces, root, Edit YAML).",
     undefined=jinja2.StrictUndefined,
 )
 NOT_LOCAL = (

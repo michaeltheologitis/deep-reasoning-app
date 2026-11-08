@@ -34,6 +34,7 @@ from deep_reasoning.library import (
     FIELDS_MAPPING,
     FILLED_IN,
     HAND_OFF_TURNS,
+    HERE_LINE,
     HISTORIAN,
     HISTORIAN_SUFFIX,
     HISTORIANS_EXAMPLES,
@@ -220,10 +221,10 @@ def test_a_fresh_library_grants_llm_at_root_history_and_page_to_the_historian_an
     # Each suffix as stored, then where its agents may hand work, for the run only.
     to_historian = SPAWN_LINE.render(allowed=[HISTORIAN], above=False)
     assert config.namespaces[HISTORIAN].system_suffix == (
-        HISTORIAN_SUFFIX.rstrip("\n") + f"\n\n{NO_SUB_AGENTS}"
+        HISTORIAN_SUFFIX.rstrip("\n") + f"\n\n{here(HISTORIAN)} {NO_SUB_AGENTS}"
     )
     assert config.namespaces[LIBRARIAN].system_suffix == (
-        LIBRARIAN_SUFFIX.rstrip("\n") + f"\n\n{to_historian}"
+        LIBRARIAN_SUFFIX.rstrip("\n") + f"\n\n{here(LIBRARIAN)} {to_historian}"
     )
 
 
@@ -414,6 +415,10 @@ def test_a_spawn_list_the_librarian_restricts_keeps_both_hand_offs(library, tmp_
     assert shown["scheduler"] == shown[ROOT]
 
 
+def here(name):
+    return HERE_LINE.render(name=name)
+
+
 def run_suffixes(library, tmp_path):
     """Each namespace's own system_suffix in a run's config."""
     namespaces = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)
@@ -460,17 +465,30 @@ def test_a_namespace_that_sets_a_spawn_list_ends_its_suffix_with_where_it_can_ha
 
 def test_a_spawn_line_is_inherited_shown_in_the_panel_and_never_stored(team, tmp_path):
     own = run_suffixes(team, tmp_path)
-    # One that sets none inherits its parent's line, as it does its spawn list.
-    assert own["searcher.deep"] is None
+    # One that sets none is told only where it is, and inherits its parent's line.
+    assert own["searcher.deep"] == here("searcher.deep")
     assert own[ROOT] == ROOT_SUFFIX
     rows = panel_rows(team)
     assert rows["searcher"]["yaml"] == TEAM["searcher"]
-    [*_, line] = field(rows["searcher.deep"], "System suffix")
-    assert line == {
-        "value": NO_SUB_AGENTS,
+    *_, inherited, its_own = field(rows["searcher.deep"], "System suffix")
+    assert inherited == {
+        "value": f"{here('searcher')} {NO_SUB_AGENTS}",
         "source": "added at run time, inherited from searcher",
         "here": False,
     }
+    assert its_own["source"] == "added at run time, set here"
+
+
+def test_each_namespace_but_root_is_told_which_it_is(library, tmp_path):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "statistician", "system_suffix: Compute.\n")
+    own = run_suffixes(library, tmp_path)
+    assert own["statistician"] == f"Compute.\n\n{here('statistician')}"
+    assert (
+        'a task that asks for statistician ("hand this to statistician")'
+        in (own["statistician"])
+    )
+    assert own[ROOT] == ROOT_SUFFIX
 
 
 @pytest.mark.parametrize(
@@ -484,7 +502,7 @@ def test_a_spawn_line_follows_the_own_suffix_after_one_blank_line(
     with closing(open_library(library)) as connection:
         add_namespace(connection, "searcher", f"spawn: []\n{text}")
     assert run_suffixes(library, tmp_path)["searcher"] == (
-        f"Search.\n\n{NO_SUB_AGENTS}"
+        f"Search.\n\n{here('searcher')} {NO_SUB_AGENTS}"
     )
 
 
@@ -493,7 +511,9 @@ def test_a_spawn_list_naming_only_namespaces_that_are_gone_reads_as_a_leaf(
 ):
     with closing(open_library(library)) as connection, writing(connection):
         connection.execute(UPSERT_NAMESPACE, ("lonely", "spawn: [ghost]\n"))
-    assert run_suffixes(library, tmp_path)["lonely"] == NO_SUB_AGENTS
+    assert run_suffixes(library, tmp_path)["lonely"] == (
+        f"{here('lonely')} {NO_SUB_AGENTS}"
+    )
     [spawn] = field(panel_rows(library)["lonely"], "May spawn into")
     assert spawn["value"] == "ghost (not a namespace now)"
 
@@ -1063,7 +1083,14 @@ def test_a_namespace_is_added_at_the_top_and_its_child_inherits_from_it(
     assert registry.chain("research.papers") == [ROOT, "research", "research.papers"]
     assert papers.vars == {"topic": "ml", "year": 2026}
     assert papers.sources.vars == {"topic": "research", "year": "research.papers"}
-    assert papers.system_suffix == f"{ROOT_SUFFIX}\n\nCite each source.\n"
+    # Each level's suffix in turn, each but root's with where its agents are.
+    assert papers.system_suffix == "\n\n".join(
+        [
+            ROOT_SUFFIX,
+            f"Cite each source.\n\n{here('research')}",
+            here("research.papers"),
+        ]
+    )
 
 
 @pytest.mark.parametrize("text", [f"# why\n{RESEARCH}", "# fill in later\n"])
@@ -1165,7 +1192,7 @@ def test_an_edit_replaces_the_fields_and_keeps_the_decompositions(imported, tmp_
     change(imported, change_namespace, "router", "system_suffix: Be brief.\n")
     router = run_config(imported, tmp_path).namespaces["router"]
     assert router.spawn is None
-    assert router.system_suffix == "Be brief."
+    assert router.system_suffix == f"Be brief.\n\n{here('router')}"
     assert [each.name for each in router.decompositions] == ROUTER_DECOMPOSITIONS
 
 
