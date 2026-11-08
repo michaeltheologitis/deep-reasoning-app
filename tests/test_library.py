@@ -698,8 +698,9 @@ def test_root_is_told_to_pass_the_message_as_written_only_in_its_examples(
     namespaces = run_config(library, tmp_path).namespaces
     assert namespaces[ROOT].system_suffix == ROOT_SUFFIX
     assert "ctx.task" not in ROOT_SUFFIX and "subagent" not in ROOT_SUFFIX
-    # It names no librarian, so it holds with none.
-    assert LIBRARIAN not in ROOT_SUFFIX
+    # It names no librarian or historian, so it holds with neither: pages and Library
+    # questions go where root's worked examples hand them.
+    assert LIBRARIAN not in ROOT_SUFFIX and HISTORIAN not in ROOT_SUFFIX
     assert "ctx.task" not in namespaces[HISTORIAN].system_suffix
 
 
