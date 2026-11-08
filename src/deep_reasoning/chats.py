@@ -35,7 +35,7 @@ TITLE_CHARS = 200
 RUN_IDS = "SELECT chat, id FROM runs WHERE typeof(id) = 'text'"
 # Three words, like "tunneling-easygoing-mosquito": over 300 million ids.
 ID_WORDS = 3
-# A new id is tried this many times before the chat is refused; a taken one is rare.
+# A new id is tried this many times before a chat or page is refused; a taken one is rare.
 ID_TRIES = 10
 ID_TAKEN = "SQLITE_CONSTRAINT_PRIMARYKEY"
 NO_FREE_ID = f"The Library file had no free chat id in {ID_TRIES} tries; try again."
