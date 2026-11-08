@@ -394,23 +394,25 @@ async function readFile() {
   check(decompositionForm);
 }
 
-// Saved under the name its YAML gives; the server answers with the whole Library, which shows it as every read does.
+// Saved under the name its YAML gives, as the server reads it; the server answers with the whole Library, which shows it as
+// every read does.
 async function addDecomposition(text) {
   const namespace = picker.value;
-  await changeLibrary("POST", ADD_URL, { namespace, yaml: text });
-  const { name } = readYaml(text).value;
+  const name = await changeLibrary("POST", ADD_URL, { namespace, yaml: text });
   const row = decompositionKey(namespace, name);
   opened.add(row);
   const marked = storedDecomposition(namespace, name)?.problems.length ? ", marked ✗" : "";
   return { said: `Added "${name}" to ${namespace}${marked}`, row };
 }
 
-// A namespace's change reaches every namespace under it, so the server answers with the whole Library.
+// A namespace's change reaches every namespace under it, so the server answers with the whole Library; and, for a
+// decomposition added or edited, the name it saved it under, which this returns.
 async function changeLibrary(method, url, body) {
-  const found = await request(method, url, body);
+  const { saved, ...found } = await request(method, url, body);
   applied = ++sent;
   useLibrary(found);
   libraryChanged(library);
+  return saved;
 }
 
 const namespaceUrl = (name) => `${NAMESPACES_URL}/${encodeURIComponent(name)}`;
@@ -453,8 +455,7 @@ const storedDecomposition = (namespace, name) => namespaceNamed(namespace)?.deco
 
 // Saved under the name its YAML gives, which may be a new one.
 const saveDecomposition = (namespace, name) => async (text, form) => {
-  await changeLibrary("PUT", ADD_URL, { namespace, name, was: form.was, yaml: text });
-  const now = readYaml(text).value.name;
+  const now = await changeLibrary("PUT", ADD_URL, { namespace, name, was: form.was, yaml: text });
   const row = decompositionKey(namespace, now);
   if (now !== name) {
     editForms.delete(decompositionKey(namespace, name));

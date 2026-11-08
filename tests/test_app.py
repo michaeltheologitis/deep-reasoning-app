@@ -358,7 +358,9 @@ def test_a_valid_decomposition_is_stored_and_listed_under_its_namespace(client):
     )
     assert response.status_code == 201
     # the whole Library, as a read gives it, so the panel shows the new one as it shows any
-    assert response.json() == client.get("/api/library").json()
+    assert response.json() == client.get("/api/library").json() | {
+        "saved": "next course"
+    }
     stored = namespaces(client)["course_advisor"]["decompositions"]
     assert [each["name"] for each in stored] == ["catalog lookup", "next course"]
     assert stored[-1] == {
@@ -558,6 +560,25 @@ def decompositions_of(client, namespace):
     return {
         each["name"]: each for each in namespaces(client)[namespace]["decompositions"]
     }
+
+
+def test_an_add_or_edit_answers_with_the_name_as_the_server_reads_its_yaml(client):
+    # YAML 1.1 reads 0o17 as text, where the page's YAML 1.2 would read the number 15
+    octal = VALID.replace("next course", "0o17")
+    added = client.post(
+        "/api/decompositions", json={"namespace": "root", "yaml": octal}
+    )
+    edited = client.put(
+        "/api/decompositions",
+        json={
+            "namespace": "root",
+            "name": "0o17",
+            "was": octal,
+            "yaml": octal.replace("0o17", "0x1g"),
+        },
+    )
+    assert (added.json()["saved"], edited.json()["saved"]) == ("0o17", "0x1g")
+    assert "0x1g" in decompositions_of(client, "root")
 
 
 def test_a_decomposition_is_edited_under_a_new_name_and_deleted_through_the_api(

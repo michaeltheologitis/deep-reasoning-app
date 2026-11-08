@@ -243,14 +243,15 @@ def create_app(library, home):
             return library_panel(connection)
 
     # Each answers with the whole Library, as the panel shows it, so the panel draws the
-    # change from one source; an edit or delete carries the YAML it opened on (was).
+    # change from one source, and an add or edit with the name it was saved under, as the
+    # server reads its YAML; an edit or delete carries the YAML it opened on (was).
     @app.post("/api/decompositions", status_code=HTTPStatus.CREATED)
     def post_decomposition(
         namespace: Annotated[str, Body()], yaml: Annotated[str, Body()]
     ):
         with closing(open_library(library)) as connection:
-            add_decomposition(connection, namespace, yaml)
-            return library_panel(connection)
+            stored, _ = add_decomposition(connection, namespace, yaml)
+            return library_panel(connection) | {"saved": stored["name"]}
 
     @app.put("/api/decompositions")
     def put_decomposition(
@@ -260,8 +261,8 @@ def create_app(library, home):
         yaml: Annotated[str, Body()],
     ):
         with closing(open_library(library)) as connection:
-            edit_decomposition(connection, namespace, name, was, yaml)
-            return library_panel(connection)
+            saved = edit_decomposition(connection, namespace, name, was, yaml)
+            return library_panel(connection) | {"saved": saved}
 
     # was is null for a decomposition too long to show.
     @app.delete("/api/decompositions")

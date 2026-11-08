@@ -1954,7 +1954,8 @@ def edit_decomposition(connection, namespace, name, was, text):
     """Put the decomposition written as YAML *text* in the place of *namespace*'s
     decomposition *name*, which the person opened as *was*; it may take another name
     that *namespace* doesn't hold. Raises LibraryError saying why not, and
-    ChangedMeanwhile if *name* is no longer stored as *was*."""
+    ChangedMeanwhile if *name* is no longer stored as *was*. The name it is stored
+    under."""
     check_size(text, "A decomposition's YAML")
     decomposition = parsed(text)
     with writing(connection):
@@ -1970,6 +1971,7 @@ def edit_decomposition(connection, namespace, name, was, text):
             raise already_has(namespace, decomposition.name) from error
         if edited.rowcount == 0:
             raise changed_meanwhile(f'"{name}" in {namespace}')
+    return decomposition.name
 
 
 def delete_decomposition(connection, namespace, name, was):
