@@ -167,14 +167,15 @@ def take(lock, library, refused):
         )
 
 
-def import_or_exit(library, config, home):
-    """Import *config* into *library*, saying what it changed or why it didn't; a Library
-    that wasn't there when the lock was taken is kept only when the import writes it."""
+def import_or_exit(library, config, home, within=None):
+    """Import *config* into *library*, reading only in its folder or *within*, saying what
+    it changed or why it didn't; a Library that wasn't there when the lock was taken is
+    kept only when the import writes it."""
     folder_or_exit(library, home)
     with owning(library, NOT_IMPORTED, read=is_new) as new:
         said = None
         try:
-            said = imported(library, config, home)
+            said = imported(library, config, home, within)
         except (OSError, ValueError, yaml.YAMLError, sqlite3.Error) as error:
             sys.exit(f"Could not import {config}; {unchanged(error)}")
         except KeyboardInterrupt:
@@ -201,12 +202,12 @@ def is_new(library):
     return not os.path.lexists(library)
 
 
-def imported(library, config, home):
+def imported(library, config, home, within):
     """What importing *config* into the Library at *library* changed and left out."""
     with contextlib.closing(open_or_exit(library)) as connection:
         _, secrets = every_key(library, home)
         environment = keyless_environment(library, home)
-        return import_config(connection, config, secrets, environment)
+        return import_config(connection, config, secrets, environment, within)
 
 
 def unchanged(error):
@@ -217,8 +218,13 @@ def unchanged(error):
 def forget(library):
     """Delete the Library an import made at *library*, and its side files, as it wrote
     nothing to keep; the lock stays, as one starting may hold it."""
-    for path in [library, *(library.with_name(library.name + side) for side in SIDES)]:
+    for path in [library, *sides_of(library)]:
         path.unlink(missing_ok=True)
+
+
+def sides_of(library):
+    """SQLite's files beside *library*, there or not."""
+    return [library.with_name(library.name + side) for side in SIDES]
 
 
 def file_or_exit(library):
@@ -236,9 +242,11 @@ def file_or_exit(library):
 
 
 def chosen_in(library):
-    """The folders the Library's chats and settings chose, read without writing the file;
-    a LibraryError for a file that isn't a Library this version can open."""
-    with contextlib.closing(open_existing(library, "ro")) as connection:
+    """The folders the Library's chats and settings chose, read without writing the file
+    or leaving a side file beside it; a LibraryError for a file that isn't a Library this
+    version can open."""
+    reading = contextlib.closing(open_existing(library, "ro"))
+    with leaving_no_side_file(library), reading as connection:
         version = schema_version(connection)
         if not LIBRARY_ONLY <= version <= SCHEMA_VERSION:
             raise LibraryError(
@@ -249,6 +257,18 @@ def chosen_in(library):
         chosen = [chat["folder"] for chat in chats_in(connection)]
         chosen.append(settings_in(connection).get(DEFAULT_FOLDER))
     return [folder for folder in chosen if folder]
+
+
+@contextlib.contextmanager
+def leaving_no_side_file(library):
+    """Take away, after the block, each of SQLite's files beside *library* that it made:
+    a reader of a Library in WAL mode makes a -wal and -shm, empty, and leaves them."""
+    there = {path for path in sides_of(library) if os.path.lexists(path)}
+    try:
+        yield
+    finally:
+        for made in set(sides_of(library)) - there:
+            made.unlink(missing_ok=True)
 
 
 def chosen_or_exit(library):
@@ -269,7 +289,7 @@ def reset_targets(library, home):
     for the default Library, as theirs."""
     targets = []
     if library.is_file():
-        targets += [(library.with_name(library.name + side), SIDE) for side in SIDES]
+        targets += [(path, SIDE) for path in sides_of(library)]
     targets += [(library, THE_LIBRARY), (data_folder(home, library), ITS_FOLDERS)]
     if library == home / LIBRARY_FILE:
         targets += [(home / name, OLD) for name in LEFTOVERS]
@@ -382,14 +402,6 @@ def serve(port, no_browser, library, home):
 
 
 def main(argv=None):
-    # Importing deep_reasoner quiets structlog to warnings; this command's lines are info.
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO)
-    )
-    # Tracebacks without each frame's variables: a frame may hold a key.
-    structlog.dev.ConsoleRenderer.get_active().exception_formatter = (
-        structlog.dev.plain_traceback
-    )
     parser = argparse.ArgumentParser(
         description="Start Deep Reasoning and open it in a browser tab."
     )
@@ -415,6 +427,14 @@ def main(argv=None):
         description="Read a deep_reasoner config into the Library, replacing same-named items.",
     )
     importer.add_argument("config", type=Path, help="the config's main YAML file")
+    importer.add_argument(
+        "--within",
+        type=Path,
+        help=(
+            "a folder holding the config that the files it reads (_compose,"
+            " namespaces_dir, factory_from) may be in (default: the config's folder)"
+        ),
+    )
     resetter = commands.add_parser(
         "reset",
         help="delete the Library file and its run and scratch folders, after asking",
@@ -434,8 +454,20 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not 0 <= args.port <= MAX_PORT:
         parser.error(f"--port must be between 0 and {MAX_PORT}")
+    # Importing deep_reasoner quiets structlog to warnings; this command's lines are info,
+    # and only the import's report is on stdout, its log lines on stderr: each stream is
+    # looked up as a line is logged, so one swapped in later is the one written to.
+    stream = "stderr" if args.command == "import" else "stdout"
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+        logger_factory=lambda *_: structlog.PrintLogger(getattr(sys, stream)),
+    )
+    # Tracebacks without each frame's variables: a frame may hold a key.
+    structlog.dev.ConsoleRenderer.get_active().exception_formatter = (
+        structlog.dev.plain_traceback
+    )
     if args.command == "import":
-        import_or_exit(args.library, args.config, home)
+        import_or_exit(args.library, args.config, home, args.within)
         return
     if args.command == "reset":
         reset_or_exit(args.library, home, args.yes)

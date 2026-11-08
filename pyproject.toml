@@ -5,6 +5,7 @@ description = "A minimal chat for deep_reasoner, in one browser tab"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "conflit>=0.1.4",
     "coolname>=5.0.0",
     "deep-reasoner @ git+https://github.com/DeanLight/deep_reasoner_beta.git@0.3.0",
     "fastapi>=0.162.0",

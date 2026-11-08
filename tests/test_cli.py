@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 import structlog
 import uvicorn
+from conftest import CONFIGS
 from fastapi.testclient import TestClient
 
 from deep_reasoning import cli
@@ -345,10 +346,30 @@ def test_ctrl_c_during_an_import_stops_it_saying_so_and_leaves_nothing(tmp_path)
 
 def test_import_says_what_it_changed(tmp_path, capsys, waitlist):
     library = tmp_path / "lib.sqlite"
-    cli.main(["import", str(waitlist), "--library", str(library)])
+    cli.main(
+        ["import", str(waitlist), "--within", str(CONFIGS), "--library", str(library)]
+    )
     said = capsys.readouterr().out.splitlines()
     header = said.index(f"Imported {waitlist} into the Library at {library}.")
     assert "  root: tools [llm] → [waitlist]; the rest of root kept" in said[header:]
+
+
+def test_an_imports_report_alone_is_on_stdout_its_log_lines_on_stderr(tmp_path, capsys):
+    library = tmp_path / "lib.sqlite"
+    open_library(library).close()
+    with closing(open_library(library)) as connection, connection:
+        # A row a shared file may hold, which every read of the Library warns of.
+        connection.execute("INSERT INTO namespaces VALUES ('Root', '')")
+    config = tmp_path / "config.yaml"
+    config.write_text("max_iter: 7\n")
+    cli.main(["import", str(config), "--library", str(library)])
+    said = capsys.readouterr()
+    assert said.out.splitlines() == [
+        f"Imported {config} into the Library at {library}.",
+        "Run settings, for every chat:",
+        "  max_iter: 30 (the engine's default) → 7",
+    ]
+    assert "library.row_left_out" in said.err
 
 
 def test_importing_a_config_again_says_it_changed_nothing(tmp_path, capsys):
@@ -683,6 +704,40 @@ def test_reset_without_a_terminal_or_yes_deletes_nothing(app_home, monkeypatch):
     with pytest.raises(SystemExit, match="no terminal.*--yes"):
         cli.main(["reset"])
     assert all(os.path.lexists(path) for path in doomed)
+
+
+@pytest.mark.parametrize("terminal", [True, False], ids=["answered no", "no terminal"])
+def test_a_reset_that_deletes_nothing_leaves_and_lists_no_side_file_of_its_own(
+    app_home, monkeypatch, capsys, terminal
+):
+    library = app_home / "library.sqlite"
+    app_file(app_home, library)
+    # In WAL mode, as the app leaves a Library it served: once closed, nothing beside it.
+    with closing(sqlite3.connect(library)) as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+    monkeypatch.setattr(sys, "stdin", Terminal("no\n") if terminal else io.StringIO())
+    with pytest.raises(SystemExit, match="(?i)nothing was deleted"):
+        cli.main(["reset"])
+    said = capsys.readouterr().out
+    assert re.findall(r"-wal|-shm|\.lock", said) == []
+    assert [path for path in side_files(library) if path.exists()] == []
+
+
+def test_a_declined_reset_lists_and_leaves_only_the_side_files_already_there(
+    app_home, monkeypatch, capsys
+):
+    library = app_home / "library.sqlite"
+    app_file(app_home, library)
+    with closing(sqlite3.connect(library)) as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+    wal, shm = side_files(library)
+    wal.write_bytes(b"")
+    monkeypatch.setattr(sys, "stdin", Terminal("no\n"))
+    with pytest.raises(SystemExit, match="Nothing was deleted"):
+        cli.main(["reset"])
+    said = capsys.readouterr().out
+    assert re.findall(r"-wal|-shm", said) == ["-wal"]
+    assert (wal.exists(), shm.exists()) == (True, False)
 
 
 @pytest.mark.parametrize("before", [True, False], ids=["before reset", "after reset"])

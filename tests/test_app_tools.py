@@ -47,6 +47,7 @@ from deep_reasoning.app_tools import (
 )
 from deep_reasoning.library import (
     CHANGED_MEANWHILE,
+    FIELDS_MAPPING,
     HISTORIAN,
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
@@ -56,6 +57,9 @@ from deep_reasoning.library import (
     LIBRARY_DESCRIPTION,
     MAX_YAML_CHARS,
     TOO_LONG_ROW,
+    UNREAD_DECOMPOSITION,
+    UPSERT_DECOMPOSITION,
+    UPSERT_NAMESPACE,
     UPSERT_TOOL,
     YAML_NOT_TEXT,
     LibraryError,
@@ -816,15 +820,107 @@ def test_show_lists_every_namespace_in_brief_as_plain_data(fresh):
     ]
 
 
-def test_show_of_a_name_gives_that_namespace_whole_as_the_panel_shows_it(fresh):
+def own_decompositions(tool, namespace):
+    """Namespace *namespace*'s own decompositions, as show(namespace) gives them."""
+    shown = tool.show(namespace)["decompositions"]
+    return [each for each in shown if each["from"] == namespace]
+
+
+def test_show_of_a_name_gives_only_its_documented_fields(fresh):
     tool = library_tool(fresh)
     tool.write_decomposition("drafts", EXAMPLE)
     drafts = tool.show("drafts")
-    assert (drafts["name"], drafts["depth"], drafts["yaml"]) == ("drafts", 1, "")
-    assert drafts["decompositions"] == [
-        {"name": "count the tickets", "yaml": EXAMPLE, "problems": ONLY_THE_TASK}
+    assert list(drafts) == [
+        "name",
+        "depth",
+        "yaml",
+        "fields",
+        "decompositions",
+        "decompositions_left_out",
     ]
+    assert (drafts["name"], drafts["depth"], drafts["yaml"]) == ("drafts", 1, "")
+    assert own_decompositions(tool, "drafts") == [
+        {
+            "name": "count the tickets",
+            "from": "drafts",
+            "yaml": EXAMPLE,
+            "problems": ONLY_THE_TASK,
+        }
+    ]
+    assert drafts["decompositions_left_out"] == []
     assert {each["label"] for each in drafts["fields"]} >= {"Tools", "System suffix"}
+
+
+ROOTS = [{"name": name, "from": "root"} for where, name in FRESH if where == "root"]
+
+
+def test_show_of_a_name_lists_every_decomposition_its_agents_see_and_where_from(
+    fresh,
+):
+    tool = library_tool(fresh)
+    tool.add_namespace("team", {"system_suffix": "Split the question."})
+    tool.add_namespace("team.worker", {"system_suffix": "Compute your part."})
+    tool.write_decomposition("team", EXAMPLE)
+    tool.write_decomposition("team", EXAMPLE.replace("count the", "plan the"))
+    # The worker's own "count the tickets" takes the place of team's, where it was.
+    tool.write_decomposition("team.worker", EXAMPLE)
+    assert tool.show("team.worker")["decompositions"] == [
+        *ROOTS,
+        {
+            "name": "count the tickets",
+            "from": "team.worker",
+            "yaml": EXAMPLE,
+            "problems": ONLY_THE_TASK,
+        },
+        {"name": "plan the tickets", "from": "team"},
+    ]
+
+
+def test_show_of_a_name_lists_its_own_decompositions_the_engine_cant_read_apart(fresh):
+    tool = library_tool(fresh)
+    tool.add_namespace("team", {"system_suffix": "Split the question."})
+    tool.add_namespace("team.worker", {"system_suffix": "Compute your part."})
+    tool.write_decomposition("team", EXAMPLE)
+    # A shared file's rows: one at root, and one at the worker in place of team's.
+    with closing(open_library(fresh)) as connection, writing(connection):
+        connection.execute(UPSERT_DECOMPOSITION, ("root", "broken", "messages: ["))
+        unread = ("team.worker", "count the tickets", "messages: nope")
+        connection.execute(UPSERT_DECOMPOSITION, unread)
+    tool = library_tool(fresh)
+    worker = tool.show("team.worker")
+    assert worker["decompositions"] == [
+        *ROOTS,
+        {"name": "count the tickets", "from": "team"},
+    ]
+    [left_out] = worker["decompositions_left_out"]
+    assert (left_out["name"], left_out["yaml"]) == unread[1:]
+    assert left_out["problems"][0] == UNREAD_DECOMPOSITION
+    root = tool.show("root")
+    assert [each["name"] for each in root["decompositions_left_out"]] == ["broken"]
+    assert [each["name"] for each in root["decompositions"]] == [
+        each["name"] for each in ROOTS
+    ]
+
+
+def test_show_of_a_name_marks_the_hand_offs_its_agents_are_shown_rewritten(fresh):
+    tool = library_tool(fresh)
+    tool.add_namespace("team", {"spawn": []})
+    tool.add_namespace("team.worker", {"spawn": [HISTORIAN, LIBRARIAN]})
+    assert tool.show("team")["decompositions"] == [
+        each | {"rewritten": True} for each in ROOTS
+    ]
+    assert tool.show("team.worker")["decompositions"] == ROOTS
+
+
+def test_show_of_a_root_left_out_says_so_in_place_of_its_yaml(fresh):
+    with closing(open_library(fresh)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("root", "- not a mapping\n"))
+    root = library_tool(fresh).show("root")
+    assert root["yaml"] == left_out_note(FIELDS_MAPPING)
+    assert root["decompositions"] == []
+    assert [each["name"] for each in root["decompositions_left_out"]] == [
+        name for where, name in FRESH if where == "root"
+    ]
 
 
 def test_show_cuts_each_long_text_in_its_brief_list_but_not_for_one_namespace(fresh):
@@ -872,9 +968,10 @@ def test_a_decomposition_written_with_repl_placeholders_is_stored_with_the_real_
     )
     tool = library_tool(fresh)
     tool.write_decomposition("drafts", EXAMPLE + answer)
-    assert tool.show("drafts")["decompositions"] == [
+    assert own_decompositions(tool, "drafts") == [
         {
             "name": "count the tickets",
+            "from": "drafts",
             "yaml": EXAMPLE + answer.replace("[", "<").replace("]", ">"),
             "problems": ["Turn 2 (assistant) has no <think>…</think>."],
         }
@@ -889,7 +986,7 @@ def test_a_decomposition_with_no_placeholder_tag_is_stored_as_typed(fresh):
     )
     tool = library_tool(fresh)
     tool.write_decomposition("drafts", typed)
-    [stored_yaml] = [each["yaml"] for each in tool.show("drafts")["decompositions"]]
+    [stored_yaml] = [each["yaml"] for each in own_decompositions(tool, "drafts")]
     assert stored_yaml == typed
 
 
@@ -957,7 +1054,7 @@ def test_only_an_assistant_turns_placeholder_tags_on_lines_of_their_own_are_writ
 ):
     tool = library_tool(fresh)
     tool.write_decomposition("drafts", f"name: tags\nmessages:\n{turns}")
-    [stored_yaml] = [each["yaml"] for each in tool.show("drafts")["decompositions"]]
+    [stored_yaml] = [each["yaml"] for each in own_decompositions(tool, "drafts")]
     stored_turns = yaml.safe_load(stored_yaml)["messages"]
     assert [turn["content"] for turn in stored_turns] == contents
 
@@ -1953,7 +2050,7 @@ def test_the_seeded_worked_example_written_back_stays_as_it_was(fresh):
     done = tool.write_decomposition(LIBRARIAN, text)
     [row] = [
         each
-        for each in tool.show(LIBRARIAN)["decompositions"]
+        for each in own_decompositions(tool, LIBRARIAN)
         if each["name"] == done["name"]
     ]
     assert (done["done"], row["yaml"], row["problems"]) == ("replaced", text, [])
