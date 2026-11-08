@@ -1877,6 +1877,17 @@ def test_a_delegating_step_carries_each_sub_agent_it_started_with_its_time(libra
         ("Summarize C1.", ends[2] - starts[2], False),
         ("Summarize C2.", ends[3] - starts[3], False),
     ]
+    assert [row["model"] for row in block["step"]["agents"]] == [None, None]
+
+
+def test_a_sub_agent_on_another_model_than_the_runs_carries_it_onto_a_page(library):
+    """As fold.js folds it: the model its own calls asked for, on its row alone."""
+    plant(library, CHAT, recorded("models"))
+    p = page_of(library).new("The smaller model")
+    p.step(1, index=0)
+    [block] = saved(library, p)
+    [row] = block["step"]["agents"]
+    assert row["model"] == "fake-small"
 
 
 @pytest.mark.parametrize(

@@ -26,6 +26,7 @@ from deep_reasoning.settings import (
     default_folder,
     drop_key,
     find_provider,
+    is_chat_model,
     key_of,
     key_status,
     list_models,
@@ -224,10 +225,14 @@ def test_a_vendor_with_no_key_cannot_run(app_home):
         ("", "Name the server with letters"),
         ("vllm/../x", "Name the server with letters"),
         ("x" * 41, "Name the server with letters"),
-        ("openai", "There is a provider named OpenAI already"),
+        ("lm studio", r"There is a provider named lm studio already\.$"),
+        ("openai", "named OpenAI already, and names differing only in case count as"),
         # its key would be kept under Anthropic's variable
-        ("anthropic.", "There is a provider named Anthropic already"),
-        ("lm-studio", "There is a provider named lm studio already"),
+        (
+            "anthropic.",
+            "Anthropic already, and anthropic. would keep its key under the",
+        ),
+        ("lm-studio", "same variable, DEEP_REASONING_LM_STUDIO_KEY: pick a name that"),
     ],
 )
 def test_a_server_name_that_is_bad_or_taken_is_refused(
@@ -370,7 +375,48 @@ async def test_a_vendors_listing_features_its_current_tiers_beside_its_whole_lis
     with FakeOpenAI(scripted({}), models=OPENAI_LIVE_LIST) as fake:
         listing = await list_models(replace(OPENAI, base_url=fake.base_url), KEY)
     assert listing["featured"] == list(OPENAI_MODELS)
-    assert listing["models"] == list(OPENAI_LIVE_LIST)
+    assert listing["models"] == ["gpt-4", "gpt-6-luna"]
+
+
+@pytest.mark.parametrize(
+    ("name", "chat"),
+    [
+        ("gpt-6-luna", True),
+        ("gpt-4o-search-preview", True),
+        ("o3-mini", True),
+        ("claude-sonnet-5-5", True),
+        ("models/gemini-3.8-flash", True),
+        ("openai/gpt-6-luna", True),
+        ("qwen3-32b", True),
+        ("deliverable-7b", True),
+        ("text-embedding-3-small", False),
+        ("gemini-embedding-001", False),
+        ("tts-1-hd", False),
+        ("gpt-4o-mini-tts", False),
+        ("gpt-4o-transcribe", False),
+        ("whisper-1", False),
+        ("gpt-realtime", False),
+        ("gpt-4o-audio-preview", False),
+        ("gpt-image-2", False),
+        ("dall-e-3", False),
+        ("imagen-4.0-generate-001", False),
+        ("veo-3.0-generate-preview", False),
+        ("omni-moderation-latest", False),
+        ("gemini-2.0-flash-live-001", False),
+        ("davinci-002", False),
+        ("computer-use-preview", False),
+    ],
+)
+def test_a_providers_list_keeps_its_chat_models_only(name, chat):
+    assert is_chat_model(name) is chat
+
+
+@pytest.mark.anyio
+async def test_a_custom_server_features_only_the_chat_models_it_lists():
+    with FakeOpenAI(scripted({}), models=("qwen3-32b", "bge-embedding-m3")) as fake:
+        server = Provider("vllm", fake.base_url, server_key_env("vllm"), custom=True)
+        listing = await list_models(server, None)
+    assert listing["featured"] == listing["models"] == ["qwen3-32b"]
 
 
 @pytest.mark.anyio

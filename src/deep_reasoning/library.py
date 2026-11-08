@@ -96,6 +96,9 @@ APP_SCHEMA = (
     "CREATE TABLE app_settings (key TEXT PRIMARY KEY, json TEXT NOT NULL)",
 )
 RUN_TABLES = {"runs", "events"}
+# A run's id is when it began, in UTC, to the microsecond, so ids sort as their runs began.
+RUN_ID = r"^\d{8}-\d{6}-\d{6}$"
+RUN_ID_FORMAT = "%Y%m%d-%H%M%S-%f"
 # Each run's chat, and its events as the JSON the page folds, numbered from 1 (seq).
 RUN_SCHEMA = (
     "CREATE TABLE runs (id TEXT PRIMARY KEY, chat TEXT NOT NULL)",
