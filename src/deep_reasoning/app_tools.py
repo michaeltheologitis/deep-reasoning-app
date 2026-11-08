@@ -230,6 +230,15 @@ NOT_FINDABLE = (
     "find takes the text to look for, as text (a str) of one character or more."
 )
 ENDED_BADLY = ("failed", "stopped", "exhausted")
+# The REPL's frame atop a raised traceback, plain or an exception group's, with its source
+# line and any carets: the engine's, not the cell's, so steps and a page's copies leave it
+# out, as the chat does (EXEC_FRAME in tree.js); a step the historian printed carried it.
+ENGINE_FRAME = re.compile(
+    r"^((?:Traceback|  \+ Exception Group Traceback) \(most recent call last\):\n)"
+    r'((?:  \| )?)  File "[^"\n]*deep_reasoner[/\\][^"\n]*", line \d+, in \S+\n'
+    r"\2    \S.*\n(?:\2    [ ~^]*\^[ ~^]*\n)?",
+    re.MULTILINE,
+)
 # What find searches in each kind of step, as (kind, field).
 SEARCHED = {
     "think": [("think", "text")],
@@ -437,6 +446,13 @@ def cut(value: Any, depth: int = 0, limit: int = MAX_VALUE_CHARS) -> Any:
     return [cut(each, depth + 1, limit) for each in value]
 
 
+def without_engine_frame(step: Event) -> Event:
+    """*step* with a failed cell's traceback shown without the engine's frame."""
+    if not failed(step) or not isinstance(step["output"], str):
+        return step
+    return step | {"output": ENGINE_FRAME.sub(r"\1", step["output"])}
+
+
 def error_of(output: Any) -> str | None:
     """What a failed cell raised, as its traceback's exception lines; else, as in a record
     from someone else, its output's last line."""
@@ -636,12 +652,13 @@ class History:
         """The thoughts, cells, Library changes and pages of message *turn*'s top agent,
         or of sub-agent *node*."""
         # A copy: the folded runs are kept for the next call.
-        return cut([step for _, _, step in indexed(self.drives(turn, node))])
+        listed = indexed(self.drives(turn, node))
+        return cut([without_engine_frame(step) for _, _, step in listed])
 
     def full(self, turn: int, node: Any, index: int) -> dict[str, Any]:
         """steps(turn, node)[index], nothing cut; a ValueError when it nests too deep to
         copy, as a record in a shared file may."""
-        step = self.located(turn, node, index)[2]
+        step = without_engine_frame(self.located(turn, node, index)[2])
         try:
             return copy.deepcopy(step)
         except RecursionError as error:
@@ -733,7 +750,9 @@ def shown_step(tree: Tree, step: dict[str, Any]) -> dict[str, Any]:
     if step["kind"] != "cell":
         return step
     drives = tree.started.get(id(step), [])
-    return step | {"agents": [shown_drive(tree, row) for row in drives]}
+    return without_engine_frame(step) | {
+        "agents": [shown_drive(tree, row) for row in drives]
+    }
 
 
 def copied(show: Callable[[Tree, Any], Any], tree: Tree, item: Any) -> Any:
