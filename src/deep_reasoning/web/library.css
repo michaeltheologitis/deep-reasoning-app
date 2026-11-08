@@ -105,6 +105,10 @@
 .lib-check { flex: none; }
 .lib-check.passed { color: var(--ok); }
 .lib-check.failed { color: var(--warn); }
+.lib-check.warned { color: var(--warn); }
+.lib-notes { display: flex; flex-direction: column; gap: 2px; color: var(--warn); }
+.lib-notes p { margin: 0; overflow-wrap: anywhere; }
+.lib-notes p::before { content: "◆ "; }
 .lib-primary { color: var(--accent); }
 .lib-primary:disabled { color: var(--dim); cursor: default; }
 .lib-confirm { margin: 0; color: var(--ok); overflow-wrap: anywhere; }

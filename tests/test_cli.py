@@ -719,8 +719,24 @@ def test_reset_lists_what_goes_and_deletes_nothing_unless_told_delete(
     said = capsys.readouterr().out
     assert "~/.deep-reasoning/library.sqlite" in said
     assert "~/.deep-reasoning/chats.sqlite" in said
-    assert "~/.deep-reasoning/.env" in said
+    # With no keys saved, none are said to be kept.
+    assert ".env" not in said and "It keeps every folder a chat chose" in said
     assert all(os.path.lexists(path) for path in doomed)
+
+
+def test_reset_says_it_keeps_the_keys_when_some_are_saved(
+    app_home, monkeypatch, capsys
+):
+    library = app_home / "library.sqlite"
+    app_file(app_home, library)
+    keys = app_home / ".env"
+    keys.write_text("OPENAI_API_KEY=sk-test-not-a-real-key\n")
+    monkeypatch.setattr(sys, "stdin", Terminal("no\n"))
+    with pytest.raises(SystemExit, match="Nothing was deleted"):
+        cli.main(["reset"])
+    said = capsys.readouterr().out
+    assert "It keeps your keys, in ~/.deep-reasoning/.env" in said
+    assert keys.is_file()
 
 
 def test_typing_delete_resets(app_home, monkeypatch):

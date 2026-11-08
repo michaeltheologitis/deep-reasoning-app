@@ -4,10 +4,10 @@ A run's events are in the app file, saved as they happen, so a copy of the file 
 every chat's past turns: the runs table names each run's chat, and the events table holds
 each event as the JSON the page folds. The server numbers each event (seq, from 1) and
 stamps its time (t). runs/<run>/ in the file's data folder holds the run's working files:
-spec.yaml, what the worker runs, with the engine config; worker.log, the worker's stderr;
-and what the engine writes. The model's key reaches the worker in its environment only,
-never the run's folder or the file. The worker works in the chat's folder: its cwd, where
-the agent's Python reads and writes.
+spec.yaml, what the worker runs, with the engine config, until the run ends; worker.log,
+the worker's stderr; and what the engine writes. The model's key reaches the worker in
+its environment only, never the run's folder or the file. The worker works in the chat's
+folder: its cwd, where the agent's Python reads and writes.
 """
 
 import asyncio
@@ -503,6 +503,19 @@ def earlier_messages(turns: Sequence[Turn]) -> list[dict[str, str]]:
     return messages
 
 
+def forget_spec(home: Path, run: str) -> None:
+    """Delete *run*'s spec.yaml, in its folder in *home*, once its worker is gone: only
+    the worker reads it, and it holds the whole Library and the chat so far."""
+    (home / RUNS / run / SPEC).unlink(missing_ok=True)
+
+
+def forget_specs(home: Path) -> None:
+    """Delete every run's spec.yaml in *home* as the app starts, when no run is going:
+    one an older version kept, or one a run's end left as the app stopped."""
+    for spec in (home / RUNS).glob(f"*/{SPEC}"):
+        spec.unlink(missing_ok=True)
+
+
 def new_run_id() -> str:
     """The start time in UTC, to the microsecond: run ids sort in the order the runs
     began, across a change of the local clock."""
@@ -781,6 +794,7 @@ class Runs:
             del self._live[run]
             for queue in live.watchers:
                 queue.put_nowait(None)
+            forget_spec(self.home, run)
 
     def _turn_end(self, run: str, live: _Live) -> dict[str, Any]:
         """The turn.end of a run whose worker ended without writing one."""

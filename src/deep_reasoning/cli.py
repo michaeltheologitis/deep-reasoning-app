@@ -304,10 +304,16 @@ def reset_plan(doomed, kept, home, busy):
         f"It keeps {short_path(path)}, as a chat chose it or a folder in it."
         for path in kept
     ]
-    lines += [
-        f"It keeps your keys, in {short_path(home / ENV_FILE)} (remove them in settings),",
-        "every folder a chat chose, and other Library files and their folders.",
-    ]
+    keys = home / ENV_FILE
+    with_keys = (
+        f"your keys, in {short_path(keys)} (remove them in settings),\n"
+        if keys.is_file()
+        else ""
+    )
+    lines.append(
+        f"It keeps {with_keys}every folder a chat chose, and other Library files and"
+        " their folders."
+    )
     return "\n".join(lines)
 
 
