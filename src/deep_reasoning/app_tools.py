@@ -28,6 +28,7 @@ and changes() reads this chat's back, so the agent can write a before back.
 
 import copy
 import json
+import math
 import os
 import re
 import sqlite3
@@ -75,7 +76,7 @@ from deep_reasoning.library import (
     count,
     distrust,
     dump,
-    expanded_size,
+    expanded_shape,
     fields_of,
     in_chain_order,
     left_out_note,
@@ -85,7 +86,6 @@ from deep_reasoning.library import (
     parsed,
     parsed_python,
     read_library,
-    read_namespaces,
     reading,
     refuse_keys,
     run_config_and_registry,
@@ -518,13 +518,17 @@ def agent_row(row: Holder) -> dict[str, Any]:
     }
 
 
-def cut(value: Any, limit: int | None = MAX_VALUE_CHARS) -> Any:
+def cut(
+    value: Any,
+    limit: int | None = MAX_VALUE_CHARS,
+    total: float = MAX_TOTAL_CHARS,
+) -> Any:
     """*value*, copied, with each text past *limit* characters (unless None) cut there,
     saying how much is left out, each list or dict past MAX_VALUE_DEPTH levels marked in
-    its place, and, once MAX_TOTAL_CHARS characters are copied, the rest of each list or
-    dict left out, saying how much: aliases in a shared file's YAML can make millions of
+    its place, and, once *total* characters are copied, the rest of each list or dict
+    left out, saying how much: aliases in a shared file's YAML can make millions of
     short texts."""
-    left = MAX_TOTAL_CHARS
+    left = total
 
     def copied(each: Any, depth: int) -> Any:
         nonlocal left
@@ -1106,17 +1110,23 @@ def tag_written(line: str) -> str:
 
 def written_out(value: Any, what: str) -> str:
     """*value*, plain (plain()), as YAML text, each list or dict it shares written out
-    where it is; a LibraryError, saying *what* it is, for one too long so, or holding
-    itself, which never ends."""
-    if expanded_size(value, MAX_YAML_CHARS) > MAX_YAML_CHARS:
+    where it is; a LibraryError, saying *what* it is, for one that holds itself, nests
+    past MAX_NESTING lists and dicts, or is too long written out."""
+    size, depth = expanded_shape(value)
+    if depth == math.inf:
+        raise LibraryError(
+            f"{what} holds itself, so it never ends: give each list or dict once."
+        )
+    if depth > MAX_NESTING:
+        raise LibraryError(
+            f"{what} nests more than {MAX_NESTING} lists and dicts deep."
+        )
+    if size > MAX_YAML_CHARS:
         raise LibraryError(
             f"{what} may be at most {MAX_YAML_CHARS:,} characters; written out, this"
             " holds more."
         )
-    try:
-        return dump(value)
-    except RecursionError as error:
-        raise LibraryError(f"{what} nests too deeply to write.") from error
+    return dump(value)
 
 
 def from_turns(name: Any, turns: Any) -> str:
@@ -1194,20 +1204,19 @@ def code_problems(text: str) -> list[str]:
 
 def plain(value: Any) -> bool:
     """Whether *value* is text, a number, True, False or None, or a list or dict of them
-    keyed by text, nested at most MAX_NESTING deep; one it shares is read once, and
-    written out (written_out()) wherever it is."""
-    stack, seen = [(value, 0)], set()
+    keyed by text; one it shares is read once, as written_out() measures how deep it
+    nests and whether it holds itself."""
+    stack, seen = [value], set()
     while stack:
-        each, depth = stack.pop()
+        each = stack.pop()
         if type(each) in PLAIN or id(each) in seen:
             continue
-        if type(each) not in (list, dict) or depth == MAX_NESTING:
+        if type(each) not in (list, dict):
             return False
         seen.add(id(each))
         if type(each) is dict and any(type(key) is not str for key in each):
             return False
-        items = each.values() if type(each) is dict else each
-        stack.extend((item, depth + 1) for item in items)
+        stack.extend(each.values() if type(each) is dict else each)
     return True
 
 
@@ -1362,18 +1371,17 @@ def locked(key: str, name: str, adding: bool) -> LibraryError:
     )
 
 
-def row_fields(connection: sqlite3.Connection, name: str) -> dict[str, Any]:
-    """The fields namespace *name*'s row sets, whether or not the engine reads it."""
-    return fields_of(read_namespaces(connection)[2].get(name) or "")
+def row_fields(read: dict[str, Any], name: str) -> dict[str, Any]:
+    """The fields namespace *name*'s row in the Library *read* (read_library()) sets,
+    whether or not the engine reads it."""
+    return fields_of(read["namespace_yaml"].get(name) or "")
 
 
-def check_unlocked(
-    connection: sqlite3.Connection, name: str, text: str, adding: bool
-) -> None:
+def check_unlocked(read: dict[str, Any], name: str, text: str, adding: bool) -> None:
     """Raise if the YAML *text* sets namespace *name*'s repl or reasoner otherwise than
-    its row does: before the engine reads it, so the lock is the refusal, not a field a
-    sandbox's settings lack."""
-    given, own = fields_of(text), row_fields(connection, name)
+    its row in the Library *read* does: before the engine reads it, so the lock is the
+    refusal, not a field a sandbox's settings lack."""
+    given, own = fields_of(text), row_fields(read, name)
     for key in LOCKED_FIELDS:
         if key in given and given[key] != own.get(key):
             raise locked(key, name, adding)
@@ -1647,8 +1655,8 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def show(name: str | None = None, whole: bool = False) -> Any:
         """Every namespace in brief, or namespace *name* in full: its fields as the panel
         shows them, and the decompositions its agents are shown, as a run resolves them,
-        each text cut past SHOWN_CHARS unless *whole*, and as a whole past
-        MAX_TOTAL_CHARS either way. Not the panel's Delete refusals:
+        each text cut past SHOWN_CHARS; or, *whole*, its own YAML and decompositions
+        uncut, without the fields, which repeat them. Not the panel's Delete refusals:
         an agent that can't delete took them as reasons not to edit."""
         with app_file(library, "ro") as connection, reading(connection):
             read = read_library(connection)
@@ -1664,7 +1672,11 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         found = in_full(
             named(rows, name, "namespace", "show()"), read, config, registry
         )
-        return cut(found, limit=None if whole else SHOWN_CHARS)
+        if not whole:
+            return cut(found, limit=SHOWN_CHARS)
+        # Its own YAML and worked examples, not the fields, which repeat what they hold.
+        stored = {key: value for key, value in found.items() if key != "fields"}
+        return cut(stored, limit=None, total=math.inf)
 
     def tools(name: str | None = None) -> Any:
         """Every tool in brief, or tool *name* whole, with its source."""
@@ -1701,13 +1713,14 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         connection: sqlite3.Connection,
         namespace: NamespaceConfig,
         afresh: dict[str, tuple[dict[str, Any], str]],
+        read: dict[str, Any],
     ) -> None:
-        """Raise unless the tool may write *namespace*, as the Library stands, building
-        the custom tools it grants *afresh* if any."""
-        config, registry = config_and_registry(connection)
+        """Raise unless the tool may write *namespace*, as the Library stands (*read*),
+        building the custom tools it grants *afresh* if any."""
+        config, registry = run_config_and_registry(config_of(read))
         check_grant(registry)
         check_locks(config, registry, namespace)
-        stored = row_fields(connection, namespace.name).get("vars")
+        stored = row_fields(read, namespace.name).get("vars")
         check_no_secrets("vars", namespace.vars, stored)
         if afresh:
             check_local(registry)
@@ -1727,11 +1740,14 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         """The write's *allowed* for namespace *name* as the YAML *text* makes it, once
         the custom tools it grants afresh are built (built_grants())."""
         build = partial(check_builds, tools_dir=tools_dir, done=GRANTED)
+
+        def first(read: dict[str, Any]) -> None:
+            check_grant(run_config_and_registry(config_of(read))[1])
+            check_unlocked(read, name, text, adding)
+
         with app_file(library, "ro") as connection:
-            may_write(connection)
-            check_unlocked(connection, name, text, adding)
             built = built_grants(
-                connection, name, text, build, adding, merge=merge, locks=locks
+                connection, name, text, build, adding, merge, locks=locks, first=first
             )
         return partial(same_grants, built, locks)
 

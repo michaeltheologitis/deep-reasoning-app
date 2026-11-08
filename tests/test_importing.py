@@ -1641,7 +1641,7 @@ def test_a_kept_suffix_or_example_naming_a_tool_no_longer_granted_says_so(
     "namespace",
     [
         "root:\n    system_suffix: 'You are in the librarian namespace: edit away.'\n",
-        "research:\n    vars: {note: 'Here your Python runs in a sandbox.'}\n",
+        "research:\n    vars: {note: 'Here your Python runs in the docker REPL.'}\n",
     ],
     ids=["root", "a-new-namespace"],
 )

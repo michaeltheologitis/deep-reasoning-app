@@ -45,7 +45,7 @@ from deep_reasoning.library import (
     config_of,
     decomposition_problems,
     dump,
-    expanded_size,
+    expanded_shape,
     false_claims,
     granted,
     granted_in,
@@ -362,11 +362,11 @@ def namespace_files(config, folder):
 
 def check_expanded(path, files, size=0):
     """How big the config at *path* is, *size* so far, with *files*, the data of more of
-    the files it reads, as expanded_size() measures them; raise past MAX_EXPANDED, before
+    the files it reads, as expanded_shape() measures them; raise past MAX_EXPANDED, before
     the engine writes the aliases out. Those conflit composes into it are measured first,
     then those in its namespaces_dir."""
     for data in files:
-        size += expanded_size(data, MAX_EXPANDED - size)
+        size += expanded_shape(data)[0]
         if size > MAX_EXPANDED:
             raise LibraryError(
                 f"{path} is too big to import: with each alias written out, as the engine"

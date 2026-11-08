@@ -4352,10 +4352,6 @@ UNREADABLE_ROWS = {
         )
         for like, name, why in [
             ("with-a-zero-width-space", "zero\u200bwidth", "see (U+200B)"),
-            ("with-a-trailing-space", "trailing ", "starts or ends with a space"),
-            ("with-a-doubled-space", "show  it on a page", "a doubled space"),
-            ("with-a-non-breaking-space", "show\u00a0it on a page", "a doubled space"),
-            ("in-two-alphabets", "explain an earlier \u0430nswer", "mixes alphabets"),
         ]
     },
     **{
