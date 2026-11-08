@@ -420,11 +420,16 @@ name lower down takes the place of its parent's there. Where a method takes \
 yaml, give YAML text or a dict of plain values.
   library.show(name=None): every namespace, in brief: name, depth, sets (the fields it \
 sets itself), tools (all its agents get, inherited ones included) and decompositions \
-(each name, with how many problems it has as a worked example: 0 is ✓). Each text is \
-cut after 200 characters, ending "…(+N chars)". show(name) gives namespace `name` whole: \
-name, depth, yaml (the fields it sets itself, as change_namespace takes them), fields \
-(each as the engine resolves it, with where it comes from) and decompositions (each with \
-its name, yaml and problems).
+(only those it holds itself: each name, with how many problems it has as a worked \
+example: 0 is ✓). Each text is cut after 200 characters, ending "…(+N chars)". \
+show(name) gives namespace `name` whole: name, depth, yaml (the fields it sets itself, \
+as change_namespace takes them), fields (each as the engine resolves it, with where it \
+comes from), decompositions (every one its agents are shown, inherited ones included: \
+each with its name and from, the namespace that holds it; those `name` holds itself \
+with their yaml and problems too, and show(from) gives an inherited one's; rewritten: \
+True on one they are shown doing what they can instead of a hand-off they can't make, \
+as the Hand-offs field says) and decompositions_left_out (those it holds that no agent \
+is shown, as a shared file's the engine can't read: name, yaml and problems).
   library.tools(name=None): every tool, in brief: name, kind ("custom", "built-in" or \
 "the app's"), factory, settings, granted_in (the namespaces that grant it themselves), \
 description and source (a custom tool's Python, else None), each text cut after 200 \
