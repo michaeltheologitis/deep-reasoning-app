@@ -17,13 +17,14 @@ from pydantic import ValidationError
 from deep_reasoning.library import (
     APP_TOOLS,
     BUILDERS,
-    CHATS_DECIDE,
     CLAUDE_CODE,
+    CONTENT,
     ENTRY_NAMESPACE,
     HISTORIAN,
     LIBRARIAN,
     MAX_YAML_CHARS,
     NAMESPACE_NAME,
+    NOT_RUN_SETTINGS,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
@@ -40,12 +41,11 @@ from deep_reasoning.library import (
     dump,
     granted,
     hidden_vars,
-    library_tools,
     literals,
     namespace_problem,
-    parsed,
     parsed_python,
     problem,
+    read_library,
     shown,
     taken,
     template_names,
@@ -58,22 +58,6 @@ from deep_reasoning.tool_check import refuse_unbuilt
 
 log = structlog.get_logger()
 
-# What an import reads but doesn't store as a run setting: the content, and its own path.
-CONTENT = {"namespaces", "namespaces_dir", "decompositions", "tools", "config_path"}
-# Left to the Library, not a config: content (own tables), per-run paths, and the model and its key.
-NOT_IMPORTED = CONTENT | {
-    "task",
-    "task_id",
-    "run_prefix",
-    "log_dir",
-    "load_dotenv",
-    "model",
-    "planner_model",
-    "models",
-    "llm_kwargs",
-    "client",
-    "reasoner",
-}
 # The app's own namespaces: a config may name neither, nor a namespace under either.
 APP_NAMESPACES = (HISTORIAN, LIBRARIAN)
 # The run config an import's tool check builds with: a client that reaches nothing, so a
@@ -462,59 +446,22 @@ def check_builds(tools, environment, files):
         )
 
 
-def decomposition_read(text):
-    """A stored decomposition as the engine reads it; None for one a shared file holds that
-    it can't."""
-    try:
-        return parsed(text).model_dump()
-    except LibraryError:
-        return None
-
-
-def readable(rows, what):
-    """Each (name, data, *rest) of *rows*, (name, YAML text, *rest), whose text reads as a
-    mapping; one that doesn't, as a shared file may hold, is left out with a warning."""
-    for name, text, *rest in rows:
-        try:
-            data = yaml.safe_load(text)
-        except yaml.YAMLError as error:
-            data = error
-        if data is None or isinstance(data, dict):
-            yield name, data or {}, *rest
-        else:
-            log.warning("library.row_unread", what=what, name=name, error=str(data))
-
-
 def library_state(connection):
     """The Library as an import compares with it: the run settings; each namespace's own
-    fields; each decomposition as the engine reads it, by (namespace, name); and each
-    tool's block and source. A row that doesn't read is left out with a warning."""
-    rows = connection.execute("SELECT key, yaml FROM settings ORDER BY rowid")
-    settings = {}
-    for key, text in rows:
-        try:
-            settings[key] = yaml.safe_load(text)
-        except yaml.YAMLError as error:
-            log.warning(
-                "library.row_unread", what="setting", name=key, error=str(error)
-            )
-    namespaces = connection.execute("SELECT name, yaml FROM namespaces")
-    decompositions = connection.execute(
-        "SELECT namespace, name, yaml FROM decompositions"
-    )
+    fields; each decomposition as the engine reads it, by (namespace, name), None for one
+    left out; and each tool's block and source. A row the engine can't read is left out
+    with a warning, as the Library's readers leave it out."""
+    read = read_library(connection)
     return {
-        "settings": {
-            key: value for key, value in settings.items() if key not in CHATS_DECIDE
-        },
-        "namespaces": dict(readable(namespaces, "namespace")),
+        "settings": read["settings"],
+        "namespaces": read["namespaces"],
         "decompositions": {
-            (namespace, name): decomposition_read(text)
-            for namespace, name, text in decompositions
+            (row["namespace"], row["name"]): (
+                row["decomposition"].model_dump() if row["decomposition"] else None
+            )
+            for row in read["decompositions"]
         },
-        "tools": {
-            name: (block, source)
-            for name, block, source in readable(library_tools(connection), "tool")
-        },
+        "tools": read["tools"],
     }
 
 
@@ -614,7 +561,7 @@ def import_config(connection, path, secrets=(), environment=None):
     given)."""
     config = read_config(path)
     registry = build_namespace_registry(config)
-    unread = NOT_IMPORTED | set(config.model_extra or {})
+    unread = NOT_RUN_SETTINGS | set(config.model_extra or {})
     settings = config.model_dump(exclude_unset=True, exclude=unread)
     check_settings(settings)
     check_not_the_apps([*registry.names, settings.get(ENTRY_NAMESPACE)])
@@ -804,7 +751,7 @@ def left_out(config):
             f"Left out: the top-level decompositions {', '.join(openings)}, which open a"
             " run of `dr --main-decomposition`; a chat has none."
         )
-    unread = sorted((config.model_fields_set & NOT_IMPORTED) - CONTENT)
+    unread = sorted((config.model_fields_set & NOT_RUN_SETTINGS) - CONTENT)
     if unread:
         lines.append(
             f"Left out, as the app sets them for each chat and run: {', '.join(unread)}."

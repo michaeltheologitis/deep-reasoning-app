@@ -46,6 +46,7 @@ from deep_reasoning.folders import (
 )
 from deep_reasoning.importing import NOWHERE
 from deep_reasoning.library import (
+    ROOT,
     ChangedMeanwhile,
     LibraryError,
     add_decomposition,
@@ -62,11 +63,11 @@ from deep_reasoning.library import (
     delete_tool,
     edit_decomposition,
     engine_config,
-    has_namespace,
     in_chain_order,
     loaded,
     open_library,
     panel,
+    read_namespaces,
     reading,
 )
 from deep_reasoning.pages import page_exists, page_text
@@ -258,22 +259,24 @@ def create_app(library, home):
             edit_decomposition(connection, namespace, name, was, yaml)
             return library_panel(connection)
 
+    # was is null for a decomposition too long to show.
     @app.delete("/api/decompositions")
     def remove_decomposition(
         namespace: Annotated[str, Body()],
         name: Annotated[str, Body()],
-        was: Annotated[str, Body()],
+        was: Annotated[str | None, Body()],
     ):
         with closing(open_library(library)) as connection:
             delete_decomposition(connection, namespace, name, was)
             return library_panel(connection)
 
-    # What the namespace menu under the message box lists, lighter than the whole panel.
+    # What the namespace menu under the message box lists, lighter than the whole panel:
+    # each the engine reads, which a chat may run in, as the panel's rows say (usable).
     @app.get("/api/namespaces")
-    def read_namespaces():
+    def namespace_menu():
         with closing(open_library(library)) as connection, reading(connection):
             config, registry = config_and_registry(connection)
-        names = [{"name": name} for name in in_chain_order(registry)]
+        names = [{"name": name, "usable": True} for name in in_chain_order(registry)]
         return {"namespaces": names, "default_namespace": config.entry_namespace}
 
     # An imported namespace's, tool's or setting's name may hold a /, hence :path.
@@ -309,9 +312,10 @@ def create_app(library, home):
             add_namespace(connection, name, yaml, allowed=allowed)
             return library_panel(connection)
 
+    # was is null for a namespace too long to show, which the save replaces while it is so.
     @app.put("/api/namespaces/{name:path}")
     def put_namespace(
-        name: str, yaml: Annotated[str, Body()], was: Annotated[str, Body()]
+        name: str, yaml: Annotated[str, Body()], was: Annotated[str | None, Body()]
     ):
         allowed = built_grants(name, yaml, adding=False)
         with closing(open_library(library)) as connection:
@@ -512,9 +516,16 @@ def create_app(library, home):
         chosen = shown(chat, starting_points())
         namespace, model = chosen["namespace"], chosen["model"]
         with closing(open_library(library)) as connection:
-            if not has_namespace(connection, namespace):
+            readable, left_out, _ = read_namespaces(connection)
+            # The engine supplies a bare root when the file's is left out or missing.
+            if namespace != ROOT and namespace not in readable:
+                gone = (
+                    "is one the engine can't read (the Library panel says why)"
+                    if namespace in left_out
+                    else "no longer exists"
+                )
                 raise LibraryError(
-                    f"This chat's namespace {namespace} no longer exists — pick another."
+                    f"This chat's namespace {namespace} {gone} — pick another."
                 )
             turns = [
                 read_turn(connection, run) for run in chat_runs(connection, chat["id"])
