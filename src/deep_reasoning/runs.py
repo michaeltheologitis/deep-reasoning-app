@@ -82,6 +82,8 @@ SHORTEST_SECRET = 8
 # The largest number the page's JavaScript holds exactly: a shared file's events stay
 # within it, so no sum or seq they make leaves what JSON and SQLite carry.
 LARGEST_NUMBER = 2**53
+# The server numbers a run's events from 1.
+FIRST_SEQ = 1
 # What an event row from a file someone else wrote may fail with.
 UNREADABLE = (TypeError, ValueError, RecursionError, OverflowError)
 NOT_ENDED = (*UNREADABLE, KeyError, IndexError, sqlite3.Error)
@@ -206,10 +208,11 @@ NUMBERS = {
 
 def well_formed(event: Any, seq: Any) -> bool:
     """Whether *event*, read from the row numbered *seq*, is one the app could have
-    written: an object with that seq, a time and a kind."""
+    written: an object with that seq, numbered from FIRST_SEQ, a time and a kind."""
     return (
         isinstance(event, dict)
         and isinstance(seq, int)
+        and seq >= FIRST_SEQ
         and event.get("seq") == seq
         and isinstance(event.get("t"), int | float)
         and isinstance(event.get("kind"), str)
@@ -658,7 +661,7 @@ class Runs:
     def _record(self, run: str, live: _Live, event: dict[str, Any]) -> None:
         """Number and stamp *event*, send it to the run's streams, and save it. Sent
         first: a run whose event can't be saved ends, and its streams still see it end."""
-        event = {"seq": len(live.events) + 1, "t": time.time()} | event
+        event = {"seq": len(live.events) + FIRST_SEQ, "t": time.time()} | event
         if event["kind"] == "turn.end":
             event |= totals(live.events, event["t"])
             if live.chat_deleted:
