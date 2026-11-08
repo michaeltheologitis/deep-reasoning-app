@@ -8,6 +8,7 @@ which the server sends to the folder's worker.log.
 
 import ast
 import asyncio
+import inspect
 import json
 import os
 import re
@@ -16,7 +17,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -35,7 +36,7 @@ from deep_reasoner.v2.cli import (
     close_run,
 )
 from deep_reasoner.v2.decompositions import as_cli_act
-from deep_reasoner.v2.messages import NoCodeBlock, code
+from deep_reasoner.v2.messages import NoCodeBlock, code, func
 from genai_prices import Usage, calc_price
 from openai.resources.chat.completions import AsyncCompletions
 
@@ -46,6 +47,7 @@ from deep_reasoning.runs import (
     FINAL_ANSWER,
     PAGE_FIELDS,
     SPEC,
+    escaped,
     raised_error,
 )
 
@@ -127,6 +129,33 @@ def for_claude(message: dict[str, str]) -> dict[str, str]:
 def detail_of(error: BaseException) -> str:
     """An exception as deep_reasoner words agent.end's detail."""
     return f"{type(error).__name__}: {error}"
+
+
+def tool_line(name: str, value: Any, description: str) -> str:
+    """The line agents are shown for tool *name*, as the engine's func.describe words
+    one, but by *name*: what they call, with its signature where Python reads one, or
+    the name alone for an object they use through its methods."""
+    if callable(value):
+        try:
+            name += str(inspect.signature(value))
+        except (TypeError, ValueError):
+            name += "(...)"
+    body = f"\n  {description}" if description else ""
+    return f"- `{name}`{body}"
+
+
+def naming_tools(names: Collection[str]) -> None:
+    """Show agents each tool of *names* by the name they call it by. The engine names a
+    tool by its Python value's __name__, so Func(count_words) granted as wordcount read
+    as count_words(...), and an object as fn(...); the value itself is left as it is."""
+    describe = func.describe
+
+    def described(self: func) -> str:
+        if self.name not in names:
+            return describe(self)
+        return tool_line(self.name, self.value, self.description)
+
+    func.describe = described
 
 
 def build_failure(error: ToolBuildError, config: V2Config) -> str:
@@ -454,10 +483,14 @@ def finish(reasoner: Any) -> NoReturn:
 
 def counting_calls(recorder: Recorder) -> None:
     """Tell *recorder* of each chat call the run starts: the engine logs only those that
-    finish."""
+    finish. Each call's messages go with any half of a character escaped: a cell's output
+    may hold one, which the call couldn't send."""
     create = AsyncCompletions.create
 
     async def counted(self: AsyncCompletions, *args: Any, **kwargs: Any) -> Any:
+        # Before the count: a call escaped() raised on was never sent.
+        if "messages" in kwargs:
+            kwargs["messages"] = escaped(kwargs["messages"])
         recorder.call_started()
         return await create(self, *args, **kwargs)
 
@@ -489,9 +522,16 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     # A tool that doesn't build while the run builds the config's tools, at its start,
     # stops every run; one that doesn't later is that run's own failure.
     starting = True
+    chats_folder = os.getcwd()
     try:
         config = V2Config.model_validate(spec["config"])
+        # Each tool of Python of its own, the app's included; the engine's are as it shows them.
+        naming_tools(
+            [name for name, block in config.tools.items() if "factory_from" in block]
+        )
         reasoner, alias = build_reasoner(config, run_dir=folder)
+        # A tool's module may move the working folder as it loads: cells run in the chat's.
+        os.chdir(chats_folder)
         starting = False
         earlier = spec["earlier"]
         if reasoner.backbone_type == CLAUDE_CODE:
