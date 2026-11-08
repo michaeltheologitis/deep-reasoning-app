@@ -40,7 +40,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   `historian` is deleted: a run there is shown, in each hand-off's place, the same question answered by saying it
   can't, so the agent says so rather than guess or pass the question to another namespace; a hand-off of your own to
   a namespace it can't reach is shown answered there as best it can. The Library is left as it is; the panel says so
-  under the namespace's Hand-offs, and deleting `historian` warns of it. If you take `history` out of it, delete
+  under the namespace's Hand-offs, and deleting `historian` warns of it (a new Library's `librarian` lists it in its
+  `spawn`, so take it out there first). If you take `history` out of it, delete
   root's hand-off examples (open each in the Decompositions tab and Delete it): they send questions where nothing
   can read the history. If you take `page` out of it, delete `show it on a page`, `put a table on a page` and `find
   where it really went wrong` from root and historian.
