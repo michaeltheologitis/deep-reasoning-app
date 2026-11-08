@@ -1,5 +1,5 @@
 // The Library panel: the decompositions, namespaces, tools and data every run draws on, read from the server's Library file; adding, editing and deleting save there.
-import { LIBRARY_CHANGED, PANEL_CLOSE, caret, chatNamespace, closeOtherPanels, coverPage, element, libraryChanged, request } from "./app.js";
+import { LIBRARY_CHANGED, PANEL_CLOSE, TOUCH, caret, chatNamespace, closeOtherPanels, element, libraryChanged, request, showPanel } from "./app.js";
 import { turnProblems } from "./turns.js";
 
 const LIBRARY_URL = "api/library";
@@ -19,7 +19,7 @@ const NAMESPACE_KEYS = ["repl", "reasoner", "tools", "vars", "spawn", "system_su
 const NAMESPACE_NAME = /^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z][A-Za-z0-9_-]*)*$/;
 const INDENT = "  ";
 // a touch keyboard has no Tab or Esc to speak of, so touch screens get no line about them
-const EDITOR_KEYS = matchMedia("(pointer: coarse)").matches ? null : "tab indents · esc leaves · ctrl/⌘+enter saves";
+const EDITOR_KEYS = TOUCH ? null : "tab indents · esc leaves · ctrl/⌘+enter saves";
 const CHECK_DELAY_MS = 300;
 // What a namespace's save says while it runs, as the engine checks the whole Library, and a tool it grants afresh is built first.
 const SAVING = "Saving…";
@@ -277,10 +277,9 @@ async function submit(form, e) {
   say(saved.where?.() ?? form.confirmation, saved.said);
 }
 
-// Disabled while it saved, Save let focus fall to the page; a refusal gives it back, to the editor if Save can't take it.
+// Disabled while it saved, Save let focus fall to the page; a refusal gives it back.
 function giveFocusBack(form) {
-  if (document.activeElement !== document.body || form.el.hidden || !form.el.isConnected) return;
-  (form.submit.disabled ? form.editor : form.submit).focus();
+  if (document.activeElement === document.body && !form.el.hidden && form.el.isConnected) form.submit.focus();
 }
 
 // Changed meanwhile: the Library is read again, the draft kept, and what is stored now shown, which saving again replaces.
@@ -898,17 +897,11 @@ function arrowTabs(e) {
   tabButtons[TABS.indexOf(tab)].focus();
 }
 
-// Opened, it reads the Library again, as an import or another tab may have changed it. Closing gives focus back to the
-// toggle when focus was in the panel, or nowhere, as after a tap on ×.
+// Opened, it reads the Library again, as an import or another tab may have changed it.
 function setOpen(open) {
   deleting = null;
   clearSaid();
-  const active = document.activeElement;
-  const giveBack = !open && !panel.hidden && (!active || active === document.body || panel.contains(active));
-  panel.hidden = !open;
-  toggleButton.setAttribute("aria-expanded", String(open));
-  coverPage();
-  if (giveBack) toggleButton.focus();
+  showPanel(panel, toggleButton, open);
   if (!open) return;
   closeOtherPanels(panel);
   render();

@@ -52,10 +52,11 @@ for (const [typed, picked] of [
   });
 }
 
-test("a name listed in another case still offers the text as typed, after the listed one", () => {
+test("a provider whose list names the text in another case offers its listed model, not the text as typed", () => {
   const values = modelGroups(LISTS, "FAKE-LARGE", null).flatMap((group) => group.options.map((option) => option.value));
-  assert.deepEqual(values.slice(0, 2), [{ provider: "fake", name: "fake-large" }, { provider: "OpenAI", name: "FAKE-LARGE" }]);
-  assert.ok(values.some((value) => value.provider === "fake" && value.name === "FAKE-LARGE"));
+  assert.deepEqual(values[0], { provider: "fake", name: "fake-large" });
+  assert.ok(!values.some((value) => value.provider === "fake" && value.name === "FAKE-LARGE"));
+  assert.ok(values.some((value) => value.provider === "OpenAI" && value.name === "FAKE-LARGE"));
 });
 
 test("with no name exact anywhere, the providers that list a match keep their order", () => {

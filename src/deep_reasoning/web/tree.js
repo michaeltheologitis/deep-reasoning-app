@@ -26,8 +26,7 @@ const SANITIZE = {
   ALLOWED_ATTR: ["align", "checked", "class", "disabled", "href", "rel", "start", "target", "title", "type"],
   ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 };
-// what DOMPurify strips from an attribute before checking it against ALLOWED_URI_REGEXP
-const URI_WHITESPACE = /[\u0000-\u0020\u00A0\u1680\u180E\u2000-\u2029\u205F\u3000]/g;
+const THEME_KEY = "theme";
 const LINE_CHARS = 100;
 // a prompt or answer past about `past` lines shows its first `shown` until shown whole
 const CLAMPS = { prompt: { past: 12, shown: 8, whole: new WeakSet() }, answer: { past: 200, shown: 40, whole: new WeakSet() } };
@@ -428,8 +427,8 @@ function renderAgent(agent) {
 }
 
 const escapeHtml = (text) => text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
-// as DOMPurify checks an address: with the characters it strips taken out first
-const followable = (href) => SANITIZE.ALLOWED_URI_REGEXP.test(href.replace(URI_WHITESPACE, ""));
+// as DOMPurify checks the address marked hands it: encoding leaves a scheme's letters and colon as they are
+const followable = (href) => SANITIZE.ALLOWED_URI_REGEXP.test(href);
 const isPlain = (tokens) => tokens.every((token) => PLAIN_TOKENS.has(token.type) && isPlain(token.tokens ?? []));
 
 // Markdown as answers show it, so code (__init__, 2*3*4, ~/a~b) and raw HTML show as written, and nothing loads.
@@ -524,17 +523,34 @@ function tick() {
 }
 
 // The theme the chat's toggle stored, if any; else the system's.
-function useStoredTheme() {
+function storedTheme() {
   try {
-    const theme = localStorage.getItem("theme");
-    if (theme) document.documentElement.dataset.theme = theme;
+    return localStorage.getItem(THEME_KEY);
   } catch {
-    // no stored theme: follow the system's
+    // storage can be blocked: follow the system's
+    return null;
   }
+}
+
+// The theme picked in this tab or another, kept in localStorage; none, or one cleared, follows the system's. changed runs
+// after each change another tab makes.
+function followStoredTheme(changed = () => {}) {
+  const use = () => {
+    const theme = storedTheme();
+    if (theme) document.documentElement.dataset.theme = theme;
+    else delete document.documentElement.dataset.theme;
+  };
+  use();
+  addEventListener("storage", (e) => {
+    if (e.key !== THEME_KEY && e.key !== null) return;
+    use();
+    changed();
+  });
 }
 
 export {
   CLAMPS,
+  THEME_KEY,
   COST_NA,
   MS_PER_SECOND,
   PRICE_UNKNOWN,
@@ -549,7 +565,6 @@ export {
   decor,
   element,
   failureView,
-  formatCost,
   formatSeconds,
   formatTotal,
   join,
@@ -571,7 +586,7 @@ export {
   stepLabel,
   tick,
   toggler,
-  useStoredTheme,
+  followStoredTheme,
   views,
   waiting,
   whenChangesApply,

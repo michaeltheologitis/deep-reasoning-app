@@ -5,6 +5,7 @@ import {
   COST_NA,
   MS_PER_SECOND,
   PRICE_UNKNOWN,
+  THEME_KEY,
   UNFINISHED,
   UNKNOWN_COST,
   WAITING,
@@ -15,6 +16,7 @@ import {
   decor,
   element,
   failureView,
+  followStoredTheme,
   formatSeconds,
   formatTotal,
   join,
@@ -33,7 +35,6 @@ import {
   stepLabel,
   tick,
   toggler,
-  useStoredTheme,
   views,
   waiting,
   whenChangesApply,
@@ -66,8 +67,6 @@ const PANEL_OPEN = "panel-open";
 const LIBRARY_CHANGED = "library-changed";
 const PLUS_NA = `\u00a0+\u00a0${UNKNOWN_COST}`;
 const MENU_STEPS = { ArrowDown: 1, ArrowUp: -1 };
-// to the first or last option, with no modifier, so Shift+Home still selects in the filter
-const MENU_ENDS = { Home: 0, End: -1 };
 const OUTCOME = {
   exhausted: ["ran out of turns", "warn"],
   failed: ["failed", "err"],
@@ -81,7 +80,6 @@ const OPEN_PREFIX = "open:";
 const TOUCH = matchMedia("(pointer: coarse)").matches;
 const SEND_HINT = TOUCH ? "enter for a new line" : "enter to send · shift+enter for a new line";
 const SETTINGS_CHANGED = "settings-changed";
-const THEME_KEY = "theme";
 
 const byId = (id) => document.getElementById(id);
 // sending: the chat whose message is on its way; problem shows in red, notice in plain words
@@ -99,6 +97,8 @@ let cameBack = -COME_BACK_MS;
 const library = { namespaces: null, defaultNamespace: null, leftOut: [] };
 const HOME_FOLDER = "~";
 let popover = null;
+// each side panel's opener, which gets focus back when it closes
+const openers = new Map();
 // Each provider's models, as the server lists them with its key: read once per page load, and again after settings change.
 let modelLists = null;
 let drawing = 0;
@@ -313,6 +313,22 @@ function setDrawer(open) {
   (byId("chats").querySelector("[aria-current]") ?? byId("new-chat")).focus();
 }
 
+// Opens or closes a side panel. Closing, with focus in the panel or nowhere (as after a tap on ×), gives focus back to the
+// button that opened it (the model button, for its "Open settings"), else the toggle: also when that button is hidden now, as
+// one in the other panel; a text field never, so no touch keyboard opens.
+function showPanel(panel, toggle, open) {
+  const active = document.activeElement;
+  const nowhere = !active || active === document.body;
+  if (open && panel.hidden) openers.set(panel, active?.tagName === "BUTTON" && !panel.contains(active) ? active : toggle);
+  const giveBack = !open && !panel.hidden && (nowhere || panel.contains(active));
+  panel.hidden = !open;
+  toggle.setAttribute("aria-expanded", String(open));
+  coverPage();
+  if (!giveBack) return;
+  const opener = openers.get(panel);
+  (opener?.isConnected && opener.checkVisibility() ? opener : toggle).focus();
+}
+
 // At phone width a side panel covers the whole page, so nothing behind it takes focus, as the shut drawer takes none.
 function coverPage() {
   const covered = PHONE.matches && document.querySelector(".library:not([hidden])") !== null;
@@ -354,11 +370,10 @@ function renderComposer() {
   const here = live?.chat === state.current;
   const hint = byId("hint");
   const text = state.problem ?? state.notice ?? usualHint(live, here);
-  const stopButton = byId("stop");
-  // the button goes as its run ends: focus on it would fall to the page
-  if (!here && document.activeElement === stopButton) byId("input").focus();
-  stopButton.hidden = !here;
-  stopButton.textContent = live?.stopping ? STOPPING : STOP_LABEL;
+  // send gives way to stop as a run starts here, and stop to send as it ends: focus on the one going would fall to the page
+  if (document.activeElement === byId(here ? "send" : "stop")) byId("input").focus();
+  byId("stop").hidden = !here;
+  byId("stop").textContent = live?.stopping ? STOPPING : STOP_LABEL;
   byId("send").hidden = here;
   hint.classList.toggle("err", state.problem != null);
   // the hint is a live region: setting the same text again would announce it again
@@ -383,14 +398,14 @@ function renderChoices(chat) {
   const ready = library.namespaces && chat?.turns;
   byId("choices").hidden = !ready;
   if (!ready) return;
-  const model = chat.model ? servedBy(chat.model.name, chat.model.provider) : "none";
+  const model = chat.model && servedBy(chat.model.name, chat.model.provider);
   byId("namespace-name").textContent = chat.namespace;
   byId("namespace").title = `${chat.namespace}: this chat's namespace, from its next message`;
   byId("namespace").setAttribute("aria-label", `Namespace: ${chat.namespace}`);
   byId("model-name").textContent = chat.model?.name ?? "pick a model";
   byId("model-provider").textContent = chat.model ? ` · ${chat.model.provider}` : "";
-  byId("model").title = `${chat.model ? model : "No model"}: this chat's model, from its next message`;
-  byId("model").setAttribute("aria-label", `Model: ${model}`);
+  byId("model").title = `${model ?? "No model"}: this chat's model, from its next message`;
+  byId("model").setAttribute("aria-label", `Model: ${model ?? "none"}`);
   renderFolder(chat);
 }
 
@@ -514,9 +529,15 @@ function openSettings() {
   byId("settings").dispatchEvent(new Event(PANEL_OPEN));
 }
 
-// After a change in settings the lists are read again, and each chat's model too: one that never picked follows what new chats start on.
-async function settingsChanged() {
+// The providers changed, here or in another tab: the model menu reads its lists again when next opened.
+function forgetModelLists() {
   modelLists = null;
+}
+
+// After a change in settings here the lists are read again, and each chat's model too: one that never picked follows what new
+// chats start on. Coming back to the tab reads the chats anyway.
+async function settingsChanged() {
+  forgetModelLists();
   await refresh();
 }
 
@@ -619,15 +640,9 @@ function markActive(open) {
 
 function menuKey(open, e) {
   const step = MENU_STEPS[e.key];
-  const end = MENU_ENDS[e.key];
-  const plain = !(e.shiftKey || e.altKey || e.ctrlKey || e.metaKey);
   if (step && open.options.length) {
     e.preventDefault();
     open.active = (open.active + step + open.options.length) % open.options.length;
-    markActive(open);
-  } else if (end !== undefined && plain && open.options.length) {
-    e.preventDefault();
-    open.active = (end + open.options.length) % open.options.length;
     markActive(open);
   } else if (e.key === "Enter" || (e.key === " " && !open.field)) {
     // also keeps Enter in the filter from sending the composer's message
@@ -664,14 +679,7 @@ function folderPicker(button, host, spec) {
     { class: "menu-pop folder-pop", role: "dialog", "aria-label": spec.label },
     element(
       "form",
-      {
-        class: "folder-form",
-        method: "dialog",
-        onsubmit: (e) => {
-          e.preventDefault();
-          useFolder(picker, cleanFolder(picker.field.value) || null);
-        },
-      },
+      { class: "folder-form", method: "dialog", onsubmit: (e) => submitFolder(e, picker) },
       element("label", { class: "menu-head", for: field.id }, spec.label),
       field,
       problem,
@@ -718,6 +726,11 @@ async function goToFolder(picker, path) {
   await fillBrowser(picker);
   // a folder that can't be listed leaves no row, and focus mustn't fall out of the picker
   if (fromKeyboard) (picker.browser.querySelector(".row") ?? picker.field).focus();
+}
+
+function submitFolder(e, picker) {
+  e.preventDefault();
+  useFolder(picker, cleanFolder(picker.field.value) || null);
 }
 
 // path: null for the scratch folder
@@ -1143,16 +1156,10 @@ function toggleTheme() {
 }
 
 function wire() {
-  useStoredTheme();
+  followStoredTheme(labelTheme);
   labelTheme();
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", labelTheme);
   byId("theme").addEventListener("click", toggleTheme);
-  // another tab's toggle
-  addEventListener("storage", (e) => {
-    if (e.key !== THEME_KEY && e.key !== null) return;
-    useStoredTheme();
-    labelTheme();
-  });
   byId("new-chat").addEventListener("click", () => newChat());
   byId("stop").addEventListener("click", stop);
   byId("namespace").addEventListener("click", pickNamespace);
@@ -1270,7 +1277,7 @@ async function start() {
   else newChat();
 }
 
-export { LIBRARY_CHANGED, PANEL_CLOSE, PANEL_OPEN, SETTINGS_CHANGED, caret, chatNamespace, closeOtherPanels, coverPage, element, folderPicker, libraryChanged, request, settingsChanged };
+export { LIBRARY_CHANGED, PANEL_CLOSE, PANEL_OPEN, SETTINGS_CHANGED, TOUCH, caret, chatNamespace, closeOtherPanels, element, folderPicker, forgetModelLists, libraryChanged, request, settingsChanged, showPanel };
 
 wire();
 start();

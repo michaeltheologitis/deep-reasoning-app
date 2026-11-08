@@ -1,5 +1,5 @@
 // A page's tab: what an agent chose to show, read from the app's API and drawn with the chat's own renderers. All of it is untrusted text.
-import { element, opened, renderAgent, renderAnswer, renderStep, useStoredTheme } from "./tree.js";
+import { element, followStoredTheme, opened, renderAgent, renderAnswer, renderStep } from "./tree.js";
 
 const byId = (id) => document.getElementById(id);
 
@@ -30,9 +30,8 @@ function renderBlock(block) {
 }
 
 async function start() {
-  useStoredTheme();
   // the chat's theme toggle, in another tab
-  addEventListener("storage", useStoredTheme);
+  followStoredTheme();
   const id = location.pathname.split("/").at(-1);
   try {
     const response = await fetch(`/api/pages/${id}`);
