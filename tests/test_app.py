@@ -1774,7 +1774,7 @@ NAMESPACE_REFUSALS = [
     ),
     (
         library_cell("add_namespace", "research", "repl: {type: local}\n"),
-        "repl may not be set or changed: a namespace's repl and reasoner are the user's",
+        "repl may not be set or changed: where a namespace's agents run their Python",
     ),
     (
         library_cell("add_namespace", "research", "reasoner: {type: claude_code}\n"),
@@ -2261,9 +2261,11 @@ async def test_the_worked_example_the_librarians_example_writes_runs_as_written(
             [written] = next(
                 each for each in namespaces if each["name"] == "astronomy"
             )["decompositions"]
-            question, answering = parsed(written["yaml"]).messages
+            question, *answering = parsed(written["yaml"]).messages
             # An agent in astronomy that does just as the example it was shown does.
-            plan[question.content] = [answering.content]
+            plan[question.content] = [
+                turn.content for turn in answering if turn.role == "assistant"
+            ]
             chat = await chat_in(api, "astronomy")
             events = await run_events(api, await send(api, chat, question.content))
     assert written["problems"] == []

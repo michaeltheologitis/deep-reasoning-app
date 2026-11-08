@@ -2,8 +2,10 @@ import json
 import logging
 import re
 import sqlite3
+import sys
 import threading
 import time
+import types
 from contextlib import closing
 from itertools import count
 from pathlib import Path
@@ -22,6 +24,7 @@ from deep_reasoning.app_tools import (
     BRIEF_CHARS,
     CUT_SHORT,
     EMPTY,
+    IN_FOLDER_ONLY,
     MAX_FOUND,
     MAX_TOTAL_CHARS,
     MAX_VALUE_CHARS,
@@ -31,17 +34,21 @@ from deep_reasoning.app_tools import (
     NOT_A_TOOL,
     NOT_AN_INDEX,
     NOT_FINDABLE,
+    NOT_INSTALLED,
     NOT_LOCAL,
     NOT_MARKDOWN,
     NOT_ROWS,
     NOT_SAVED,
     NOT_SHOWN,
     NOT_TEXT,
+    NOT_TURNS,
     NOT_VALUES,
+    SECRET_LIKE,
     SETS_OWN_KEYS,
     SHOWN_CHARS,
     TITLE,
     TOO_DEEP,
+    TWO_FORMS,
     build_history,
     build_library,
     build_page,
@@ -1013,6 +1020,118 @@ def test_a_decomposition_written_with_repl_placeholders_is_stored_with_the_real_
     ]
 
 
+LIGHT_YEARS = [
+    {"user": "How far is Proxima Centauri, 4.0e13 km away, in light-years?"},
+    {
+        "think": "Divide by a light-year's kilometres, and print it.",
+        "code": "light_years = 4.0e13 / 9.461e12\nprint(light_years)",
+    },
+    {"observation": "4.227882887644013"},
+    {
+        "think": "Answer from the variable.",
+        "code": 'FinalAnswer(f"About {light_years:.2f} light-years.")',
+    },
+]
+LIGHT_YEARS_MESSAGES = [
+    {"role": "user", "content": LIGHT_YEARS[0]["user"]},
+    {
+        "role": "assistant",
+        "content": (
+            "<think>Divide by a light-year's kilometres, and print it.</think>\n<repl>\n"
+            "light_years = 4.0e13 / 9.461e12\nprint(light_years)\n</repl>"
+        ),
+    },
+    {"role": "user", "content": "<observation>\n4.227882887644013\n</observation>"},
+    {
+        "role": "assistant",
+        "content": (
+            "<think>Answer from the variable.</think>\n<repl>\n"
+            'FinalAnswer(f"About {light_years:.2f} light-years.")\n</repl>'
+        ),
+    },
+]
+
+
+def test_a_worked_example_written_as_turns_is_stored_with_the_engines_tags(fresh):
+    tool = library_tool(fresh)
+    done = tool.write_decomposition("drafts", "light-years", LIGHT_YEARS)
+    [row] = own_decompositions(tool, "drafts")
+    assert (done["done"], done["name"], done["problems"]) == (
+        "added",
+        "light-years",
+        [],
+    )
+    assert "code_problems" not in done
+    assert yaml.safe_load(row["yaml"]) == {
+        "name": "light-years",
+        "messages": LIGHT_YEARS_MESSAGES,
+    }
+
+
+def test_turns_by_keyword_take_their_code_as_typed_indented_in_a_cell(fresh):
+    indented = "\n        x = 1\n        if x:\n            FinalAnswer(x)\n    "
+    turns = [LIGHT_YEARS[0], {"think": "Answer.", "code": indented}]
+    tool = library_tool(fresh)
+    tool.write_decomposition("drafts", name="indented", turns=turns)
+    [row] = own_decompositions(tool, "drafts")
+    answer = yaml.safe_load(row["yaml"])["messages"][1]["content"]
+    assert (
+        answer
+        == "<think>Answer.</think>\n<repl>\nx = 1\nif x:\n    FinalAnswer(x)\n</repl>"
+    )
+    assert row["problems"] == []
+
+
+def test_a_worked_example_written_as_turns_again_replaces_the_one_of_its_name(fresh):
+    tool = library_tool(fresh)
+    tool.write_decomposition("drafts", "light-years", LIGHT_YEARS[:2])
+    done = tool.write_decomposition("drafts", "light-years", LIGHT_YEARS)
+    [row] = own_decompositions(tool, "drafts")
+    assert (done["done"], row["problems"]) == ("replaced", [])
+
+
+@pytest.mark.parametrize(
+    ("name", "turns"),
+    [
+        ("x", "Ask, then answer."),
+        ("x", ["How far is it?"]),
+        ("x", [{"user": "Hi.", "think": "Both at once."}]),
+        ("x", [{"assistant": "Hi."}]),
+        ("x", [{"user": 3}]),
+        ("x", [{"think": "No code."}]),
+        (3, LIGHT_YEARS),
+    ],
+    ids=[
+        "not-a-list",
+        "a-turn-not-a-dict",
+        "two-shapes-in-one",
+        "an-unknown-key",
+        "not-text",
+        "a-step-without-code",
+        "a-name-not-text",
+    ],
+)
+def test_turns_the_tool_cant_read_are_refused_saying_their_shape(fresh, name, turns):
+    with pytest.raises(LibraryError, match=re.escape(NOT_TURNS)):
+        library_tool(fresh).write_decomposition("drafts", name, turns)
+    assert stored(fresh) == FRESH
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda tool: tool.write_decomposition("drafts", "x", LIGHT_YEARS, name="y"),
+        lambda tool: tool.write_decomposition("drafts", EXAMPLE, name="y"),
+        lambda tool: tool.write_decomposition("drafts", name="y"),
+    ],
+    ids=["two-names", "a-name-with-yaml", "a-name-alone"],
+)
+def test_a_write_naming_the_example_twice_or_without_turns_is_refused(fresh, call):
+    with pytest.raises(LibraryError, match=re.escape(TWO_FORMS)):
+        call(library_tool(fresh))
+    assert stored(fresh) == FRESH
+
+
 def test_a_decomposition_with_no_placeholder_tag_is_stored_as_typed(fresh):
     typed = (
         "name: count the tickets  # as typed\n"
@@ -1445,6 +1564,131 @@ def test_yaml_given_as_anything_but_text_or_a_dict_of_plain_values_is_refused(
     assert stored_namespaces(fresh) == before
 
 
+# Values shaped like keys: a third party's, as the tester typed them, and a live one's.
+WEATHER_KEY = "wk-7f3a9c21d4e84b6f"
+OWM_KEY = "3f9a1c7e5b2d4f6a8c0e1b3d5f7a9c2e"
+LIVE_KEY = "sk-live-abcdef123456"
+
+
+@pytest.mark.parametrize("method", ["add_namespace", "change_namespace"])
+@pytest.mark.parametrize(
+    ("given", "names"),
+    [
+        ({"weather_key": WEATHER_KEY}, ["weather_key"]),
+        ({"owmApiKey": OWM_KEY}, ["owmApiKey"]),
+        ({"OPENWEATHER_TOKEN": LIVE_KEY, "city": "Leeds"}, ["OPENWEATHER_TOKEN"]),
+        ({"apikey": OWM_KEY, "client_secret": LIVE_KEY}, ["apikey", "client_secret"]),
+        ({"db": {"host": "x", "Password": WEATHER_KEY}}, ["Password"]),
+        ({"api_keys": [WEATHER_KEY, OWM_KEY]}, ["api_keys"]),
+        ({"weather": {"settings": [{"token": OWM_KEY}]}}, ["token"]),
+        ({"api_key_env": LIVE_KEY}, ["api_key_env"]),
+    ],
+    ids=[
+        "snake",
+        "camel",
+        "upper",
+        "two",
+        "nested",
+        "a-list-under-one",
+        "deep",
+        "a-key-named-as-a-variable",
+    ],
+)
+def test_a_var_named_like_a_secret_holding_one_is_refused_saying_where_secrets_go(
+    fresh, method, given, names
+):
+    name = "research" if method == "add_namespace" else "drafts"
+    before = stored_namespaces(fresh)
+    refusal = SECRET_LIKE.render(field="vars", names=names)
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        getattr(library_tool(fresh), method)(name, {"vars": given})
+    assert stored_namespaces(fresh) == before
+    assert "shared" in refusal and "os.environ" in refusal
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        {"columns": [{"key": "name", "label": "Name"}, {"key": "id", "label": "ID"}]},
+        {"sort_key": "date", "primary_key": "id", "token_count": "5"},
+        {"key_dates": ["2026-01-01", "2026-01-01T12:00:00Z"]},
+        {"password_hint": "the name of my first cat"},
+        {"max_key_length": 5, "secret_santa": True, "api_key": ""},
+        {"keyboard": OWM_KEY, "monkey": WEATHER_KEY},
+        {"weather_key_env": "OWM_KEY", "api_key_env": "OWM_API_KEY_2024_ABCDEF12"},
+    ],
+    ids=[
+        "column-labels",
+        "ids-and-names",
+        "dates",
+        "words",
+        "no-text",
+        "a-word-holding-key",
+        "naming-a-variable",
+    ],
+)
+def test_a_var_that_holds_no_secret_is_written(fresh, given):
+    library_tool(fresh).change_namespace("drafts", {"vars": given})
+    assert own_fields(fresh, "drafts") == {"vars": given}
+
+
+def test_a_secret_like_var_the_user_stored_is_kept_but_never_changed(fresh):
+    with closing(open_library(fresh)) as connection:
+        change_namespace(connection, "drafts", f"vars: {{owm_key: {OWM_KEY}}}\n")
+    tool = library_tool(fresh)
+    kept = {"owm_key": OWM_KEY, "city": "Leeds"}
+    tool.change_namespace("drafts", {"vars": kept})
+    assert own_fields(fresh, "drafts") == {"vars": kept}
+    refusal = SECRET_LIKE.render(field="vars", names=["owm_key"])
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        tool.change_namespace("drafts", {"vars": {"owm_key": WEATHER_KEY}})
+    assert own_fields(fresh, "drafts") == {"vars": kept}
+
+
+def test_a_nested_secret_the_user_stored_stays_while_its_siblings_change(fresh):
+    stored_vars = {"weather": {"api_key": OWM_KEY, "city": "Leeds"}}
+    with closing(open_library(fresh)) as connection:
+        change_namespace(connection, "drafts", dump({"vars": stored_vars}))
+    tool = library_tool(fresh)
+    moved = {"weather": {"api_key": OWM_KEY, "city": "York"}}
+    tool.change_namespace("drafts", {"vars": moved})
+    assert own_fields(fresh, "drafts") == {"vars": moved}
+    refusal = SECRET_LIKE.render(field="vars", names=["api_key"])
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        tool.change_namespace(
+            "drafts", {"vars": {"weather": {"api_key": WEATHER_KEY, "city": "York"}}}
+        )
+
+
+def test_a_secret_the_user_stored_in_a_namespace_the_engine_cant_read_stays(fresh):
+    # spawn should be a list, so runs leave drafts out until it is fixed.
+    left_out = f"vars: {{owm_key: {OWM_KEY}}}\nspawn: 3\n"
+    with closing(open_library(fresh)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("drafts", left_out))
+    fixed = {"vars": {"owm_key": OWM_KEY}}
+    library_tool(fresh).change_namespace("drafts", fixed, replace=True)
+    assert own_fields(fresh, "drafts") == fixed
+
+
+def test_a_tool_setting_named_like_a_secret_holding_one_is_refused(fresh):
+    refusal = SECRET_LIKE.render(field="settings", names=["api_token"])
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        library_tool(fresh).write_tool(
+            "counter", WORD_COUNT, "build", {"api_token": LIVE_KEY, "sep": ","}
+        )
+    assert stored_tools(fresh) == []
+
+
+def test_a_tool_setting_the_user_stored_is_kept_when_its_tool_is_written_again(fresh):
+    block = {"factory": "build", "factory_from": "counter.py", "api_token": LIVE_KEY}
+    with closing(open_library(fresh)) as connection, writing(connection):
+        connection.execute(UPSERT_TOOL, ("counter", dump(block), WORD_COUNT))
+    library_tool(fresh).write_tool(
+        "counter", SPLIT_COUNT, "build", {"api_token": LIVE_KEY}
+    )
+    assert stored_tools(fresh) == [("counter", dump(block), SPLIT_COUNT)]
+
+
 def test_a_decomposition_whose_code_is_not_python_says_so(fresh):
     # As a cell's string without r writes an escape the example's code held: a line break.
     broken = (
@@ -1512,6 +1756,61 @@ def test_a_claude_code_tool_the_user_granted_may_be_kept_or_taken_out(coder, cha
         change_namespace(connection, "drafts", "tools: [coder]\n")
     assert library_tool(coder).change_namespace("drafts", changed)["done"] == "changed"
     assert own_fields(coder, "drafts") == yaml.safe_load(changed)
+
+
+@pytest.mark.parametrize(
+    ("method", "name", "where"),
+    [
+        (
+            "add_namespace",
+            "research",
+            "in the Library panel: Namespaces → + Add namespace, set in research's YAML",
+        ),
+        (
+            "change_namespace",
+            "drafts",
+            "in the Library panel: Namespaces → drafts → Edit YAML",
+        ),
+    ],
+    ids=["add", "change"],
+)
+@pytest.mark.parametrize(
+    ("given", "says"),
+    [
+        (
+            {"reasoner": {"type": "claude_code"}},
+            [
+                (
+                    "reasoner may not be set or changed: reasoner: claude_code runs a"
+                    " namespace's agents on Claude Code, billed to the user's Claude"
+                    " subscription,"
+                ),
+            ],
+        ),
+        ({"repl": {"type": "daytona_sandbox"}}, ["repl may not be set or changed:"]),
+    ],
+    ids=["reasoner", "repl"],
+)
+def test_a_locked_field_is_refused_saying_why_and_where_the_user_sets_it(
+    fresh, method, name, where, given, says
+):
+    with pytest.raises(LibraryError) as refused:
+        getattr(library_tool(fresh), method)(name, given)
+    for words in [*says, where]:
+        assert words in str(refused.value)
+    assert "import" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("method", "name"), [("add_namespace", "research"), ("change_namespace", "drafts")]
+)
+@pytest.mark.parametrize(
+    "given",
+    [{"repl": {"type": "daytona_sandbox"}}, {"reasoner": {"type": "claude_code"}}],
+)
+def test_a_chat_that_may_not_write_hears_so_before_any_lock(fresh, method, name, given):
+    with pytest.raises(LibraryError, match=NOT_THIS_CHAT):
+        getattr(library_tool(fresh, "drafts"), method)(name, given)
 
 
 @pytest.mark.parametrize(
@@ -1952,7 +2251,51 @@ def test_a_tool_needing_what_only_this_chats_folder_has_doesnt_build(
     with pytest.raises(LibraryError, match=re.escape(refusal)) as refused:
         library_tool(fresh).write_tool("counter", source, "build")
     assert "doesn't build, so it wasn't written" in str(refused.value)
+    assert "uv run --with" not in str(refused.value)
     assert stored_tools(fresh) == []
+
+
+def test_a_tool_needing_a_package_the_app_lacks_says_how_the_user_adds_it(fresh):
+    needs = "import nowhere_at_all.stats\n" + WORD_COUNT
+    with pytest.raises(LibraryError) as refused:
+        library_tool(fresh).write_tool("counter", needs, "build")
+    assert str(refused.value).endswith(NOT_INSTALLED.render(module="nowhere_at_all"))
+    assert "uv run --with nowhere_at_all deep-reasoning" in str(refused.value)
+    assert stored_tools(fresh) == []
+
+
+def test_a_module_only_this_chats_folder_has_is_said_to_be_there(
+    fresh, tmp_path, monkeypatch
+):
+    folder = tmp_path / "chat-folder"
+    folder.mkdir()
+    (folder / "helper.py").write_text("def count(text):\n    return len(text)\n")
+    monkeypatch.chdir(folder)
+    monkeypatch.syspath_prepend(str(folder))
+    with pytest.raises(LibraryError) as refused:
+        library_tool(fresh).write_tool("counter", HELPED, "build")
+    assert str(refused.value).endswith(IN_FOLDER_ONLY.render(module="helper"))
+
+
+def test_a_module_an_installed_package_lacks_gets_no_note(fresh):
+    with pytest.raises(LibraryError) as refused:
+        library_tool(fresh).write_tool(
+            "counter", "import yaml.nope\n" + WORD_COUNT, "build"
+        )
+    said = str(refused.value)
+    assert said.endswith("No module named 'yaml.nope'")
+    assert "folder only" not in said and "uv run --with" not in said
+
+
+def test_a_module_the_worker_cant_look_up_still_refuses_the_tool_in_words(
+    fresh, monkeypatch
+):
+    # A module made in code has no spec, and looking it up raises ValueError.
+    monkeypatch.setitem(sys.modules, "made_in_code", types.ModuleType("made_in_code"))
+    sys.modules["made_in_code"].__spec__ = None
+    needs = "import made_in_code\n" + WORD_COUNT
+    with pytest.raises(LibraryError, match="No module named 'made_in_code'"):
+        library_tool(fresh).write_tool("counter", needs, "build")
 
 
 def stored_as(library, name, source):
@@ -2142,7 +2485,8 @@ def test_changes_list_this_chats_library_changes_in_its_messages(library):
     plant(library, CHAT, namespaces)
     plant(library, ANOTHER_CHAT, recorded("librarian"))
     plant(library, CHAT, tools)
-    changes = library_tool(library).changes()
+    tool = library_tool(library)
+    changes = tool.changes(1) + tool.changes(2)
     assert [(each["turn"], each["what"], each["name"]) for each in changes] == [
         (1, "namespace", "research"),
         (1, "namespace", "research"),
@@ -2178,14 +2522,62 @@ def test_changes_list_this_chats_library_changes_in_its_messages(library):
         "factory": "build",
         "settings": {"sep": ","},
     }
-    assert library_tool(library).changes(2) == changes[2:]
+
+
+def test_changes_list_each_change_in_brief_what_where_and_in_which_message(library):
+    open_library(library).close()
+    plant(library, CHAT, recorded("namespaces"))
+    plant(library, CHAT, recorded("tools"))
+    first = {"turn": 1, "message": "Set up research."}
+    second = {"turn": 2, "message": "Make a word counter."}
+    research = {"what": "namespace", "namespace": "research", "name": "research"}
+    word_count = {"what": "tool", "name": "word_count"}
+    counting = {"what": "namespace", "namespace": "counting", "name": "counting"}
+    tool = library_tool(library)
+    assert tool.changes() == [
+        first | {"done": "added"} | research | {"fields": ["system_suffix", "vars"]},
+        first | {"done": "changed"} | research | {"fields": ["system_suffix"]},
+        second | {"done": "added"} | word_count,
+        second | {"done": "added"} | counting | {"fields": ["tools"]},
+        second | {"done": "changed"} | word_count,
+    ]
+    assert [(each["turn"], each["name"]) for each in tool.changes(2)] == [
+        (2, "word_count"),
+        (2, "counting"),
+        (2, "word_count"),
+    ]
+
+
+def test_changes_of_a_message_are_whole_as_an_older_librarys_undo_example_reads_them(
+    library,
+):
+    open_library(library).close()
+    plant(library, CHAT, recorded("namespaces"))
+    # As the undo example an older Library was seeded with writes its before back.
+    [_, changed] = library_tool(library).changes(1)
+    undo = {field: value["before"] for field, value in changed["changed"].items()}
+    assert undo == {"system_suffix": "Cite a source for every claim.\n"}
+    assert changed["after"] == RESEARCH_CHANGED
+
+
+def test_changes_in_brief_cut_a_long_message_short(fresh):
+    asked = "Set up research. " * 100
+    added = {"kind": "library.change", "what": "namespace", "name": "research"}
+    added |= {"namespace": "research", "before": None, "after": "tools: [llm]\n"}
+    start, *rest = crafted(added)
+    plant(fresh, CHAT, [start | {"prompt": asked}, *rest])
+    [brief] = library_tool(fresh).changes()
+    [whole] = library_tool(fresh).changes(1)
+    cut_at = BRIEF_CHARS
+    assert brief["message"] == f"{asked[:cut_at]}…(+{len(asked) - cut_at:,} chars)"
+    assert whole["message"] == asked
 
 
 def test_a_tools_before_written_back_restores_it_as_it_was(library):
     open_library(library).close()
     plant(library, CHAT, recorded("tools"))
     tool = library_tool(library)
-    replaced = tool.changes()[-1]
+    replaced = tool.changes(1)[-1]
     tool.write_tool("word_count", **replaced["before"])
     assert stored_tools(library) == [
         ("word_count", "factory: build\nfactory_from: word_count.py\n", WORD_COUNT)
@@ -2196,7 +2588,7 @@ def test_a_logged_tool_change_that_is_no_tools_row_reads_as_it_was_logged(librar
     open_library(library).close()
     forged = {"kind": "library.change", "what": "tool", "name": "x", "before": None}
     plant(library, CHAT, crafted(forged | {"after": "not a row"}))
-    [change] = library_tool(library).changes()
+    [change] = library_tool(library).changes(1)
     assert (change["before"], change["after"]) == (None, "not a row")
 
 
@@ -2206,7 +2598,7 @@ def test_changes_in_a_chats_first_message_list_its_own_so_far(fresh):
     added = {"kind": "library.change", "what": "namespace", "name": "research"}
     added |= {"namespace": "research", "before": None, "after": "tools: [llm]\n"}
     plant(fresh, CHAT, crafted(added)[:-1])
-    [change] = library_tool(fresh).changes()
+    [change] = library_tool(fresh).changes(1)
     assert (change["turn"], change["changed"]) == (
         1,
         {"tools": {"before": None, "after": ["llm"]}},
@@ -2228,7 +2620,7 @@ def test_a_logged_change_nested_too_deep_to_read_still_lists(library):
     forged |= {"name": "x", "before": None, "after": deep}
     tool = {"kind": "library.change", "what": "tool", "name": "y", "before": None}
     plant(library, CHAT, crafted(forged, tool | {"after": f"{deep}\n# y.py\n"}))
-    namespace, tool = library_tool(library).changes()
+    namespace, tool = library_tool(library).changes(1)
     assert (namespace["changed"], tool["after"]) == ({}, f"{deep}\n# y.py\n")
 
 
@@ -2240,12 +2632,12 @@ def test_a_logged_tool_without_a_factory_is_built_by_its_name(library):
         CHAT,
         crafted(logged | {"after": "factory_from: y.py\n# y.py\nx = 1\n"}),
     )
-    [change] = library_tool(library).changes()
+    [change] = library_tool(library).changes(1)
     assert change["after"] == {"source": "x = 1\n", "factory": "y", "settings": None}
 
 
 def test_the_seeded_worked_example_written_back_stays_as_it_was(fresh):
-    [text] = [each for each in LIBRARIANS_EXAMPLES if "[repl]" in each]
+    [text] = [each for each in LIBRARIANS_EXAMPLES if "turns = [" in each]
     tool = library_tool(fresh)
     done = tool.write_decomposition(LIBRARIAN, text)
     [row] = [
