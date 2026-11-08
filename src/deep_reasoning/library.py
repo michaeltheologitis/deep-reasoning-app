@@ -125,6 +125,7 @@ LIBRARY_TOOL = "library"
 FRESH_LIBRARIAN = {"tools": [LIBRARY_TOOL]}
 # A specialist that root hands questions about earlier messages to.
 HISTORIAN = "historian"
+HISTORY_TOOL = "history"
 HISTORIAN_SUFFIX = """\
 You are the historian: you answer questions about this chat's earlier messages (how or \
 why an answer was reached, what an agent did, what went wrong) from what was recorded. \
@@ -142,7 +143,7 @@ Never write the page's link: the chat shows it under your answer.
 """
 # A leaf: copying root's hand-off, the last cell of its own conversation, can't nest one.
 FRESH_HISTORIAN = {
-    "tools": ["history", "page"],
+    "tools": [HISTORY_TOOL, "page"],
     "spawn": [],
     "system_suffix": HISTORIAN_SUFFIX,
 }
@@ -173,16 +174,29 @@ CANT_REACH = jinja2.Template(
     "{% else %}this namespace's spawn list leaves it out{% endif %}",
     undefined=jinja2.StrictUndefined,
 )
-# What a namespace that can't make a worked example's hand-off is shown in its place.
+# What a namespace that can't make a worked example's hand-off is shown in its place, by
+# kind: "here" when it is the target or under it, so it answers itself; "record" when only
+# the target reads the chat's record, so it can't; else it answers itself if it can.
 CANT_HAND_OFF = jinja2.Template(
     """\
-<think>Questions like this go to the {{ target }} namespace, but {{ why }}, so I can't hand \
-it off. Redoing the work, guessing, or handing it to another namespace would answer \
-something else: say I can't.</think>
+{% if kind == "here" %}<think>Questions like this are answered in the {{ target }} \
+namespace, where I am: I answer it here and never hand it on\
+{% if record %}, reading the record with history first{% endif %}.</think>
+<repl>
+{% if record %}print(history.turns()){% else %}print(ctx.task){% endif %}
+</repl>
+{% elif kind == "record" %}<think>Questions like this are answered from this chat's \
+record, which the {{ target }} namespace reads, but {{ why }}. Redoing the work, guessing, \
+or handing it to another namespace would answer something else: say I can't.</think>
 <repl>
 FinalAnswer({{ answer }})
 </repl>
-""",
+{% else %}<think>Questions like this go to the {{ target }} namespace, but {{ why }}, so I \
+can't hand it off: I answer it myself if I can, and say so if I can't.</think>
+<repl>
+print(ctx.task)
+</repl>
+{% endif %}""",
     undefined=jinja2.StrictUndefined,
 )
 CANT_ANSWER = jinja2.Template(
@@ -190,6 +204,12 @@ CANT_ANSWER = jinja2.Template(
     "{{ why }}.",
     undefined=jinja2.StrictUndefined,
 )
+# What the panel says such a namespace's agents do with those questions, by kind.
+INSTEAD = {
+    "here": "answer themselves",
+    "record": "say they can't answer",
+    "other": "try themselves",
+}
 UNTOUCHED_ROOT = (
     "name = :root AND yaml = :empty"
     " AND NOT EXISTS (SELECT 1 FROM decompositions WHERE namespace = :root)"
@@ -664,8 +684,9 @@ def granted(namespaces):
 def handed_to(decomposition):
     """The namespace a worked example hands the whole question to: its last turn's cell
     ending FinalAnswer(subagent(..., namespace="…")) or switch_namespace("…", …), as root's
-    hand-offs to the historian do. None for any other ending, such as a cell that delegates
-    a part and answers with more, or a name no namespace could have."""
+    hand-offs to the historian do. Only that last statement is read: a subagent call
+    before it, or one whose answer the cell works on, delegates a part, which is the
+    user's to keep. None too for a name no namespace could have."""
     last = decomposition.messages[-1]
     if last.role != "assistant":
         return None
@@ -703,11 +724,19 @@ def keyword_value(call, name):
     return next((each.value for each in call.keywords if each.arg == name), None)
 
 
+def hand_off_targets(config):
+    """Where each stored worked example hands off, by its namespace and name: parsed
+    once, for the namespaces that inherit it to look up."""
+    return {
+        (name, example.name): handed_to(example)
+        for name, namespace in config.namespaces.items()
+        for example in namespace.decompositions
+    }
+
+
 def unreachable(registry, namespace, target):
-    """Why *namespace*'s agents can't hand a question to namespace *target*; None when
-    they can, or when *target* is *namespace*, whose agents are where it would go."""
-    if target == namespace:
-        return None
+    """Why *namespace*'s agents can't hand a question to namespace *target*, as the
+    engine's check_spawn decides; None when they can."""
     if target not in registry.names:
         return CANT_REACH.render(gone=True, target=target)
     try:
@@ -717,22 +746,46 @@ def unreachable(registry, namespace, target):
     return None
 
 
-def impossible_hand_offs(registry, namespace):
+def hand_off_kind(registry, namespace, target):
+    """What *namespace*'s agents do with a question they can't hand to *target*:
+    "here" when it is *target* or under it, "record" when *target* reads the chat's
+    record, which they can't, else "other"."""
+    if namespace == target or namespace.startswith(f"{target}."):
+        return "here"
+    if reads_record(registry, target):
+        return "record"
+    return "other"
+
+
+def reads_record(registry, namespace):
+    if namespace not in registry.names:
+        return namespace == HISTORIAN
+    return HISTORY_TOOL in registry.resolve(namespace).tools
+
+
+def impossible_hand_offs(registry, namespace, targets):
     """Each worked example *namespace* is shown that hands off where its agents can't,
-    with where to and why not."""
+    with where to and why not; *targets* as hand_off_targets() gives them."""
+    resolved = registry.resolve(namespace)
     found = []
-    for example in registry.resolve(namespace).decompositions:
-        target = handed_to(example)
+    for example in resolved.decompositions:
+        level = resolved.sources.decompositions[example.name]
+        target = targets.get((level, example.name))
         why = target and unreachable(registry, namespace, target)
         if why:
             found.append((example, target, why))
     return found
 
 
-def saying_so(example, target, why):
-    """*example* with its hand-off, which its namespace can't make, replaced by saying so."""
-    answer = CANT_ANSWER.render(target=target, why=why)
-    reply = CANT_HAND_OFF.render(target=target, why=why, answer=repr(answer))
+def saying_so(registry, namespace, example, target, why):
+    """*example* with its hand-off, which *namespace* can't make, replaced by what its
+    agents do instead."""
+    kind = hand_off_kind(registry, namespace, target)
+    answer = repr(CANT_ANSWER.render(target=target, why=why))
+    record = reads_record(registry, target)
+    reply = CANT_HAND_OFF.render(
+        kind=kind, target=target, why=why, answer=answer, record=record
+    )
     messages = example.model_dump()["messages"][:-1]
     return {
         "name": example.name,
@@ -742,17 +795,20 @@ def saying_so(example, target, why):
 
 def without_impossible_hand_offs(config):
     """*config* with each worked example that hands off where its namespace can't (one its
-    spawn list leaves out, or one there is no longer) replaced, in that namespace, by one
-    that says so: copying the hand-off, its agent was refused, then handed the question to
-    another namespace, which inherits the same example, until the depth ran out. Every
-    namespace shown an example of a name replaced anywhere is given its own, as it should
-    see it, so one below that can make the hand-off sees it again."""
+    spawn list leaves out, or one there is no longer) replaced, in that namespace, by what
+    its agents do instead: copying the hand-off, the agent was refused, then handed the
+    question to another namespace, which inherits the same example, until the depth ran
+    out. A namespace holds an example only where what it inherits differs from what it
+    should see: the replacement, or the original back below one that can't."""
     try:
-        registry = build_namespace_registry(V2Config.model_validate(config | A_MODEL))
-        found = {
+        run, registry = run_config_and_registry(config)
+        targets = hand_off_targets(run)
+        swaps = {
             name: {
-                example.name: saying_so(example, target, why)
-                for example, target, why in impossible_hand_offs(registry, name)
+                example.name: saying_so(registry, name, example, target, why)
+                for example, target, why in impossible_hand_offs(
+                    registry, name, targets
+                )
             }
             for name in registry.names
         }
@@ -760,16 +816,33 @@ def without_impossible_hand_offs(config):
         # The worker refuses such a Library itself, in its own words.
         log.warning("library.hand_offs_not_checked", error=str(error))
         return config
-    replaced = {name for each in found.values() for name in each}
-    for name, fields in config["namespaces"].items():
-        own = {each["name"]: each for each in fields["decompositions"]}
-        for example in registry.resolve(name).decompositions:
-            if example.name in replaced:
-                own[example.name] = (
-                    found[name].get(example.name) or example.model_dump()
-                )
-        fields["decompositions"] = list(own.values())
+    swapped = {example for each in swaps.values() for example in each}
+    shown = {}
+    for name in in_chain_order(registry):
+        chain = registry.chain(name)
+        above = shown[chain[-2]] if len(chain) > 1 else {}
+        shown[name] = {
+            example.name: swaps[name].get(example.name) or example.model_dump()
+            for example in registry.resolve(name).decompositions
+            if example.name in swapped
+        }
+        fields = config["namespaces"].get(name)
+        if fields is not None:
+            own = {each["name"]: each for each in fields["decompositions"]}
+            own |= overrides(own, above, shown[name], swaps[name])
+            fields["decompositions"] = list(own.values())
     return config
+
+
+def overrides(own, above, shown, swaps):
+    """What a namespace holding the examples *own* must hold itself to show its agents
+    *shown*, when the namespace above it shows *above*: each one it replaces, and each
+    other one it doesn't hold that differs from above's."""
+    return {
+        name: example
+        for name, example in shown.items()
+        if (name in swaps if name in own else above.get(name) != example)
+    }
 
 
 def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
@@ -839,8 +912,14 @@ def check_namespace(connection, name):
 def config_and_registry(connection):
     """The Library as a run's config, with the llm tool a model brings, and its namespaces
     as the engine resolves them."""
-    config = V2Config.model_validate(stored_config(connection) | A_MODEL)
-    return config, build_namespace_registry(config)
+    return run_config_and_registry(stored_config(connection))
+
+
+def run_config_and_registry(config):
+    """*config*, a plain dict in the engine's shape, as a run's config with the llm tool a
+    model brings, and its namespaces as the engine resolves them."""
+    run = V2Config.model_validate(config | A_MODEL)
+    return run, build_namespace_registry(run)
 
 
 def check(connection):
@@ -1563,7 +1642,7 @@ def backbone(resolved, run):
     return {"value": "chat", "source": "the run's default"}
 
 
-def namespace_fields(registry, name, run):
+def namespace_fields(registry, name, run, targets):
     """Each field of namespace *name* as the engine resolves it, with where it comes from."""
     resolved = registry.resolve(name)
     sources = resolved.sources
@@ -1602,7 +1681,8 @@ def namespace_fields(registry, name, run):
         {"label": "Variables", "items": variables},
         {"label": "System suffix", "items": suffixes},
     ]
-    cant = Counter((to, why) for _, to, why in impossible_hand_offs(registry, name))
+    found = impossible_hand_offs(registry, name, targets)
+    cant = Counter((to, why) for _, to, why in found)
     if cant:
         items = [
             cant_hand_off(registry, name, to, why, how_many)
@@ -1615,8 +1695,9 @@ def namespace_fields(registry, name, run):
 def cant_hand_off(registry, name, target, why, how_many):
     """What the panel says of the *how_many* worked examples namespace *name* is shown
     that hand off to *target*, where its agents can't."""
+    instead = INSTEAD[hand_off_kind(registry, name, target)]
     value = (
-        f"none to {target}: {why}. Its agents say they can't answer what"
+        f"none to {target}: {why}. Its agents {instead} what"
         f" {count(how_many, 'worked example')} would hand there."
     )
     if target not in registry.names:
@@ -1731,16 +1812,13 @@ def namespace_rows(connection, config, registry):
     rows = connection.execute("SELECT name, yaml FROM namespaces")
     own = {name: own_yaml(text) for name, text in rows}
     names = template_names(config)
-    handed = Counter(
-        target
-        for name, namespace in config.namespaces.items()
-        for target in hand_offs_from(registry, name, namespace.decompositions)
-    )
+    targets = hand_off_targets(config)
+    handed = Counter(hand_offs_made(registry, targets))
     return [
         {
             "name": name,
             "depth": len(registry.chain(name)) - 1,
-            "fields": namespace_fields(registry, name, config),
+            "fields": namespace_fields(registry, name, config, targets),
             "decompositions": checked(
                 decompositions[name], config.namespaces.get(name), names
             ),
@@ -1751,11 +1829,11 @@ def namespace_rows(connection, config, registry):
     ]
 
 
-def hand_offs_from(registry, namespace, decompositions):
-    """Where each of *namespace*'s own *decompositions* that its agents can make hands
-    off, outside *namespace* and the namespaces under it: what a Delete there warns of."""
-    for example in decompositions:
-        target = handed_to(example)
+def hand_offs_made(registry, targets):
+    """Where each stored worked example whose namespace can make its hand-off hands off,
+    unless it is stored in the target or under it, which go with the target: what a
+    Delete of the target warns of. *targets* as hand_off_targets() gives them."""
+    for (namespace, _), target in targets.items():
         if target is None or namespace == target or namespace.startswith(f"{target}."):
             continue
         if unreachable(registry, namespace, target) is None:

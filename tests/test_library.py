@@ -208,16 +208,24 @@ def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_mess
         assert "as written (ctx.task, never reworded)" in example.messages[-1].content
 
 
-def shown_hand_offs(library, tmp_path):
-    """Each namespace's worked examples as a run of it sees them: for each, the code of
-    its last turn."""
+def last_turns(library, tmp_path):
+    """Each namespace's worked examples as a run of it sees them: for each, its last
+    turn."""
     registry = registry_of(library, tmp_path)
     return {
         name: {
-            each.name: running_code(each.messages[-1].content)
+            each.name: each.messages[-1].content
             for each in registry.resolve(name).decompositions
         }
         for name in registry.names
+    }
+
+
+def shown_hand_offs(library, tmp_path):
+    """last_turns(), each as the code the engine runs from it."""
+    return {
+        name: {example: running_code(turn) for example, turn in turns.items()}
+        for name, turns in last_turns(library, tmp_path).items()
     }
 
 
@@ -267,17 +275,22 @@ def test_a_namespace_that_may_not_spawn_into_the_historian_says_it_cant_in_place
         assert hand_offs_field(rows[name]) is None
 
 
-def test_a_historian_with_no_examples_of_its_own_is_shown_roots_hand_offs_as_they_are(
+def test_a_historian_with_no_examples_of_its_own_reads_the_record_in_place_of_handing_off(
     library, tmp_path
 ):
-    # As a Library whose historian was added without them may be: it is where they send
-    # the question, so they say nothing it can't do.
+    # As a Library whose historian was added without them may be: its spawn: [] refuses
+    # a spawn into itself too, and it is where the questions go.
     with closing(open_library(library)) as connection, writing(connection):
         connection.execute(
             "DELETE FROM decompositions WHERE namespace = ?", (HISTORIAN,)
         )
-    assert set(shown_hand_offs(library, tmp_path)[HISTORIAN].values()) == {HAND_OFF}
-    assert hand_offs_field(panel_rows(library)[HISTORIAN]) is None
+    turns = last_turns(library, tmp_path)[HISTORIAN]
+    assert list(turns) == [each.name for each in HAND_OFFS]
+    for turn in turns.values():
+        assert running_code(turn) == "print(history.turns())"
+        assert "I answer it here and never hand it on" in turn
+    [item] = hand_offs_field(panel_rows(library)[HISTORIAN])
+    assert "Its agents answer themselves what 5 worked examples" in item["value"]
 
 
 def test_with_the_historian_deleted_no_namespace_hands_off_to_it(library, tmp_path):
@@ -341,7 +354,7 @@ def test_a_worked_example_hands_off_only_the_whole_question_to_a_named_namespace
     assert handed_to(parsed(ending_in("ending", code))) == target
 
 
-def test_a_namespace_that_may_not_switch_to_another_says_it_cant_and_a_partial_delegation_stays(
+def test_a_namespace_that_may_not_switch_to_another_answers_itself_and_a_partial_delegation_stays(
     library, tmp_path
 ):
     with closing(open_library(library)) as connection:
@@ -349,13 +362,43 @@ def test_a_namespace_that_may_not_switch_to_another_says_it_cant_and_a_partial_d
         add_namespace(connection, "trips", "spawn: []\n")
         add_decomposition(connection, ROOT, ending_in("switching", SWITCHING))
         add_decomposition(connection, ROOT, ending_in("partial", PARTIAL))
-    shown = shown_hand_offs(library, tmp_path)
-    assert shown[ROOT]["switching"] == SWITCHING
-    assert (
-        "law namespace, and this namespace's spawn list leaves it out"
-        in shown["trips"]["switching"]
-    )
-    assert shown["trips"]["partial"] == shown[ROOT]["partial"]
+    turns = last_turns(library, tmp_path)
+    assert running_code(turns[ROOT]["switching"]) == SWITCHING
+    # law doesn't read the record, so trips answers what it can itself.
+    switching = turns["trips"]["switching"]
+    assert running_code(switching) == "print(ctx.task)"
+    assert "I answer it myself if I can, and say so if I can't" in switching
+    assert turns["trips"]["partial"] == turns[ROOT]["partial"]
+
+
+def test_a_run_config_holds_an_example_only_where_what_a_namespace_inherits_differs(
+    library, tmp_path
+):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "trips", "spawn: [trips]\n")
+        add_namespace(connection, "trips.hotels", "")
+        add_namespace(connection, "trips.with_history", "spawn: [historian]\n")
+    namespaces = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)[
+        "namespaces"
+    ]
+    held = {
+        name: [each["name"] for each in fields["decompositions"]]
+        for name, fields in namespaces.items()
+    }
+    hand_offs = [each.name for each in HAND_OFFS]
+    # root holds its own; trips the replacements, which trips.hotels inherits as they
+    # are; trips.with_history, which can hand off, the originals back.
+    assert held == {
+        ROOT: hand_offs,
+        HISTORIAN: [each.name for each in HISTORIANS],
+        LIBRARIAN: [],
+        "trips": hand_offs,
+        "trips.hotels": [],
+        "trips.with_history": hand_offs,
+    }
+    assert namespaces["trips.with_history"]["decompositions"] == [
+        each.model_dump() for each in HAND_OFFS
+    ]
 
 
 def test_deleting_a_namespace_warns_of_the_hand_offs_to_it_that_could_be_made(library):
