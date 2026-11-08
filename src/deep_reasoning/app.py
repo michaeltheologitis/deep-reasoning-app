@@ -52,7 +52,6 @@ from deep_reasoning.library import (
     built_grants,
     change_namespace,
     check_namespace,
-    config_and_registry,
     default_namespace,
     delete_decomposition,
     delete_namespace,
@@ -60,7 +59,7 @@ from deep_reasoning.library import (
     delete_tool,
     edit_decomposition,
     engine_config,
-    in_chain_order,
+    menu_of,
     open_library,
     panel,
     read_namespaces,
@@ -264,13 +263,11 @@ def create_app(library, home):
             return library_panel(connection)
 
     # What the namespace menu under the message box lists, lighter than the whole panel:
-    # each the engine reads, which a chat may run in, as the panel's rows say (usable).
+    # each namespace, and whether a chat may run in it, as the panel's rows say (usable).
     @app.get("/api/namespaces")
     def namespace_menu():
         with closing(open_library(library)) as connection, reading(connection):
-            config, registry = config_and_registry(connection)
-        names = [{"name": name, "usable": True} for name in in_chain_order(registry)]
-        return {"namespaces": names, "default_namespace": config.entry_namespace}
+            return menu_of(connection)
 
     def built_first(name, yaml, adding, was=NOT_OPENED):
         """The write's *allowed* for namespace *name* as its YAML *yaml* makes it, once

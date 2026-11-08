@@ -203,17 +203,18 @@ def namespaces(client):
     }
 
 
-def test_the_namespace_menu_reads_the_panels_namespaces_and_default(client):
+def test_the_namespace_menu_reads_the_panels_namespaces_and_default(client, library):
+    plant_row(library, "namespaces", ("broken", "tools: 5\n"))
     panel = client.get("/api/library").json()
     menu = client.get("/api/namespaces").json()
     assert menu == {
         "namespaces": [
-            {"name": each["name"], "usable": True}
+            {"name": each["name"], "usable": each["usable"]}
             for each in panel["namespaces"]
-            if each["usable"]
         ],
         "default_namespace": panel["default_namespace"],
     }
+    assert {"name": "broken", "usable": False} in menu["namespaces"]
 
 
 def field(namespace, label):
