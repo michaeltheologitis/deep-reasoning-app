@@ -16,6 +16,7 @@ from urllib.parse import urljoin
 import httpx
 import pytest
 import yaml
+from conftest import CONFIGS
 from deep_reasoner.v2.agent import DEFAULT_EXAMPLE_FENCE
 from fake_model import (
     ASKED,
@@ -67,6 +68,7 @@ from deep_reasoning.library import (
     SPAWN_LINE,
     TOO_LONG_ROW,
     UNREAD_DECOMPOSITION,
+    UNRENDERED_DECOMPOSITION,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
@@ -765,7 +767,7 @@ async def test_a_run_gets_the_librarys_tools_in_a_folder_of_its_own(
     waitlist, library, library_on, connect, data
 ):
     with closing(open_library(library)) as connection:
-        import_config(connection, waitlist)
+        import_config(connection, waitlist, within=CONFIGS)
     plan = {"Join.": [repl("FinalAnswer(waitlist.join('ada', 'CS101'))")]}
     with FakeOpenAI(scripted(plan)) as fake:
         async with connect(library_on(fake)) as api:
@@ -817,13 +819,14 @@ async def ask_plainly(library, connect):
 @pytest.mark.parametrize(
     ("template", "why"),
     [
-        (PROBES["through a jinja global"], "access to attribute '__init__' of 'type'"),
-        (PROBES["through the task alone"], "access to attribute '__class__' of 'str'"),
-        ("{% include 'x.html' %}", "x.html"),
+        (PROBES["through a jinja global"], "reaches into Python internals (__name__)"),
+        (PROBES["through the task alone"], "reaches into Python internals (__name__)"),
+        ("{{ task.__class__.__mro__ }}", "reaches into Python internals (__mro__)"),
+        ("{% include 'x.html' %}", "includes another template"),
     ],
-    ids=[*PROBES, "including another template"],
+    ids=[*PROBES, "through the task's classes", "including another template"],
 )
-async def test_a_shared_files_worked_example_no_run_renders_fails_the_run_naming_it(
+async def test_a_shared_files_worked_example_no_run_renders_is_left_out_so_runs_answer(
     template, why, library_on, connect
 ):
     example = {
@@ -837,13 +840,14 @@ async def test_a_shared_files_worked_example_no_run_renders_fails_the_run_naming
         library = library_on(fake)
         stored(library, UPSERT_DECOMPOSITION, "root", "innocent", dump(example))
         events = await ask_plainly(library, connect)
-    end = events[-1]
-    assert end["outcome"] == "failed"
-    assert end["detail"].startswith(
-        "ValueError: decomposition 'innocent' in namespace 'root' could not be"
-        f" rendered: {why}"
-    )
-    assert fake.calls == []
+        async with connect(library) as api:
+            shown = (await api.get("/api/library")).json()
+    assert events[-1]["outcome"] == "answered", events[-1]
+    assert not any("Example:" in each["content"] for each in fake.calls[0].messages)
+    [root, *_] = shown["namespaces"]
+    [heading, problem] = by_name(root["decompositions"])["innocent"]["problems"]
+    assert heading == UNRENDERED_DECOMPOSITION
+    assert problem.startswith("Turn 1 (user), line 1:") and why in problem
 
 
 @pytest.mark.anyio
@@ -3663,6 +3667,19 @@ def past_the_limit(start):
     return start + "A" * (MAX_YAML_CHARS + 1 - len(start))
 
 
+def answering_with(text):
+    """A worked example's YAML whose assistant turn holds *text* before its cell."""
+    turn = f"<think>walk</think>\n{text}\n{repl('FinalAnswer(1)')}"
+    example = {
+        "name": "evil",
+        "messages": [
+            {"role": "user", "content": "Count them."},
+            {"role": "assistant", "content": turn},
+        ],
+    }
+    return dump(example)
+
+
 NOT_AN_INTEGER = "max_iter: Input should be a valid integer"
 # Rows a shared file may hold that no version of the app writes, as (table, row, why the
 # panel says it is left out).
@@ -3687,6 +3704,11 @@ UNREADABLE_ROWS = {
         (ROOT, "huge", past_the_limit("name: huge\nmessages: [{role: user, content: ")),
         TOO_LONG_ROW,
     ),
+    "a-decomposition-no-run-renders": (
+        "decompositions",
+        (ROOT, "evil", answering_with("The class is {{ task.__class__.__mro__ }}.")),
+        "a run refuses",
+    ),
     "a-decomposition-whose-yaml-isnt-text": (
         "decompositions",
         (ROOT, "bytes", b"name: bytes\nmessages: [{role: user, content: hi}]\n"),
@@ -3702,6 +3724,29 @@ UNREADABLE_ROWS = {
         ("gone.child", ""),
         "is not in the Library.",
     ),
+    **{
+        f"a-namespace-named-{like}": (
+            "namespaces",
+            (name, "system_suffix: Answer as root.\n"),
+            f"Its name, {json.dumps(ascii(name))[1:-1]}, {why}, so it could pass for",
+        )
+        for like, name, why in [
+            ("root-capitalised", "Root", "reads as root"),
+            *(
+                (like, name, f"holds characters a saved name can't (U+{ord(odd):04X})")
+                for like, name, odd in [
+                    ("with-a-cyrillic-o", "r\u043eot", "\u043e"),
+                    ("with-an-armenian-o", "r\u0585ot", "\u0585"),
+                    ("with-a-small-capital-r", "\u0280oot", "\u0280"),
+                    ("with-a-small-capital-o", "ro\u1d0ft", "\u1d0f"),
+                    ("in-full-width", "\uff52\uff4f\uff4f\uff54", "\uff52"),
+                    ("with-a-math-r", "\U0001d5cbesearch", "\U0001d5cb"),
+                    ("with-an-rtl-override", "\u202etoor", "\u202e"),
+                    ("with-a-zero-width-space", "ro\u200bot", "\u200b"),
+                ]
+            ),
+        ]
+    },
     "a-namespace-too-long": (
         "namespaces",
         ("long", past_the_limit("system_suffix: ")),
