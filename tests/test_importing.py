@@ -594,7 +594,7 @@ def test_import_refuses_a_tool_that_does_not_build_and_says_why(
     with pytest.raises(LibraryError) as refused:
         import_into(library, config)
     said = str(refused.value)
-    assert said.startswith(f"Tool mine doesn't build: {problem}")
+    assert said.startswith(f"Tool mine (mine.py) doesn't build: {problem}")
     assert said.endswith(NOT_CARRIED)
     assert tempfile.gettempdir() not in said
     assert dumped(library) == before
@@ -928,9 +928,9 @@ def test_import_refuses_two_decompositions_of_one_name_in_a_namespace(
     refused_unchanged(library, config, said)
 
 
-# Past MAX_YAML_CHARS in bytes, though not in characters: é is two bytes as UTF-8.
-WIDE = "é" * (MAX_YAML_CHARS // 2 + 1)
-TOO_BIG = "may be at most 1,000,000 bytes as UTF-8"
+# Past MAX_YAML_CHARS in characters, as the Library's readers count them.
+WIDE = "x" * MAX_YAML_CHARS
+TOO_BIG = "may be at most 1,000,000 characters"
 
 
 @pytest.mark.parametrize(
@@ -970,7 +970,7 @@ TOO_BIG = "may be at most 1,000,000 bytes as UTF-8"
         "a tool's source",
     ],
 )
-def test_import_refuses_what_passes_the_librarys_size_limit_in_bytes(
+def test_import_refuses_what_passes_the_librarys_size_limit(
     library, tmp_path, config, where
 ):
     (tmp_path / "mine.py").write_text("def build(client, params): ...\n")
@@ -993,22 +993,40 @@ ALIAS_BOMB = (
 )
 
 
-@pytest.mark.parametrize(
-    "composed", [False, True], ids=["itself", "in a file it composes"]
-)
-def test_import_refuses_an_alias_bomb_without_writing_it_out(
-    library, tmp_path, composed
-):
+# Where a config's alias bomb may be: the config itself, a file it composes from a
+# folder beside it (named through that folder), or its namespaces_dir.
+BOMB_PLACES = {
+    "itself": ("bomb.yaml", {}),
+    "in a file it composes": (
+        "config.yaml",
+        {"config.yaml": "_compose: [sub/../parts/bomb.yaml]\n"},
+    ),
+    "in its namespaces_dir": (
+        "config.yaml",
+        {"config.yaml": "namespaces_dir: parts\n", "parts/research.yaml": ALIAS_BOMB},
+    ),
+}
+
+
+@pytest.mark.parametrize("place", BOMB_PLACES)
+def test_import_refuses_an_alias_bomb_without_writing_it_out(library, tmp_path, place):
     (tmp_path / "bomb.yaml").write_text(ALIAS_BOMB)
-    config = (
-        config_file(tmp_path, "_compose: [bomb.yaml]\n")
-        if composed
-        else tmp_path / "bomb.yaml"
-    )
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "parts").mkdir()
+    (tmp_path / "parts" / "bomb.yaml").write_text(ALIAS_BOMB)
+    config, files = BOMB_PLACES[place]
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
     said = "is too big to import: with each alias written out, as the engine reads it"
     started = time.monotonic()
-    refused_unchanged(library, config, said)
+    refused_unchanged(library, tmp_path / config, said)
     assert time.monotonic() - started < BOMB_SECONDS
+
+
+def test_import_refuses_a_config_that_composes_itself_in_words(library, tmp_path):
+    (tmp_path / "sub").mkdir()
+    config = config_file(tmp_path, "_compose: [sub/../config.yaml]\n")
+    refused_unchanged(library, config, "YAML compose cycle detected")
 
 
 @pytest.mark.parametrize(
@@ -1048,7 +1066,12 @@ def test_import_blames_a_file_it_composes_that_is_not_a_config(library, tmp_path
     refused_unchanged(library, config, said)
 
 
-def test_a_tool_that_doesnt_build_is_blamed_on_the_configs_own_file(library, tmp_path):
+def test_import_refuses_yaml_nested_too_deeply_in_words(library, tmp_path):
+    config = config_file(tmp_path, "max_iter: " + "[" * 5000 + "]" * 5000 + "\n")
+    refused_unchanged(library, config, f"{config} is nested too deeply to read.")
+
+
+def test_a_tool_that_doesnt_build_is_named_with_the_configs_own_file(library, tmp_path):
     (tmp_path / "helpers").mkdir()
     (tmp_path / "helpers" / "scraping.py").write_text(RAISES_ON_BUILD)
     config = config_file(
@@ -1056,7 +1079,10 @@ def test_a_tool_that_doesnt_build_is_blamed_on_the_configs_own_file(library, tmp
         "tools:\n  scrape: {factory: build, factory_from: helpers/scraping.py}\n"
         "namespaces:\n  helper: {tools: [scrape]}\n",
     )
-    said = "Tool scrape doesn't build: build in helpers/scraping.py raised RuntimeError"
+    said = (
+        "Tool scrape (helpers/scraping.py) doesn't build: build in scrape.py raised"
+        " RuntimeError"
+    )
     refused_unchanged(library, config, said)
 
 

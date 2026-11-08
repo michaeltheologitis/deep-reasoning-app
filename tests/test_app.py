@@ -6,6 +6,7 @@ import socket
 import sqlite3
 import stat
 import threading
+import time
 from contextlib import closing
 from dataclasses import replace
 from functools import partial
@@ -1665,6 +1666,8 @@ async def test_a_tool_the_library_tool_writes_and_grants_is_called_from_the_next
 
 
 RAISES = "def build(client, params):\n    raise RuntimeError('no index')\n"
+# Well under SLOW's sleep.
+SLOW_BUILD_SECONDS = 10
 BUILDS = (
     "from deep_reasoner.primitives import Func\n\n"
     "def build(client, params):\n    return Func(lambda: 1)\n"
@@ -1697,6 +1700,57 @@ def test_the_panel_builds_each_custom_tool_it_grants_afresh_and_refuses_a_broken
     assert next(each for each in namespaces if each["name"] == "counting")["yaml"] == (
         "tools: [tally]\n"
     )
+
+
+# Would take far longer to build than a refusal that runs no tool.
+SLOW = "import time\n\ndef build(client, params):\n    time.sleep(30)\n"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "refused"),
+    [
+        (
+            "POST",
+            "/api/namespaces",
+            {"name": "counting", "yaml": "tools: [slow]\nvars: {max: 1}\n"},
+            'Var "max" would hide Python\'s own max',
+        ),
+        (
+            "POST",
+            "/api/namespaces",
+            {"name": "router", "yaml": "tools: [slow]\n"},
+            'There is already a namespace "router"',
+        ),
+        (
+            "PUT",
+            "/api/namespaces/router",
+            {"yaml": "tools: [slow]\n", "was": "spawn: [elsewhere]\n"},
+            "Namespace router was changed",
+        ),
+    ],
+    ids=["a var", "a name taken", "changed meanwhile"],
+)
+def test_a_panel_save_refused_for_what_costs_nothing_builds_no_tool(
+    client, imported, method, path, body, refused
+):
+    with closing(open_library(imported)) as connection, writing(connection):
+        block = dump({"factory": "build", "factory_from": "slow.py"})
+        connection.execute(UPSERT_TOOL, ("slow", block, SLOW))
+    started = time.monotonic()
+    response = client.request(method, path, json=body)
+    assert response.status_code in (400, 409)
+    assert refused in response.json()["detail"]
+    assert time.monotonic() - started < SLOW_BUILD_SECONDS
+
+
+def test_the_panel_mends_a_namespace_granting_a_tool_the_library_lacks(
+    client, imported
+):
+    with closing(open_library(imported)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("router", "tools: [gone]\n"))
+    mended = {"yaml": "tools: []\n", "was": "tools: [gone]\n"}
+    response = client.put("/api/namespaces/router", json=mended)
+    assert response.status_code == 200, response.text
 
 
 TOOL_REFUSALS = [
@@ -1747,7 +1801,7 @@ TOOL_REFUSALS = [
     ),
     (
         repl("print(library.write_tool('counter', '#' * 1_000_001, 'build'))"),
-        "may each be at most 1,000,000 characters",
+        "The source may be at most 1,000,000 characters; this has 1,000,001.",
     ),
 ]
 

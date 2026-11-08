@@ -618,9 +618,22 @@ class ChangedMeanwhile(LibraryError):
 
 # What a change nobody opened in the panel, as the librarian's, is checked against: nothing.
 NOT_OPENED = object()
+CHANGED_MEANWHILE = (
+    "The tools this grants changed while they were being built; try again."
+)
+# SQLite's names for a file it can't write: read only, full, failing, or gone.
+UNWRITABLE = ("SQLITE_READONLY", "SQLITE_FULL", "SQLITE_IOERR", "SQLITE_CANTOPEN")
 
 
 BY_WHOM = "(by the librarian, another tab or an import)"
+
+
+def unwritable(error):
+    """What the SQLite *error* says, in words, when it is that the Library file can't be
+    written; None when it is anything else."""
+    if getattr(error, "sqlite_errorname", "").startswith(UNWRITABLE):
+        return f"The Library file can't be written: {error}."
+    return None
 
 
 def changed_meanwhile(what):
@@ -1510,11 +1523,12 @@ def check_decomposition_name(name):
         )
 
 
-def checked_text(text, what="A decomposition's"):
-    """Raise unless *text* is short enough to be *what* YAML."""
+def check_size(text, what):
+    """Raise unless *text*, *what* the Library would hold, fits in a row: at most
+    MAX_YAML_CHARS characters, as its readers count once a row is loaded."""
     if len(text) > MAX_YAML_CHARS:
         raise LibraryError(
-            f"{what} YAML may be at most {MAX_YAML_CHARS:,} characters; this has"
+            f"{what} may be at most {MAX_YAML_CHARS:,} characters; this has"
             f" {len(text):,}."
         )
 
@@ -1724,7 +1738,7 @@ def add_decomposition(connection, namespace, text, replace=False, allowed=None):
     its place. *allowed*, given the connection under the write lock first, raises to refuse.
     A worked example with problems is stored all the same, so a draft can be saved.
     The stored row with its problems, and the YAML it replaced (None when it is new)."""
-    checked_text(text)
+    check_size(text, "A decomposition's YAML")
     decomposition = parsed(text)
     name = decomposition.name
     stored = {"namespace": namespace, "name": name, "yaml": text}
@@ -1778,7 +1792,7 @@ def edit_decomposition(connection, namespace, name, was, text):
     decomposition *name*, which the person opened as *was*; it may take another name
     that *namespace* doesn't hold. Raises LibraryError saying why not, and
     ChangedMeanwhile if *name* is no longer stored as *was*."""
-    checked_text(text)
+    check_size(text, "A decomposition's YAML")
     decomposition = parsed(text)
     with writing(connection):
         check_templates(connection, decomposition)
@@ -1832,7 +1846,7 @@ def namespace_problem(error):
 def authored(name, text):
     """Namespace *name* as its YAML *text* describes it, checked by the engine's own model,
     and the YAML to store for it."""
-    checked_text(text, "A namespace's")
+    check_size(text, "A namespace's YAML")
     data = fields_in(text)
     problems = [NAMED_ELSEWHERE[key] for key in NAMED_ELSEWHERE if key in data]
     fields = {key: value for key, value in data.items() if key not in NAMED_ELSEWHERE}
@@ -1908,9 +1922,10 @@ def suffix_problem(connection, namespace):
     return template_problem(label, suffix, template_names(config))
 
 
-def check_fields(connection, namespace):
+def check_fields(connection, namespace, adding):
     """Raise unless *namespace*'s vars are well named, its system_suffix renders, and
-    every namespace it may spawn into is in the Library, or is itself."""
+    every namespace it may spawn into is in the Library, or is itself; *adding*, as when
+    it is new."""
     problems = [
         *map(var_problem, namespace.vars),
         suffix_problem(connection, namespace),
@@ -1926,7 +1941,6 @@ def check_fields(connection, namespace):
         if spawned != name and not has_namespace(connection, spawned)
     ]
     if missing:
-        adding = not has_namespace(connection, name)
         raise LibraryError(
             "\n".join(missing_spawn(spawned, name, adding) for spawned in missing)
         )
@@ -1947,17 +1961,24 @@ def missing_spawn(spawned, name, adding):
     )
 
 
-def write_namespace(connection, namespace, text):
-    """Store *namespace* as its YAML *text*, inside a transaction that keeps it only if
-    its fields pass check_fields, the engine accepts the Library, and there and below
-    each backbone is one the engine builds and no tool takes a var's place. A namespace
-    elsewhere is not its to answer for."""
-    check_fields(connection, namespace)
-    connection.execute(UPSERT_NAMESPACE, (namespace.name, text))
+def write_namespace(connection, name, text, adding):
+    """Store namespace *name* as its YAML *text*, inside the caller's transaction, which
+    keeps it only if it passes check_written; *adding*, as when it is new."""
+    connection.execute(UPSERT_NAMESPACE, (name, text))
+    check_written(connection, name, adding)
+
+
+def check_written(connection, name, adding):
+    """Raise unless namespace *name*, as just written (new, with *adding*), is one the
+    panel saves: the engine accepts the Library and reads it; its fields pass
+    check_fields; and there and below, each backbone is one the engine builds and no tool
+    takes a var's place. A namespace elsewhere is not its to answer for. The panel's
+    saves and an import each call it, so a check added here reaches both."""
     _, registry = accepted(connection)
-    if namespace.name not in registry.names:
-        raise LibraryError(read_namespaces(connection)[1][namespace.name])
-    below = [each for each in registry.names if namespace.name in registry.chain(each)]
+    if name not in registry.names:
+        raise LibraryError(read_namespaces(connection)[1][name])
+    check_fields(connection, registry.config(name), adding)
+    below = [each for each in registry.names if name in registry.chain(each)]
     check_backbones(registry, below)
     hidden_vars(registry, below)
 
@@ -1973,7 +1994,7 @@ def add_namespace(connection, name, text, allowed=None):
         if allowed is not None:
             allowed(connection, namespace)
         check_place(connection, name)
-        write_namespace(connection, namespace, stored)
+        write_namespace(connection, name, stored, adding=True)
     return stored
 
 
@@ -2028,11 +2049,7 @@ def merged(before, text):
     if fields == own:
         return before
     together = dump(fields) if fields else ""
-    if len(together) > MAX_YAML_CHARS:
-        raise LibraryError(
-            f"A namespace's YAML may be at most {MAX_YAML_CHARS:,} characters; with"
-            f" this change it would be {len(together):,}."
-        )
+    check_size(together, "With this change, the namespace's YAML")
     return together
 
 
@@ -2048,12 +2065,80 @@ def change_namespace(connection, name, text, allowed=None, was=NOT_OPENED, merge
         namespace, stored = authored(name, text)
         if allowed is not None:
             allowed(connection, namespace)
-        before = check_namespace(connection, name)
-        shown = read_namespaces(connection)[2][name]
-        if was is not NOT_OPENED and own_yaml(shown) != was:
-            raise changed_meanwhile(f"Namespace {name}")
-        write_namespace(connection, namespace, stored)
+        before = check_unchanged(connection, name, was)
+        write_namespace(connection, name, stored, adding=False)
     return before, stored
+
+
+def check_unchanged(connection, name, was):
+    """Namespace *name*'s own YAML, as namespace_yaml() gives it; raise if the Library
+    has none of that name, or, given *was*, the YAML the person opened it on,
+    ChangedMeanwhile unless it is still stored so."""
+    before = check_namespace(connection, name)
+    shown = read_namespaces(connection)[2][name]
+    if was is not NOT_OPENED and own_yaml(shown) != was:
+        raise changed_meanwhile(f"Namespace {name}")
+    return before
+
+
+def granted_afresh(connection, namespace):
+    """The custom tools *namespace* grants that no namespace of the Library grants yet,
+    so no run builds yet, each as its stored block and source. A Library the engine
+    can't resolve, as a shared file may hold, grants none, so a save that mends it can be
+    made, its tools built first."""
+    try:
+        _, registry = config_and_registry(connection)
+    except ValueError:
+        granted = set()
+    else:
+        granted = {
+            tool for each in registry.names for tool in registry.config(each).tools
+        }
+    afresh = set(namespace.tools) - granted
+    return {
+        name: (block, source)
+        for name, (block, source) in library_tools(connection).items()
+        if name in afresh and source is not None
+    }
+
+
+def built_grants(
+    connection, name, text, build, adding, merge=False, was=NOT_OPENED, locks=None
+):
+    """The custom tools namespace *name*, as the YAML *text* makes it (merged into its
+    own with *merge*), grants afresh (granted_afresh()), each built by *build* once every
+    check that costs nothing passed, so a save refused for one of those runs no tool: its
+    name and YAML, *locks*(connection, namespace, afresh) when given, its place (a new
+    one's, with *adding*; else that it is there and, given *was*, unchanged) and its
+    fields.
+    The build holds no lock, so the write checks with same_grants() under its own."""
+    if adding:
+        check_name(name)
+    with reading(connection):
+        if merge:
+            text = merged(namespace_yaml(connection, name) or "", text)
+        namespace, _ = authored(name, text)
+        afresh = granted_afresh(connection, namespace)
+        if locks is not None:
+            locks(connection, namespace, afresh)
+        if adding:
+            check_place(connection, name)
+        else:
+            check_unchanged(connection, name, was)
+        check_fields(connection, namespace, adding)
+    if afresh:
+        build(afresh)
+    return afresh
+
+
+def same_grants(built, locks, connection, namespace):
+    """Raise unless *namespace* passes *locks* (as built_grants() takes them) and grants
+    afresh the custom tools *built*, as the Library stands under the write lock: a
+    write's allowed."""
+    if locks is not None:
+        locks(connection, namespace, built)
+    if granted_afresh(connection, namespace) != built:
+        raise LibraryError(CHANGED_MEANWHILE)
 
 
 def store_tool(connection, name, block, source, allowed=None):

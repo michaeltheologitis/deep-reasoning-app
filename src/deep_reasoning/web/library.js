@@ -213,7 +213,7 @@ async function submit(form, e) {
   if (form.saving || check(form).length) return;
   clearSaid();
   form.saving = form.submit.disabled = true;
-  form.status.textContent = form.pending ?? "";
+  form.status.textContent = form.pending?.(form.editor.value) ?? "";
   let saved;
   try {
     saved = await form.save(form.editor.value, form);
@@ -291,7 +291,7 @@ const namespaceForm = yamlForm({
   save: addNamespace,
   before: element("div", { class: "lib-form-line" }, element("label", { for: nameInput.id }, "name"), nameInput),
   first: nameInput,
-  pending: BUILDING,
+  pending: building,
 });
 
 async function readFile() {
@@ -358,7 +358,7 @@ const editForm = (name) =>
     label: "Edit YAML",
     action: "Save",
     problems: (text) => namespaceProblems(text, name),
-    pending: BUILDING,
+    pending: building,
     save: saveNamespace(name),
     stored: () => namespaceNamed(name)?.yaml,
   }));
@@ -582,6 +582,14 @@ function newNamespaceProblem(name) {
   const parent = parentOf(name);
   if (!namespaceNamed(parent)) return `Add namespace "${parent}" first: "${name}" goes under it.`;
   return null;
+}
+
+// What a namespace's save says while it runs when its YAML grants a custom tool no namespace grants yet, which the server builds first.
+function building(text) {
+  const { value } = readYaml(text);
+  const asked = isMapping(value) && isTextList(value.tools) ? value.tools : [];
+  const afresh = (name) => library.tools.some((tool) => tool.name === name && tool.source != null && !tool.granted_in.length);
+  return asked.some(afresh) ? BUILDING : "";
 }
 
 // A namespace that sets nothing inherits everything, so blank YAML is fine.

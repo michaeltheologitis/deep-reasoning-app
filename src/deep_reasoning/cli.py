@@ -31,6 +31,7 @@ from deep_reasoning.library import (
     LibraryError,
     open_library,
     schema_version,
+    unwritable,
 )
 from deep_reasoning.settings import (
     DEFAULT_FOLDER,
@@ -72,18 +73,6 @@ NO_LOCKS = {errno.ENOLCK, errno.EOPNOTSUPP, errno.EINVAL}
 NOT_STARTED = "this one didn't start, as two on one Library would end each other's runs"
 NOT_IMPORTED = "nothing was imported"
 NOT_DELETED = "nothing was deleted"
-# What the holder of the lock writes in it, and what a refusal says of it.
-SERVING, IMPORTING, RESETTING = "serving", "importing", "resetting"
-HOLDING = {
-    SERVING: (
-        "Deep Reasoning is already serving",
-        "stop it first, or pass another --library",
-    ),
-    IMPORTING: ("An import is under way into", "wait for it to finish"),
-    RESETTING: ("A reset is under way of", "wait for it to finish"),
-}
-# SQLite's names for a file it can't write, by what they mean.
-UNWRITABLE = {"SQLITE_READONLY": "it is read only", "SQLITE_FULL": "the disk is full"}
 STOPPED = "Stopped; the Library is unchanged."
 
 log = structlog.get_logger()
@@ -138,62 +127,35 @@ def lock_of(library):
 
 
 @contextlib.contextmanager
-def owning(library, refused, read=open_or_exit, doing=SERVING):
+def owning(library, refused, read=open_or_exit):
     """What *read* makes of *library*, the Library opened unless told otherwise, read only
-    once this process holds the lock beside it, which it holds until the block ends,
-    saying in it what it is *doing*; a plain error saying *refused* and what to do when
-    another Deep Reasoning holds it."""
+    once this process holds the lock beside it, which it holds until the block ends; a
+    plain error saying *refused* when another Deep Reasoning holds it."""
     path = lock_of(library)
-    lock = taken_lock(path, library, refused)
     try:
-        os.ftruncate(lock, 0)
-        os.pwrite(lock, doing.encode(), 0)
+        lock = os.open(path, os.O_RDWR | os.O_CREAT, LOCK_MODE)
+    except OSError as error:
+        sys.exit(
+            f"Could not open {path}, the lock that keeps a second Deep Reasoning off the"
+            f" Library: {error.strerror}."
+        )
+    try:
+        take(lock, library, refused)
         yield read(library)
     finally:
         os.close(lock)
 
 
-def taken_lock(path, library, refused):
-    """The lock at *path*, beside *library*, opened and taken (see take). An import that
-    made a Library and wrote nothing deletes it and its lock while holding it, so one
-    taken after is opened afresh until it is the file at *path*."""
-    while True:
-        try:
-            lock = os.open(path, os.O_RDWR | os.O_CREAT, LOCK_MODE)
-        except OSError as error:
-            sys.exit(
-                f"Could not open {path}, the lock that keeps a second Deep Reasoning off"
-                f" the Library: {error.strerror}."
-            )
-        try:
-            take(lock, library, refused)
-        except BaseException:
-            os.close(lock)
-            raise
-        if still_there(lock, path):
-            return lock
-        os.close(lock)
-
-
-def still_there(lock, path):
-    """Whether the open file *lock* is still the one at *path*."""
-    try:
-        return os.path.samestat(os.fstat(lock), os.stat(path))
-    except FileNotFoundError:
-        return False
-
-
 def take(lock, library, refused):
-    """Take the *lock* beside *library*, or a plain error saying *refused*, what its holder
-    is doing and what to do; where the file system has no locks, say so and go on
-    without."""
+    """Take the *lock* beside *library*, or a plain error saying *refused*; where the file
+    system has no locks, say so and go on without."""
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        # An older version left it empty: it was serving.
-        doing = os.pread(lock, len(RESETTING), 0).decode(errors="replace")
-        held, advice = HOLDING.get(doing, HOLDING[SERVING])
-        sys.exit(f"{held} {library}, so {refused}: {advice}.")
+        sys.exit(
+            f"Deep Reasoning is already using {library} (serving, importing or resetting"
+            f" it), so {refused}: stop it, or wait for it to finish."
+        )
     except OSError as error:
         if error.errno not in NO_LOCKS:
             raise
@@ -207,28 +169,19 @@ def take(lock, library, refused):
 
 def import_or_exit(library, config, home):
     """Import *config* into *library*, saying what it changed or why it didn't; a Library
-    that wasn't there is made only when the import writes it."""
+    that wasn't there when the lock was taken is kept only when the import writes it."""
     folder_or_exit(library, home)
-    new = not os.path.lexists(library)
-    with owning(library, NOT_IMPORTED, doing=IMPORTING) as connection:
+    with owning(library, NOT_IMPORTED, read=is_new) as new:
+        said = None
         try:
-            _, secrets = every_key(library, home)
-            environment = keyless_environment(library, home)
-            said = import_config(connection, config, secrets, environment)
-        except (
-            OSError,
-            ValueError,
-            yaml.YAMLError,
-            sqlite3.Error,
-            KeyboardInterrupt,
-        ) as error:
-            connection.close()
-            if new:
+            said = imported(library, config, home)
+        except (OSError, ValueError, yaml.YAMLError, sqlite3.Error) as error:
+            sys.exit(f"Could not import {config}; {unchanged(error)}")
+        except KeyboardInterrupt:
+            sys.exit(STOPPED)
+        finally:
+            if new and not (said and said["changes"]):
                 forget(library)
-            sys.exit(not_imported(config, error))
-        connection.close()
-        if new and not said["changes"]:
-            forget(library)
     if said["changes"]:
         header = f"Imported {config} into the Library at {library}."
     elif new:
@@ -244,28 +197,28 @@ def import_or_exit(library, config, home):
     print("\n".join([header, *said["changes"], *said["left_out"]]))
 
 
-def not_imported(config, error):
-    """Why *config* wasn't imported, in words, *error* being what stopped it."""
-    if isinstance(error, KeyboardInterrupt):
-        return STOPPED
-    name = getattr(error, "sqlite_errorname", "")
-    reason = next(
-        (why for code, why in UNWRITABLE.items() if name.startswith(code)), None
-    )
-    if reason:
-        return (
-            f"Could not import {config}: the Library file can't be written, as"
-            f" {reason}; the Library is unchanged."
-        )
-    return f"Could not import {config}; the Library is unchanged.\n{error}"
+def is_new(library):
+    return not os.path.lexists(library)
+
+
+def imported(library, config, home):
+    """What importing *config* into the Library at *library* changed and left out."""
+    with contextlib.closing(open_or_exit(library)) as connection:
+        _, secrets = every_key(library, home)
+        environment = keyless_environment(library, home)
+        return import_config(connection, config, secrets, environment)
+
+
+def unchanged(error):
+    """That the Library is unchanged, and why, *error* being what stopped the import."""
+    return f"the Library is unchanged.\n{unwritable(error) or error}"
 
 
 def forget(library):
-    """Delete the Library an import made at *library*, and its side files and lock, as it
-    wrote nothing to keep: this process holds the lock, so no other is using it."""
+    """Delete the Library an import made at *library*, and its side files, as it wrote
+    nothing to keep; the lock stays, as one starting may hold it."""
     for path in [library, *(library.with_name(library.name + side) for side in SIDES)]:
         path.unlink(missing_ok=True)
-    lock_of(library).unlink(missing_ok=True)
 
 
 def file_or_exit(library):
@@ -386,7 +339,7 @@ def reset_or_exit(library, home, yes):
     busy = library.is_file() and os.path.isfile(wal) and os.path.getsize(wal) > 0
     # Read once no app can start on it; the lock file stays, as one starting may hold it.
     owned = (
-        owning(library, NOT_DELETED, chosen_or_exit, RESETTING)
+        owning(library, NOT_DELETED, chosen_or_exit)
         if library.is_file()
         else contextlib.nullcontext([])
     )

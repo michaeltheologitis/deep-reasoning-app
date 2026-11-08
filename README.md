@@ -129,7 +129,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   built-ins (`max`, `type`, …), or has the name of a tool its namespace sees; a namespace named oddly (a word
   of letters, digits, `_` and `-` starting with a letter, words joined by dots, and none `root`); and a namespace
   that grants a tool of yours no namespace granted yet, if that tool doesn't build: it is built first, as an import
-  builds one, which can take up to a minute, and the form says so while it saves. A
+  builds one, which can take up to a minute, and the form says so while it builds. A
   template is checked, never run, so whether `vars.x` holds what it reads isn't. A stored decomposition that fails
   the check, as a shared Library may hold, is marked ✗ with why. Runs render templates sandboxed, so a shared
   Library's templates reach no Python internals: a worked example that tries fails the run, naming it, and a system prompt or
@@ -190,7 +190,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   the app's `historian` and `librarian` namespaces or one under them, a tool named as a built-in, a key anywhere in
   it (any saved in settings or set in your shell for any provider or server), whatever the panel's save would refuse
   (a namespace, var or decomposition name, a template, a `system_suffix`, two decompositions of one name in a
-  namespace, anything over 1,000,000 bytes), `max_iter` or `max_depth` below 1, a file whose aliases written out
+  namespace, anything over 1,000,000 characters), `max_iter` or `max_depth` below 1, a file whose aliases written out
   would pass 4,000,000 values and characters, and a tool a namespace grants that doesn't build: it builds each such
   tool once to check it, from its own file alone and with no key (each provider's key variable holds `not-a-key`),
   so a file or module beside the config isn't carried in. An import into a new path that changes nothing, or fails,
@@ -201,8 +201,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   a folder, a symlink or any other file is refused and left as it is.
 - One app at a time serves a Library: a second `deep-reasoning` on the same file (by any path) refuses to start, and
   `import` and `reset` refuse while it runs, so stop it first; while an import or a reset runs, the others refuse
-  and say to wait for it. The lock is `library.sqlite.lock` beside the file, holding what its holder is doing, let
-  go when it stops, even in a crash; on a file system without locks it says so and runs without. A
+  until it ends. The lock is the empty `library.sqlite.lock` beside the file, let go when the app stops, even in a
+  crash; on a file system without locks it says so and runs without. A
   `--library` in a folder that isn't there is refused rather than made.
 - The Tools tab lists the app's own tools beside the built-in ones, and every tool in the Library; a tool of yours can't
   be named `history`, `library` or `page`, nor as a built-in.

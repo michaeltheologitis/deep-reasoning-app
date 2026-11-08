@@ -28,7 +28,6 @@ are checked again without it.
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -39,6 +38,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+import structlog
 import yaml
 from deep_reasoner import build_client
 from deep_reasoner.tools import ToolBuildError
@@ -58,6 +58,21 @@ TOOLS = "tools"
 # How often the caller looks whether the check has ended.
 POLL_S = 0.05
 Tools = Mapping[str, tuple[dict[str, Any], str]]
+# The run config a keyless build checks with: a client that reaches nothing, so a factory
+# that calls the model while it is built fails rather than spends, and no models presets
+# or llm_kwargs, which the Library doesn't hold.
+NOWHERE = {
+    "client": {
+        "base_url": "http://127.0.0.1:9/v1",
+        "api_key_env": "DEEP_REASONING_NO_KEY",
+        "max_retries": 0,
+    }
+}
+# Why a namespace mustn't grant a tool that doesn't build.
+STOPS_EVERY_CHAT = "granted, it would stop every chat"
+NOT_GRANTED = f"wasn't granted ({STOPS_EVERY_CHAT})"
+
+log = structlog.get_logger()
 
 
 def config_of(spec: Path) -> dict[str, Any]:
@@ -188,13 +203,13 @@ def refuse_unbuilt(
     files: Mapping[str, str | None] | None = None,
 ) -> None:
     """Raise LibraryError, in words, naming each of *tools* that doesn't build, as
-    check_tools finds: *done* says what wasn't done, and *note* follows them. A verdict
-    names a tool's file as *files* names it, where it does, not by its name in the
-    Library."""
+    check_tools finds, beside its file where *files* names one: *done* says what wasn't
+    done, and *note* follows them."""
     verdicts = check_tools(tools, config, env, work)
     so = f", so it {done}" if done else ""
+    named = {name: f" ({file})" for name, file in (files or {}).items() if file}
     failed = [
-        f"Tool {name} doesn't build{so}: {shown_file(why, name, (files or {}).get(name))}"
+        f"Tool {name}{named.get(name, '')} doesn't build{so}: {why}"
         for name in tools
         if (why := verdicts[name]) is not None
     ]
@@ -202,12 +217,19 @@ def refuse_unbuilt(
         raise LibraryError("\n".join([*failed, *([note] if note else [])]))
 
 
-def shown_file(why: str, name: str, file: str | None) -> str:
-    """The verdict *why* on tool *name*, its file named *file* where given."""
-    if not file:
-        return why
-    stored = re.escape(tool_file(name))
-    return re.sub(rf"(?<![\w./-]){stored}(?![\w])", lambda _: file, why)
+def refuse_unbuilt_keyless(
+    tools: Tools,
+    env: Mapping[str, str],
+    done: str | None = None,
+    note: str | None = None,
+    files: Mapping[str, str | None] | None = None,
+) -> None:
+    """refuse_unbuilt for *tools* in a run of NOWHERE, in *env*, which holds no key, its
+    files in a folder of their own deleted after: as the panel and an import build a tool
+    no namespace grants yet."""
+    log.info("Building tools to check them", tools=list(tools))
+    with tempfile.TemporaryDirectory() as work:
+        refuse_unbuilt(tools, NOWHERE, env, Path(work), done, note, files)
 
 
 def read_notes(notes: Path) -> list[dict[str, Any]]:

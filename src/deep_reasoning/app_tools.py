@@ -56,18 +56,14 @@ from deep_reasoning.library import (
     HISTORY_DESCRIPTION,
     LIBRARY_DESCRIPTION,
     LIBRARY_TOOL,
-    MAX_YAML_CHARS,
     PAGE_DESCRIPTION,
     TAKEN_NAMES,
     LibraryError,
     add_decomposition,
     add_namespace,
-    authored,
+    built_grants,
     change_namespace,
-    check_fields,
-    check_name,
-    check_namespace,
-    check_place,
+    check_size,
     check_tool_block,
     config_and_registry,
     config_of,
@@ -76,12 +72,9 @@ from deep_reasoning.library import (
     dump,
     fields_of,
     in_chain_order,
-    library_tools,
     literals,
     loaded,
-    merged,
     namespace_rows,
-    namespace_yaml,
     parsed,
     parsed_python,
     read_library,
@@ -89,6 +82,7 @@ from deep_reasoning.library import (
     refuse_keys,
     run_config_and_registry,
     running_code,
+    same_grants,
     sees,
     store_tool,
     taken,
@@ -120,7 +114,7 @@ from deep_reasoning.runs import (
     total_cost,
     withheld,
 )
-from deep_reasoning.tool_check import refuse_unbuilt
+from deep_reasoning.tool_check import STOPS_EVERY_CHAT, refuse_unbuilt
 
 log = structlog.get_logger()
 
@@ -158,7 +152,6 @@ CUT_SHORT = (
     "What you wrote holds “…(+N chars)”, where a brief list cut a text short: write the"
     " whole text, from show(name), tools(name) or changes()."
 )
-TOO_LONG = f"The YAML may be at most {MAX_YAML_CHARS:,} characters."
 # An example's cell tags, each on a line of its own, which a cell writes as placeholders,
 # as a reply's last real <repl> is the one that runs.
 REAL_TAGS = {"[repl]": "<repl>", "[/repl]": "</repl>"}
@@ -180,19 +173,10 @@ MAX_NESTING = 20
 # A run hands the factory every key of the tool's block but these.
 OWN_KEYS = ("factory", "factory_from")
 SETS_OWN_KEYS = "settings may not hold factory or factory_from: write_tool sets them."
-TOOL_TOO_LONG = (
-    f"The source, and the settings as YAML, may each be at most {MAX_YAML_CHARS:,}"
-    " characters."
-)
 CHECKS = "checks"
-CHANGED_MEANWHILE = (
-    "The tools this grants changed while they were being built; try again."
-)
 # What wasn't done when a tool doesn't build: written, or granted.
 WRITTEN = "wasn't written"
-GRANTED = (
-    "wasn't granted (granted, it would stop every chat; fix it with write_tool first)"
-)
+GRANTED = f"wasn't granted ({STOPS_EVERY_CHAT}; fix it with write_tool first)"
 # Any other REPL is a sandbox, and building a tool runs its code outside it.
 LOCAL_REPL = "local"
 # Told to the library tool's agents in a chat that can't write, such as a sub-agent's.
@@ -1016,8 +1000,7 @@ def check_writable(namespace: str, text: str, key_names: list[str]) -> None:
         raise LibraryError(NOT_TEXT)
     if namespace == ROOT:
         raise LibraryError(ROOT_LOCKED)
-    if len(text) > MAX_YAML_CHARS:
-        raise LibraryError(TOO_LONG)
+    check_size(text, "The YAML")
     check_whole([text])
     # Parsed too, as an escape such as "\x73k-" spells a key the raw text doesn't hold.
     check_no_key([namespace, text, *texts_in(loaded(text))], key_names)
@@ -1076,8 +1059,8 @@ def check_tool(
             f" the REPL binds itself ({', '.join(TAKEN_NAMES)}). Pick another."
         )
     check_tool_block(name, {"factory": factory, "factory_from": tool_file(name)})
-    if max(len(source), len(dump(settings))) > MAX_YAML_CHARS:
-        raise LibraryError(TOOL_TOO_LONG)
+    check_size(source, "The source")
+    check_size(dump(settings), "The settings as YAML")
     check_whole([source, *texts_in(settings)])
     # texts holds the source itself.
     check_no_key(
@@ -1300,22 +1283,6 @@ def chat_changes(library: str, chat: str, turn: Any) -> list[dict[str, Any]]:
     return found
 
 
-def granted_afresh(
-    connection: sqlite3.Connection,
-    registry: NamespaceRegistry,
-    namespace: NamespaceConfig,
-) -> dict[str, tuple[dict[str, Any], str]]:
-    """The custom tools *namespace* grants that no namespace of the Library, *registry*,
-    grants yet, so no run builds yet, each as its stored block and source."""
-    granted = {tool for each in registry.names for tool in registry.config(each).tools}
-    afresh = set(namespace.tools) - granted
-    return {
-        name: (block, source)
-        for name, (block, source) in library_tools(connection).items()
-        if name in afresh and source is not None
-    }
-
-
 def check_builds(
     tools: dict[str, tuple[dict[str, Any], str]], tools_dir: Path, done: str
 ) -> None:
@@ -1382,20 +1349,18 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def may_write(connection: sqlite3.Connection) -> None:
         check_grant(config_and_registry(connection)[1])
 
-    def may_grant(
-        built: dict[str, tuple[str, str]],
+    def locks(
         connection: sqlite3.Connection,
         namespace: NamespaceConfig,
+        afresh: dict[str, tuple[dict[str, Any], str]],
     ) -> None:
-        """Raise unless the tool may write *namespace*, as the Library stands under the
-        write lock, and the custom tools it grants afresh are those *built*."""
+        """Raise unless the tool may write *namespace*, as the Library stands, building
+        the custom tools it grants *afresh* if any."""
         config, registry = config_and_registry(connection)
         check_grant(registry)
         check_locks(config, registry, namespace)
-        if built:
+        if afresh:
             check_local(registry)
-        if granted_afresh(connection, registry, namespace) != built:
-            raise LibraryError(CHANGED_MEANWHILE)
 
     def may_write_tool(connection: sqlite3.Connection, name: str) -> None:
         config, registry = config_and_registry(connection)
@@ -1403,34 +1368,17 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         check_local(registry)
         check_tool_locks(config, registry, name)
 
-    def built_grants(
+    def grants_built(
         name: str, text: str, adding: bool, merge: bool = False
-    ) -> dict[str, tuple[str, str]]:
-        """The custom tools namespace *name*, as the YAML *text* would make it (merged
-        into its own with *merge*), grants afresh, as stored, each built, after what the
-        write would refuse cheaply, so a write refused for that runs no tool. With none,
-        the write makes every check, under its lock; the build holds no lock, so the write
-        checks the tools again under it."""
-        if adding:
-            check_name(name)
-        with app_file(library, "ro") as connection, reading(connection):
-            if merge:
-                text = merged(namespace_yaml(connection, name) or "", text)
-            namespace, _ = authored(name, text)
-            config, registry = config_and_registry(connection)
-            afresh = granted_afresh(connection, registry, namespace)
-            if not afresh:
-                return afresh
-            check_grant(registry)
-            check_locks(config, registry, namespace)
-            check_local(registry)
-            if adding:
-                check_place(connection, name)
-            else:
-                check_namespace(connection, name)
-            check_fields(connection, namespace)
-        check_builds(afresh, tools_dir, GRANTED)
-        return afresh
+    ) -> Callable[[sqlite3.Connection, NamespaceConfig], None]:
+        """The write's *allowed* for namespace *name* as the YAML *text* makes it, once
+        the custom tools it grants afresh are built (built_grants())."""
+        build = partial(check_builds, tools_dir=tools_dir, done=GRANTED)
+        with app_file(library, "ro") as connection:
+            built = built_grants(
+                connection, name, text, build, adding, merge=merge, locks=locks
+            )
+        return partial(same_grants, built, locks)
 
     def write_decomposition(namespace: str, yaml: Any) -> dict[str, Any]:
         """Add the decomposition *yaml* to *namespace*, or replace the one of its name."""
@@ -1470,10 +1418,9 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         """Add namespace *name* with the fields *yaml* sets."""
         text = yaml_text(yaml)
         check_writable(name, text, key_names)
-        built = built_grants(name, text, adding=True)
+        allowed = grants_built(name, text, adding=True)
 
         def write() -> Event:
-            allowed = partial(may_grant, built)
             stored = written(library, add_namespace, name, text, allowed=allowed)
             return logged(
                 "added", None, stored, what="namespace", namespace=name, name=name
@@ -1487,11 +1434,10 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         text = yaml_text(yaml)
         check_writable(name, text, key_names)
         merge = not replace
-        built = built_grants(name, text, adding=False, merge=merge)
+        allowed = grants_built(name, text, adding=False, merge=merge)
         at = {"what": "namespace", "namespace": name, "name": name}
 
         def write() -> tuple[str, str, Event | None]:
-            allowed = partial(may_grant, built)
             before, stored = written(
                 library, change_namespace, name, text, allowed=allowed, merge=merge
             )

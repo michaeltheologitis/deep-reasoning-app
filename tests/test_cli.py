@@ -38,7 +38,7 @@ HOLD_THE_LOCK = """
 import sys, time
 from pathlib import Path
 from deep_reasoning import cli
-with cli.owning(Path(sys.argv[1]), "held", doing=sys.argv[2]):
+with cli.owning(Path(sys.argv[1]), "held"):
     print("held", flush=True)
     time.sleep(600)
 """
@@ -204,7 +204,40 @@ def test_a_failed_import_into_a_new_path_says_so_and_leaves_no_library_or_lock(
     with pytest.raises(SystemExit, match=said):
         cli.main(["import", str(given), "--library", str(library)])
     assert not library.exists()
-    assert not cli.lock_of(library).exists()
+
+
+def test_an_import_that_fails_in_any_way_leaves_no_new_library(tmp_path, monkeypatch):
+    def broken(*args):
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr(cli, "import_config", broken)
+    config = tmp_path / "steps.yaml"
+    config.write_text("max_iter: 4\n")
+    library = tmp_path / "lib.sqlite"
+    with pytest.raises(RuntimeError, match="a bug"):
+        cli.main(["import", str(config), "--library", str(library)])
+    assert not library.exists()
+
+
+def test_a_library_made_before_the_import_took_the_lock_is_kept_when_it_fails(
+    tmp_path, monkeypatch
+):
+    library = tmp_path / "lib.sqlite"
+    flock = fcntl.flock
+
+    def served_meanwhile(lock, operation):
+        # An app served the path, and a chat was made there, as this import started.
+        if not library.exists():
+            create_chat(library)
+        flock(lock, operation)
+
+    monkeypatch.setattr(fcntl, "flock", served_meanwhile)
+    config = tmp_path / "steps.yaml"
+    config.write_text("max_iter: 0\n")
+    with pytest.raises(SystemExit, match="max_iter is 0"):
+        cli.main(["import", str(config), "--library", str(library)])
+    with closing(open_library(library)) as connection:
+        assert connection.execute("SELECT count(*) FROM chats").fetchone() == (1,)
 
 
 def test_an_import_that_changes_nothing_in_a_new_library_makes_none(tmp_path, capsys):
@@ -218,21 +251,26 @@ def test_an_import_that_changes_nothing_in_a_new_library_makes_none(tmp_path, ca
     )
     assert capsys.readouterr().out.splitlines() == [said]
     assert not library.exists()
-    assert not cli.lock_of(library).exists()
 
 
 @pytest.fixture
 def read_only():
-    """Make a file read only, even to root (by chattr +i), until the test ends."""
+    """Make a file read only, even to root (by chattr +i, skipping where it isn't
+    permitted), until the test ends."""
     made = []
 
     def make(path):
         path.chmod(0o444)
-        if os.access(path, os.W_OK):
-            if shutil.which("chattr") is None:
-                pytest.skip("root writes a read-only file, and there is no chattr")
-            subprocess.run(["chattr", "+i", path], check=True)
-            made.append(path)
+        if not os.access(path, os.W_OK):
+            return
+        if shutil.which("chattr") is None:
+            pytest.skip("root writes a read-only file, and there is no chattr")
+        immutable = subprocess.run(
+            ["chattr", "+i", path], check=False, capture_output=True
+        )
+        if immutable.returncode != 0:
+            pytest.skip("root writes a read-only file, and chattr +i isn't permitted")
+        made.append(path)
 
     yield make
     for path in made:
@@ -245,7 +283,10 @@ def test_an_import_into_a_read_only_library_says_so_in_plain_words(tmp_path, rea
     read_only(library)
     config = tmp_path / "steps.yaml"
     config.write_text("max_iter: 4\n")
-    said = f"Could not import {config}: the Library file can't be written, as it is read only; the Library is unchanged."
+    said = (
+        f"Could not import {config}; the Library is unchanged.\nThe Library file can't"
+        " be written: attempt to write a readonly database."
+    )
     with pytest.raises(SystemExit) as refused:
         cli.main(["import", str(config), "--library", str(library)])
     assert refused.value.code == said
@@ -297,7 +338,7 @@ def test_ctrl_c_during_an_import_stops_it_saying_so_and_leaves_nothing(tmp_path)
         importing.wait()
     assert said.strip().splitlines()[-1] == cli.STOPPED
     assert "Traceback" not in said
-    assert not library.exists() and not cli.lock_of(library).exists()
+    assert not library.exists()
     with pytest.raises(ProcessLookupError):
         os.kill(int(started.read_text()), 0)
 
@@ -418,8 +459,7 @@ def events_of(library):
 
 
 STARTED_NOT = (
-    "so this one didn't start, as two on one Library would end each other's runs: stop"
-    " it first"
+    "so this one didn't start, as two on one Library would end each other's runs"
 )
 
 
@@ -429,8 +469,8 @@ STARTED_NOT = (
         ("lib.sqlite", [], STARTED_NOT),
         ("link.sqlite", [], STARTED_NOT),
         ("relative", [], STARTED_NOT),
-        ("lib.sqlite", ["import", "CONFIG"], "so nothing was imported: stop it first"),
-        ("lib.sqlite", ["reset", "--yes"], "so nothing was deleted: stop it first"),
+        ("lib.sqlite", ["import", "CONFIG"], "so nothing was imported"),
+        ("lib.sqlite", ["reset", "--yes"], "so nothing was deleted"),
     ],
     ids=[
         "serve",
@@ -454,10 +494,12 @@ def test_a_library_an_app_serves_is_refused_to_a_second_app_import_and_reset(
     def serve(server, sockets):
         unfinished_run(library)
         before = events_of(library)
-        with pytest.raises(
-            SystemExit, match=f"already serving {re.escape(given)}, {refused}"
-        ):
+        with pytest.raises(SystemExit) as told:
             cli.main(second)
+        assert told.value.code == (
+            f"Deep Reasoning is already using {given} (serving, importing or resetting"
+            f" it), {refused}: stop it, or wait for it to finish."
+        )
         seen.append(events_of(library) == before and library.is_file())
 
     monkeypatch.setattr(uvicorn.Server, "run", serve)
@@ -474,7 +516,7 @@ def test_an_app_started_while_a_reset_deletes_is_refused_and_makes_no_library(
 
     def deleting(paths):
         delete_all(paths)
-        refused = "A reset is under way of .*, so this one didn't start.*wait for it"
+        refused = "already using .*, so this one didn't start.*wait for it to finish"
         with pytest.raises(SystemExit, match=refused):
             cli.main(["--port", str(free_port), "--no-browser"])
 
@@ -488,78 +530,20 @@ def test_the_lock_is_let_go_when_the_app_stops_or_is_killed(served, tmp_path):
     library = tmp_path / "lib.sqlite"
     options = ["--port", "0", "--no-browser", "--library", str(library)]
     cli.main(options)
-    holder = holding(library, cli.SERVING)
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLD_THE_LOCK, str(library)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
     try:
-        with pytest.raises(SystemExit, match="already serving"):
+        assert holder.stdout.readline() == "held\n"
+        with pytest.raises(SystemExit, match="already using"):
             cli.main(options)
     finally:
         holder.kill()
         holder.wait()
     cli.main(options)
     assert len(served) == 2
-
-
-def holding(library, doing):
-    """A process holding the lock beside *library*, *doing* what it says, once it holds it."""
-    holder = subprocess.Popen(
-        [sys.executable, "-c", HOLD_THE_LOCK, str(library), doing],
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    assert holder.stdout.readline() == "held\n"
-    return holder
-
-
-@pytest.mark.parametrize(
-    ("command", "refused"),
-    [
-        (
-            [],
-            "so this one didn't start, as two on one Library would end each other's runs",
-        ),
-        (["import", "CONFIG"], "so nothing was imported"),
-    ],
-    ids=["serve", "import"],
-)
-def test_while_an_import_runs_another_command_is_told_to_wait_for_it(
-    served, tmp_path, advisors, command, refused
-):
-    library = tmp_path / "lib.sqlite"
-    argv = [str(advisors) if each == "CONFIG" else each for each in command]
-    holder = holding(library, cli.IMPORTING)
-    try:
-        with pytest.raises(SystemExit) as told:
-            cli.main(["--no-browser", "--port", "0", "--library", str(library), *argv])
-    finally:
-        holder.kill()
-        holder.wait()
-    said = f"An import is under way into {library}, {refused}: wait for it to finish."
-    assert told.value.code == said
-    assert served == []
-
-
-def test_a_lock_deleted_while_it_was_being_taken_is_opened_afresh(
-    served, tmp_path, monkeypatch
-):
-    library = tmp_path / "lib.sqlite"
-    take = cli.take
-
-    deleted = []
-
-    def deleted_first(lock, *args):
-        # As an import that made a Library and wrote nothing deletes it, still holding it.
-        if not deleted:
-            cli.lock_of(library).unlink()
-            deleted.append(lock)
-        take(lock, *args)
-
-    monkeypatch.setattr(cli, "take", deleted_first)
-    with (
-        cli.owning(library, "held"),
-        open(cli.lock_of(library)) as other,
-        pytest.raises(BlockingIOError),
-    ):
-        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def test_a_file_system_without_locks_is_said_and_the_app_starts_all_the_same(
