@@ -2098,8 +2098,8 @@ def check_stored_name(name):
     why = misleading(name)
     if why:
         raise LibraryError(
-            f"Its name, {name!a}, {why}, so it could pass for another, such as root,"
-            " in the menu."
+            f"Its name, {name!a}, {why}, so it could pass for another namespace in the"
+            " menu."
         )
 
 
