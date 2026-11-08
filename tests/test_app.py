@@ -16,6 +16,7 @@ from urllib.parse import urljoin
 import httpx
 import pytest
 import yaml
+from conftest import CONFIGS
 from deep_reasoner.v2.agent import DEFAULT_EXAMPLE_FENCE
 from fake_model import (
     ASKED,
@@ -763,10 +764,10 @@ async def test_a_chat_keeps_the_namespace_it_started_in(imported, library_on, co
 
 @pytest.mark.anyio
 async def test_a_run_gets_the_librarys_tools_in_a_folder_of_its_own(
-    waitlist, configs, library, library_on, connect, data
+    waitlist, library, library_on, connect, data
 ):
     with closing(open_library(library)) as connection:
-        import_config(connection, waitlist, within=configs)
+        import_config(connection, waitlist, within=CONFIGS)
     plan = {"Join.": [repl("FinalAnswer(waitlist.join('ada', 'CS101'))")]}
     with FakeOpenAI(scripted(plan)) as fake:
         async with connect(library_on(fake)) as api:

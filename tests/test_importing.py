@@ -348,10 +348,8 @@ def test_an_import_may_not_give_a_tool_an_app_tools_name(library, tmp_path, tool
         assert connection.execute("SELECT count(*) FROM tools").fetchone() == (0,)
 
 
-def test_import_says_each_setting_namespace_and_tool_it_changed(
-    library, waitlist, configs
-):
-    said = import_into(library, waitlist, within=configs)
+def test_import_says_each_setting_namespace_and_tool_it_changed(library, waitlist):
+    said = import_into(library, waitlist, within=CONFIGS)
     assert said == [
         "Run settings, for every chat:",
         (
@@ -1098,39 +1096,54 @@ def test_import_blames_a_file_it_composes_that_is_not_a_config(library, tmp_path
 
 # A setting a file outside the config's folder holds, which an import never reads.
 OUTSIDE_SETTING = "max_iter: 7\n"
+
+
+def outside(tmp_path):
+    return tmp_path / "outside.yaml"
+
+
 # Where a config in cfg/ under tmp_path names a file outside that folder: the files
-# laid out (lay_out()), the config, and how the refusal names it.
+# laid out (lay_out()), the config, and how the refusal names it, given tmp_path.
 OUTSIDE_PLACES = {
-    "an absolute path": ({}, "_compose: [{outside}]\n", "{outside},"),
+    "an absolute path": (
+        {},
+        lambda tmp: f"_compose: [{outside(tmp)}]\n",
+        lambda tmp: f"{outside(tmp)},",
+    ),
     "a path up out of its folder": (
         {},
-        "_compose: [../outside.yaml]\n",
-        "../outside.yaml, which is {outside},",
+        lambda tmp: "_compose: [../outside.yaml]\n",
+        lambda tmp: f"../outside.yaml, which is {outside(tmp)},",
     ),
     "a file it composes, composing one outside": (
         {"cfg/parts/base.yaml": "_compose: [../../outside.yaml]\n"},
-        "_compose: [parts/base.yaml]\n",
-        "base.yaml composes ../../outside.yaml, which is {outside},",
+        lambda tmp: "_compose: [parts/base.yaml]\n",
+        lambda tmp: f"base.yaml composes ../../outside.yaml, which is {outside(tmp)},",
     ),
     "a link to a file outside": (
         {"cfg/link.yaml": "->outside.yaml"},
-        "_compose: [link.yaml]\n",
-        "link.yaml, which is {outside},",
+        lambda tmp: "_compose: [link.yaml]\n",
+        lambda tmp: f"link.yaml, which is {outside(tmp)},",
     ),
     "its namespaces_dir up out of its folder": (
         {"names/research.yaml": "system_suffix: hi\n"},
-        "namespaces_dir: ../names\n",
-        "Its namespaces_dir is ../names, which is {tmp}/names,",
+        lambda tmp: "namespaces_dir: ../names\n",
+        lambda tmp: f"Its namespaces_dir is ../names, which is {tmp / 'names'},",
     ),
     "a link in its namespaces_dir to a file outside": (
         {"cfg/names/research.yaml": "->outside.yaml"},
-        "namespaces_dir: names\n",
-        "Its namespaces_dir holds {tmp}/cfg/names/research.yaml, which is {outside},",
+        lambda tmp: "namespaces_dir: names\n",
+        lambda tmp: (
+            f"Its namespaces_dir holds {tmp / 'cfg' / 'names' / 'research.yaml'},"
+            f" which is {outside(tmp)},"
+        ),
     ),
     "a tool's factory_from up out of its folder": (
         {"tally.py": "def build(client, params): ...\n"},
-        "tools:\n  tally: {factory: build, factory_from: ../tally.py}\n",
-        'Tool "tally" names factory_from ../tally.py, which is {tmp}/tally.py,',
+        lambda tmp: "tools:\n  tally: {factory: build, factory_from: ../tally.py}\n",
+        lambda tmp: (
+            f'Tool "tally" names factory_from ../tally.py, which is {tmp / "tally.py"},'
+        ),
     ),
 }
 
@@ -1152,12 +1165,11 @@ def test_import_refuses_a_file_outside_the_configs_folder_naming_it(
     library, tmp_path, place
 ):
     files, text, named = OUTSIDE_PLACES[place]
-    outside = tmp_path / "outside.yaml"
     lay_out(tmp_path, {"outside.yaml": OUTSIDE_SETTING, **files})
     (tmp_path / "cfg").mkdir(exist_ok=True)
-    config = config_file(tmp_path / "cfg", text.replace("{outside}", str(outside)))
+    config = config_file(tmp_path / "cfg", text(tmp_path))
     said = (
-        f"{named.format(outside=outside, tmp=tmp_path)} outside {tmp_path / 'cfg'};"
+        f"{named(tmp_path)} outside {tmp_path / 'cfg'};"
         " an import reads only files in the config's folder and below: copy the file"
         " in, or pass --within with a folder holding both."
     )

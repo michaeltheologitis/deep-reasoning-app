@@ -402,14 +402,6 @@ def serve(port, no_browser, library, home):
 
 
 def main(argv=None):
-    # Importing deep_reasoner quiets structlog to warnings; this command's lines are info.
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO)
-    )
-    # Tracebacks without each frame's variables: a frame may hold a key.
-    structlog.dev.ConsoleRenderer.get_active().exception_formatter = (
-        structlog.dev.plain_traceback
-    )
     parser = argparse.ArgumentParser(
         description="Start Deep Reasoning and open it in a browser tab."
     )
@@ -462,11 +454,17 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not 0 <= args.port <= MAX_PORT:
         parser.error(f"--port must be between 0 and {MAX_PORT}")
-    # Only the import's report on stdout: its log lines go to stderr. Looked up as each
-    # line is logged, so a stream swapped in later is the one written to.
+    # Importing deep_reasoner quiets structlog to warnings; this command's lines are info,
+    # and only the import's report is on stdout, its log lines on stderr: each stream is
+    # looked up as a line is logged, so one swapped in later is the one written to.
     stream = "stderr" if args.command == "import" else "stdout"
     structlog.configure(
-        logger_factory=lambda *_: structlog.PrintLogger(getattr(sys, stream))
+        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+        logger_factory=lambda *_: structlog.PrintLogger(getattr(sys, stream)),
+    )
+    # Tracebacks without each frame's variables: a frame may hold a key.
+    structlog.dev.ConsoleRenderer.get_active().exception_formatter = (
+        structlog.dev.plain_traceback
     )
     if args.command == "import":
         import_or_exit(args.library, args.config, home, args.within)

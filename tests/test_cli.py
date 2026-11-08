@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 import structlog
 import uvicorn
+from conftest import CONFIGS
 from fastapi.testclient import TestClient
 
 from deep_reasoning import cli
@@ -343,10 +344,10 @@ def test_ctrl_c_during_an_import_stops_it_saying_so_and_leaves_nothing(tmp_path)
         os.kill(int(started.read_text()), 0)
 
 
-def test_import_says_what_it_changed(tmp_path, capsys, waitlist, configs):
+def test_import_says_what_it_changed(tmp_path, capsys, waitlist):
     library = tmp_path / "lib.sqlite"
     cli.main(
-        ["import", str(waitlist), "--within", str(configs), "--library", str(library)]
+        ["import", str(waitlist), "--within", str(CONFIGS), "--library", str(library)]
     )
     said = capsys.readouterr().out.splitlines()
     header = said.index(f"Imported {waitlist} into the Library at {library}.")
