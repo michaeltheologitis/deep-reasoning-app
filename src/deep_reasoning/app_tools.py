@@ -140,6 +140,9 @@ CUT_SHORT = (
     " whole text, from show(name), tools(name) or changes()."
 )
 TOO_LONG = f"The YAML may be at most {MAX_YAML_CHARS:,} characters."
+# An example's cell tags, each on a line of its own, which a cell writes as placeholders,
+# as a reply's last real <repl> is the one that runs.
+REAL_TAGS = {"[repl]": "<repl>", "[/repl]": "</repl>"}
 HOLDS_A_KEY = (
     "What you wrote holds a provider's key, and the Library file is shared, so keys never"
     " go in it. Take the key out."
@@ -883,6 +886,35 @@ def check_no_key(texts: list[str], key_names: list[str]) -> None:
     refuse_keys(texts, secrets_of(os.environ, key_names), HOLDS_A_KEY)
 
 
+def with_real_tags(text: str) -> str:
+    """The decomposition written as YAML *text* with each line of an assistant turn that
+    is a placeholder tag alone, [repl] or [/repl], written as the real one; *text* as it
+    is when it has none, or doesn't read as a decomposition, which the store refuses."""
+    try:
+        decomposition = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return text
+    messages = (
+        decomposition.get("messages") if isinstance(decomposition, dict) else None
+    )
+    changed = False
+    for turn in messages if isinstance(messages, list) else []:
+        if not isinstance(turn, dict) or turn.get("role") != "assistant":
+            continue
+        content = turn.get("content")
+        if isinstance(content, str):
+            lines = content.splitlines(keepends=True)
+            turn["content"] = "".join(map(tag_written, lines))
+            changed = changed or turn["content"] != content
+    return dump(decomposition) if changed else text
+
+
+def tag_written(line: str) -> str:
+    """*line*, written as the real tag when it is a placeholder tag alone, its indent kept."""
+    tag = line.strip()
+    return line.replace(tag, REAL_TAGS[tag]) if tag in REAL_TAGS else line
+
+
 def yaml_text(value: Any) -> str:
     """*value*, YAML text or a dict of plain values, as YAML text, from its first line
     that isn't blank."""
@@ -1319,10 +1351,9 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def write_decomposition(namespace: str, yaml: Any) -> dict[str, Any]:
         """Add the decomposition *yaml* to *namespace*, or replace the one of its name."""
         text = yaml_text(yaml)
-        # The engine runs a reply's last <repl> block, so a cell writes [repl] instead;
-        # a text with a real tag was read back, not typed, so its [repl] is the example's.
+        # A text with a real tag was read back, not typed, so its [repl] is the example's.
         if "<repl>" not in text:
-            text = text.replace("[repl]", "<repl>").replace("[/repl]", "</repl>")
+            text = with_real_tags(text)
         check_writable(namespace, text, key_names)
         with app_file(library, "rw") as connection:
             stored, before = add_decomposition(

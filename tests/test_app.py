@@ -1498,7 +1498,10 @@ NAMESPACE_REFUSALS = [
     ),
     (
         library_cell("add_namespace", "research", "spawn: [nowhere]\n"),
-        'spawn names "nowhere", which is not a namespace in the Library.',
+        (
+            'spawn names "nowhere", which is not a namespace in the Library: add'
+            " nowhere first, or take it out of spawn."
+        ),
     ),
     (
         library_cell("add_namespace", "research", "tools: [no_such_tool]\n"),

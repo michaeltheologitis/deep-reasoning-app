@@ -42,6 +42,7 @@ from deep_reasoning.library import (
     LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
+    NO_DESCRIPTION,
     PAGE_DESCRIPTION,
     UNREAD_SETTING,
     UPSERT_DECOMPOSITION,
@@ -649,7 +650,104 @@ def test_the_panel_lists_a_tool_whose_source_is_too_deep_to_parse(library):
     with closing(open_library(library)) as connection:
         connection.execute(UPSERT_TOOL, ("deep", block, deep))
         tools = {tool["name"]: tool for tool in panel(connection)["tools"]}
-    assert tools["deep"]["description"] == ""
+    assert tools["deep"]["description"] == NO_DESCRIPTION
+
+
+COUNT_WORDS = """from deep_reasoner.primitives import Func
+
+DESCRIPTION = "count_words(text) -> how many words text holds"
+
+
+class Counter:
+    \"\"\"Counts what it is shown.\"\"\"
+
+
+def build(client, params):
+    \"\"\"Build the word counter.\"\"\"
+
+    def count_words(text):
+        \"\"\"Count the words in text.\"\"\"
+        return len(text.split())
+
+    return {made}
+"""
+SHADOWED = """from deep_reasoner.primitives import Func
+
+
+def count_words(text):
+    \"\"\"Count the words in text.\"\"\"
+
+
+class Helper:
+    def build(self):
+        return Func(count_words, description="a method's")
+
+
+def build(client, params):
+    def helper():
+        def count_words(text):
+            \"\"\"A nested def's.\"\"\"
+
+    return Func(count_words)
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "description"),
+    [
+        (
+            COUNT_WORDS.format(made='Func(count_words, description="Counts.")'),
+            "Counts.",
+        ),
+        (COUNT_WORDS.format(made='Func(count_words, "Counts.")'), "Counts."),
+        (
+            COUNT_WORDS.format(made='Func(value=count_words, description="Counts.")'),
+            "Counts.",
+        ),
+        (
+            COUNT_WORDS.format(made="Func(count_words, description=DESCRIPTION)"),
+            "count_words(text) -> how many words text holds",
+        ),
+        (
+            COUNT_WORDS.format(
+                made='Func(count_words, description=params["description"])'
+            ),
+            "set when it's built: params['description']",
+        ),
+        (COUNT_WORDS.format(made="Func(count_words)"), "Count the words in text."),
+        (
+            COUNT_WORDS.format(made="Func(Counter(), description=None)"),
+            "Counts what it is shown.",
+        ),
+        (COUNT_WORDS.format(made="Func(lambda text: 0)"), NO_DESCRIPTION),
+        (COUNT_WORDS.format(made='Func(params["made"])'), NO_DESCRIPTION),
+        (SHADOWED, "Count the words in text."),
+        ("def build(client, params):\n    return 1\n", NO_DESCRIPTION),
+        ("def build(client, params) 1\n", NO_DESCRIPTION),
+    ],
+    ids=[
+        "keyword",
+        "positional",
+        "keyword-only",
+        "constant",
+        "set-when-built",
+        "function-docstring",
+        "class-docstring",
+        "lambda",
+        "unknown-value",
+        "shadowed",
+        "no-func",
+        "not-python",
+    ],
+)
+def test_a_custom_tools_description_is_what_its_source_tells_the_agent(
+    library, source, description
+):
+    block = dump({"factory": "build", "factory_from": "count_words.py"})
+    with closing(open_library(library)) as connection:
+        connection.execute(UPSERT_TOOL, ("count_words", block, source))
+        tools = {tool["name"]: tool for tool in panel(connection)["tools"]}
+    assert tools["count_words"]["description"] == description
 
 
 @pytest.mark.parametrize(
@@ -820,7 +918,13 @@ def test_a_namespace_the_panel_cannot_take_is_refused_with_a_plain_message(
             "tools: [ghost]\n",
             "The engine refuses it: namespace 'research' grants unknown tool 'ghost'",
         ),
-        ("spawn: [nowhere]\n", 'spawn names "nowhere", which is not a namespace'),
+        (
+            "spawn: [nowhere]\n",
+            (
+                'spawn names "nowhere", which is not a namespace in the Library: add'
+                " nowhere first, or take it out of spawn."
+            ),
+        ),
     ],
 )
 def test_a_namespace_granting_an_unknown_tool_or_spawning_nowhere_is_not_written(
@@ -833,6 +937,19 @@ def test_a_namespace_granting_an_unknown_tool_or_spawning_nowhere_is_not_written
         LibraryError, match=re.escape(problem.replace("research", "router"))
     ):
         change(imported, change_namespace, "router", text)
+    assert dumped(imported) == before
+
+
+def test_a_new_namespace_spawning_one_to_go_under_it_says_in_which_order_to_add_them(
+    imported,
+):
+    before = dumped(imported)
+    refusal = (
+        'spawn names "team.a", which goes under team and isn\'t in the Library yet: add'
+        " team without it first, then team.a, then put team.a in the spawn of team."
+    )
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        change(imported, add_namespace, "team", "spawn: [team.a]\n")
     assert dumped(imported) == before
 
 
@@ -885,7 +1002,7 @@ def test_deleting_the_default_namespace_starts_new_chats_in_root(imported):
         ("research", "Delete its namespaces first: research.papers."),
         ("course_advisor", "First take course_advisor out of the spawn of router"),
         (ROOT, "root can't be deleted"),
-        ("nowhere", 'The Library has no namespace "nowhere"'),
+        ("nowhere", 'The Library has no namespace "nowhere" to delete.'),
     ],
 )
 def test_a_refused_delete_says_why_and_changes_nothing(imported, name, problem):
@@ -895,6 +1012,22 @@ def test_a_refused_delete_says_why_and_changes_nothing(imported, name, problem):
     with pytest.raises(LibraryError, match=re.escape(problem)):
         change(imported, delete_namespace, name, 0)
     assert dumped(imported) == before
+
+
+def test_each_namespace_row_gives_the_refusal_its_delete_would_get(imported):
+    change(imported, add_namespace, "research", RESEARCH)
+    change(imported, add_namespace, "research.papers", "")
+    for row in panel_of(imported)["namespaces"]:
+        if row["refusal"] is None:
+            continue
+        with pytest.raises(LibraryError) as refused:
+            change(imported, delete_namespace, row["name"], len(row["decompositions"]))
+        assert str(refused.value) == row["refusal"]
+    refusals = {row["name"]: row["refusal"] for row in panel_of(imported)["namespaces"]}
+    assert (refusals["research.papers"], refusals["router"]) == (None, None)
+    assert {"research", "course_advisor", ROOT} <= {
+        name for name, refusal in refusals.items() if refusal
+    }
 
 
 def test_a_delete_that_counted_fewer_decompositions_than_are_there_is_refused(
@@ -1052,28 +1185,48 @@ def test_an_edit_may_not_take_the_name_of_another_decomposition_there(imported):
     assert dumped(imported) == before
 
 
+BY_WHOM = "(by the librarian, another tab or an import)"
+NOT_SAVED = (
+    f"was changed after you opened it {BY_WHOM}, so nothing was saved: saving would undo"
+    " that change. Look at it as it is now, then save again."
+)
+
+
 @pytest.mark.parametrize(
-    "act",
+    ("act", "changed", "gone"),
     [
-        lambda connection, name, was: edit_decomposition(
-            connection, "router", name, was, ADDED
+        (
+            lambda connection, name, was: edit_decomposition(
+                connection, "router", name, was, ADDED
+            ),
+            NOT_SAVED,
+            NOT_SAVED,
         ),
-        lambda connection, name, was: delete_decomposition(
-            connection, "router", name, was
+        (
+            lambda connection, name, was: delete_decomposition(
+                connection, "router", name, was
+            ),
+            (
+                f"was changed after you opened it {BY_WHOM}, so it wasn't deleted. Look"
+                " at it as it is now, then delete it again if you still want to."
+            ),
+            f"was already deleted or renamed {BY_WHOM}.",
         ),
     ],
     ids=["edit", "delete"],
 )
 def test_an_edit_or_delete_of_a_decomposition_changed_or_deleted_meanwhile_is_refused(
-    imported, act
+    imported, act, changed, gone
 ):
     [(name, text), *_] = names_and_yaml(imported, "router")
     change(imported, add_decomposition, "router", text + "# changed\n", True)
     before = dumped(imported)
-    with pytest.raises(ChangedMeanwhile, match=f'"{name}" in router was changed'):
+    with pytest.raises(
+        ChangedMeanwhile, match=re.escape(f'"{name}" in router {changed}')
+    ):
         change(imported, act, name, text)
-    with pytest.raises(ChangedMeanwhile):
-        change(imported, act, "not there", text)
+    with pytest.raises(ChangedMeanwhile, match=re.escape(f'"gone" in router {gone}')):
+        change(imported, act, "gone", text)
     assert dumped(imported) == before
 
 
@@ -1106,8 +1259,13 @@ def test_a_tool_is_deleted_only_once_no_namespace_grants_it(library):
     assert dumped(library) == before
     [tally] = [each for each in panel_of(library)["tools"] if each["name"] == "tally"]
     assert (tally["stored"], tally["source"]) == (True, TOOL_SOURCE)
+    assert tally["refusal"] == (
+        "tally is granted in counting, counting.more: take it out of their tools first."
+    )
     change(library, delete_namespace, "counting.more", 0)
     change(library, change_namespace, "counting", "")
+    [tally] = [each for each in panel_of(library)["tools"] if each["name"] == "tally"]
+    assert tally["refusal"] is None
     change(library, delete_tool, "tally")
     assert "tally" not in [each["name"] for each in panel_of(library)["tools"]]
 
@@ -1124,9 +1282,11 @@ def test_a_tool_the_library_holds_no_row_for_is_not_deleted(library, name, refus
     shown = {each["name"]: each for each in panel_of(library)["tools"]}
     assert all(not each["stored"] and each["source"] is None for each in shown.values())
     before = dumped(library)
-    with pytest.raises(LibraryError, match=re.escape(refusal)):
+    with pytest.raises(LibraryError, match=re.escape(refusal)) as refused:
         change(library, delete_tool, name)
     assert dumped(library) == before
+    # rag, granted nowhere, is not listed at all.
+    assert name not in shown or shown[name]["refusal"] == str(refused.value)
 
 
 def test_a_run_setting_the_engine_doesnt_read_is_deleted_and_one_it_reads_stays(
