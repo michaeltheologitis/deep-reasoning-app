@@ -85,6 +85,8 @@ from deep_reasoning.pages import MAX_PAGE_CHARS, read_page
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
     KEY_WITHHELD,
+    LEFT_OUT,
+    LEFT_OUT_FIELDS,
     LOST,
     PAGE_FIELDS,
     SPEC,
@@ -271,6 +273,17 @@ def test_steps_list_each_page_opened_with_the_agent_that_opened_it(library):
     assert history.steps(1, node=tabler["node"])[1]["title"] == tabled["title"]
 
 
+def test_steps_list_a_worked_example_left_out_with_the_agent_it_was_for(library):
+    events = recorded("left_out")
+    plant(library, CHAT, events)
+    history = history_of(library)
+    [left_out] = [event for event in events if event["kind"] == LEFT_OUT]
+    [counter] = history.agents(1)
+    as_step = {"kind": "left_out"} | {key: left_out[key] for key in LEFT_OUT_FIELDS}
+    assert history.steps(1, node=counter["node"])[0] == as_step | {"drive": 1}
+    assert [step["kind"] for step in history.steps(1)] == ["cell", "cell"]
+
+
 @pytest.mark.parametrize("name", ["stopped", "killed"])
 def test_what_a_stopped_run_left_going_reads_as_stopped(library, name):
     plant(library, CHAT, recorded(name))
@@ -281,12 +294,17 @@ def test_what_a_stopped_run_left_going_reads_as_stopped(library, name):
     assert [cell["status"] for cell in going] == ["stopped", "stopped"]
 
 
-def test_a_run_the_app_stopped_under_reads_as_failed(library):
+def test_a_run_the_app_stopped_under_reads_as_failed_and_what_it_left_going_cut_off(
+    library,
+):
     plant(library, CHAT, recorded("killed")[:-1])
     history = history_of(library)
     [turn] = history.turns()
+    [agent] = history.agents(1)
+    going = [history.steps(1)[-1], history.steps(1, node=agent["node"])[-1]]
     assert (turn["outcome"], turn["detail"]) == ("failed", LOST)
-    assert history.agents(1)[0]["status"] == "stopped"
+    assert agent["status"] == "cut off"
+    assert [cell["status"] for cell in going] == ["cut off", "cut off"]
 
 
 def test_an_exhausted_run_and_its_exhausted_sub_agent_read_as_such(library):
@@ -335,7 +353,7 @@ def test_a_sub_agent_started_again_as_the_root_leaves_history_answering(library)
         "Crafted.",
     ]
     assert [(agent["node"], agent["status"]) for agent in history.agents(2)] == [
-        (2, "stopped")
+        (2, "cut off")
     ]
     assert history.agents(1)[0]["task"] == "Survey CS."
 
@@ -449,8 +467,9 @@ def test_errors_list_each_agent_that_stopped_or_ran_out_of_turns(
 
 def test_errors_list_a_run_the_app_stopped_under_as_failed(library):
     plant(library, CHAT, recorded("killed")[:-1])
-    top, _ = history_of(library).errors(1)
+    top, sub_agent = history_of(library).errors(1)
     assert (top["node"], top["error"]) == (None, f"It ended failed: {LOST}")
+    assert sub_agent["error"] == "It ended cut off."
 
 
 def test_errors_give_what_a_sub_agents_cell_raised_and_its_index_in_its_steps(library):
@@ -1881,6 +1900,30 @@ def test_a_suffix_the_user_stored_with_a_run_time_line_is_kept_by_a_change(fresh
     assert own_fields(fresh, "drafts")["system_suffix"] == suffix
 
 
+APPLY_THE_RATE = """\
+name: apply the rate
+messages:
+- {role: user, content: "Apply {{ vars.rate.value }} to 100."}
+- {role: assistant, content: "<think>Multiply.</think>\\n<repl>FinalAnswer(100 * rate)</repl>"}
+"""
+
+
+def test_the_tool_refuses_to_take_away_a_var_a_worked_example_reads(fresh):
+    tool = library_tool(fresh)
+    tool.change_namespace("drafts", {"vars": {"rate": 0.2, "currency": "EUR"}})
+    tool.write_decomposition("drafts", APPLY_THE_RATE)
+    before = stored_namespaces(fresh)
+    refusal = (
+        'Worked example "apply the rate" reads vars.rate, which this takes away from'
+        " drafts: keep rate in vars, or change the worked example first."
+    )
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        tool.change_namespace("drafts", {"vars": {"currency": "EUR"}})
+    assert stored_namespaces(fresh) == before
+    tool.change_namespace("drafts", {"vars": {"rate": 0.25}})
+    assert own_fields(fresh, "drafts")["vars"] == {"rate": 0.25}
+
+
 @pytest.mark.parametrize(
     ("parent", "own", "refusal"),
     [
@@ -2618,6 +2661,7 @@ RECORDED = [
     "stopped",
     "librarian",
     "pages",
+    "left_out",
 ]
 
 

@@ -181,6 +181,16 @@ for (const name of ["stopped", "killed"]) {
   });
 }
 
+test("what a run left going reads cut off, not stopped, when it ended without a stop, as when the app stopped under it", () => {
+  const events = recorded("killed").slice(0, -1);
+  const lost = { seq: last(events).seq + 1, t: last(events).t, kind: "turn.end", outcome: "failed", answer: null, detail: "The run's end wasn't saved." };
+  const { turn } = foldEvents([...events, lost]);
+  assert.equal(turn.outcome, "failed");
+  assert.ok(allRows(turn).length > 0);
+  assert.ok(allRows(turn).every((row) => row.status === "cut off"));
+  assert.ok(allCells(turn).every((cell) => cell.status !== "running" && cell.status !== "stopped"));
+});
+
 test("a row the run's end stopped is timed to that end", () => {
   const events = recorded("killed");
   const { turn } = foldEvents(events);
@@ -409,4 +419,15 @@ test("a page of no known agent, as a crafted file may hold, is left out", () => 
     { seq: 3, t: 1, kind: "page.open", node: 9, cell: 1, page: "nowhere", title: "Nowhere" },
   ]);
   assert.deepEqual([turn.steps, turn.pages], [[], []]);
+});
+
+test("a worked example its agent wasn't shown is the agent's first step, saying which, where and why", () => {
+  const events = recorded("left_out");
+  const { turn } = foldEvents(events);
+  const [counter] = rowsOf(turn);
+  const [leftOut] = ofKind(events, "example.left_out");
+  assert.deepEqual(counter.steps[0], { kind: "left_out", name: "tally", namespace: "tallying", why: "ZeroDivisionError: division by zero" });
+  assert.equal(leftOut.node, 2);
+  assert.ok(turn.steps.every((step) => step.kind !== "left_out"));
+  assert.equal(turn.answer, "tallied");
 });

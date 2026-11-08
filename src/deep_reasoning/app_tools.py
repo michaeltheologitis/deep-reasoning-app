@@ -114,6 +114,8 @@ from deep_reasoning.pages import (
 )
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
+    LEFT_OUT,
+    LEFT_OUT_FIELDS,
     PAGE_FIELDS,
     SPEC,
     chat_turns,
@@ -300,7 +302,10 @@ SNIPPET_CHARS = 60
 NOT_FINDABLE = (
     "find takes the text to look for, as text (a str) of one character or more."
 )
-ENDED_BADLY = ("failed", "stopped", "exhausted")
+STOPPED = "stopped"
+# As fold.js words what a run left going when it ended other than stopped.
+CUT_OFF = "cut off"
+ENDED_BADLY = ("failed", STOPPED, CUT_OFF, "exhausted")
 # The REPL's frame atop a raised traceback, plain or an exception group's, with its source
 # line and any carets: the engine's, not the cell's, so the fold drops it from a cell's
 # output, as the chat does (EXEC_FRAME in tree.js); a step the historian printed carried it.
@@ -381,8 +386,8 @@ def start_cell(tree: Tree, event: Event) -> None:
 
 
 def add_logged(kind: str, fields: tuple[str, ...], tree: Tree, event: Event) -> None:
-    """A change the library tool made, or a page the page tool opened, as a step of the
-    agent that did it."""
+    """A change the library tool made, a page the page tool opened, or a worked example
+    left out, as a step of the agent it was for."""
     step = {"kind": kind} | {key: event.get(key) for key in fields}
     add_step(tree, event.get("node"), step)
 
@@ -422,14 +427,15 @@ def end_agent(tree: Tree, event: Event) -> None:
 
 
 def end_turn(tree: Tree, event: Event) -> None:
-    """What the run left going when it ended was stopped with it, a sub-agent timed to
-    the end."""
+    """What the run left going when it ended was stopped with it, when it was stopped,
+    else cut off, as when the app stopped under it; a sub-agent timed to the end."""
+    status = STOPPED if event.get("outcome") == STOPPED else CUT_OFF
     for row in tree.rows:
         if row["status"] == "running":
-            row |= {"status": "stopped", "seconds": event["t"] - row["started"]}
+            row |= {"status": status, "seconds": event["t"] - row["started"]}
     for cell in tree.cells.values():
         if cell["status"] == "running":
-            cell["status"] = "stopped"
+            cell["status"] = status
 
 
 FOLDS = {
@@ -440,6 +446,7 @@ FOLDS = {
     "cell.end": end_cell,
     "library.change": partial(add_logged, "change", CHANGE_FIELDS),
     "page.open": partial(add_logged, "page", PAGE_FIELDS),
+    LEFT_OUT: partial(add_logged, "left_out", LEFT_OUT_FIELDS),
     "usage": add_usage,
     "agent.end": end_agent,
     "turn.end": end_turn,
@@ -715,8 +722,8 @@ class History:
         return cut([agent_row(row) for row in self.tree(turn).rows])
 
     def steps(self, turn: int, node: Any = None) -> list[dict[str, Any]]:
-        """The thoughts, cells, Library changes and pages of message *turn*'s top agent,
-        or of sub-agent *node*."""
+        """The thoughts, cells, Library changes, pages and worked examples left out of
+        message *turn*'s top agent, or of sub-agent *node*."""
         # A copy: the folded runs are kept for the next call.
         return cut([step for _, _, step in indexed(self.drives(turn, node))])
 

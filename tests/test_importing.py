@@ -1302,6 +1302,31 @@ def test_import_refuses_to_take_away_a_variable_a_kept_worked_example_reads(
     refused_unchanged(library, config, KEEP_VARIABLES)
 
 
+READS_RATE = """\
+namespaces:
+  root:
+    vars: {rate: 0.2}
+    decompositions:
+    - name: apply the rate
+      messages:
+      - {role: user, content: "Apply {{ vars.rate.value }} to 100."}
+      - {role: assistant, content: "<think>Multiply.</think>\\n<repl>FinalAnswer(1)</repl>"}
+"""
+
+
+def test_import_refuses_to_take_away_a_var_a_kept_worked_example_reads(
+    library, tmp_path
+):
+    (tmp_path / "first").mkdir()
+    import_into(library, config_file(tmp_path / "first", READS_RATE))
+    config = config_file(tmp_path, "namespaces:\n  root:\n    vars: {currency: EUR}\n")
+    said = (
+        'Namespace root: Worked example "apply the rate" reads vars.rate, which this'
+        f" takes away from root, {HISTORIAN}, {LIBRARIAN}: keep rate in vars"
+    )
+    refused_unchanged(library, config, said)
+
+
 def test_import_refuses_yaml_nested_too_deeply_in_words(library, tmp_path):
     config = config_file(tmp_path, "max_iter: " + "[" * 5000 + "]" * 5000 + "\n")
     refused_unchanged(library, config, f"{config} is nested too deeply to read.")

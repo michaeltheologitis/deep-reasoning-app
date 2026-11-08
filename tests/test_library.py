@@ -2,6 +2,7 @@ import json
 import re
 import socket
 import sqlite3
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -26,6 +27,7 @@ from deep_reasoner.v2.cli import (
     declared_tool_names,
 )
 from deep_reasoner.v2.messages import func, var
+from jinja2.sandbox import SecurityError
 from structlog.testing import capture_logs
 
 from deep_reasoning.importing import import_config
@@ -33,6 +35,8 @@ from deep_reasoning.library import (
     APP_TOOLS_FILE,
     BEFORE_EVENTS,
     BEFORE_PAGES,
+    CELL_ESCAPE,
+    ESCAPE,
     FIELDS_MAPPING,
     FILLED_IN,
     HAND_OFF_TURNS,
@@ -48,16 +52,21 @@ from deep_reasoning.library import (
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
     LOCAL_REPL,
+    MAX_RENDERED_CHARS,
     MAX_ROW_BYTES,
     MAX_YAML_CHARS,
     NAME_NOT_TEXT,
     NO_DESCRIPTION,
     NO_SUB_AGENTS,
     PAGE_DESCRIPTION,
+    PAST_THE_LIMIT,
+    RENDER_S,
     ROOT_SUFFIX,
     SANDBOX_LINE,
+    SANDBOXED,
     SHAPES,
     SPAWN_LINE,
+    TOO_SLOW,
     UNREAD_SETTING,
     UNRENDERED_DECOMPOSITION,
     UPSERT_DECOMPOSITION,
@@ -82,6 +91,7 @@ from deep_reasoning.library import (
     handed_to,
     has_namespace,
     library_tools,
+    namespace_yaml,
     open_library,
     panel,
     parsed,
@@ -89,9 +99,12 @@ from deep_reasoning.library import (
     sandbox_templates,
     store_tool,
     stored_config,
+    template_names,
+    template_problem,
     tool_name_problem,
     tool_text,
     turn_problems,
+    vars_read,
     writing,
 )
 
@@ -1929,7 +1942,9 @@ def test_a_decomposition_the_engine_cant_render_is_refused_naming_its_turn(
 ):
     text = answering("braces", code)
     before = dumped(library)
-    escape = "Write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%"
+    escape = (
+        "Put the cell's code between {% raw %} and {% endraw %}, inside <repl>…</repl>"
+    )
     with pytest.raises(LibraryError, match=re.escape(problem)) as refused:
         change(library, add_decomposition, ROOT, text)
     assert escape in str(refused.value)
@@ -2131,6 +2146,72 @@ def test_a_namespace_granting_a_tool_root_grants_says_it_grants_it_here(library)
     ]
 
 
+@pytest.mark.parametrize(
+    ("text", "hint"),
+    [
+        ('<think>Total.</think>\n<repl>print(f"{{{total}}}")</repl>', CELL_ESCAPE),
+        ("What is {{ total }}?", ESCAPE),
+    ],
+    ids=["in-a-cell", "in-a-task"],
+)
+def test_a_template_refused_says_how_to_keep_its_braces_where_they_are(text, hint):
+    assert template_problem("Turn 1", text, template_names({})).endswith(hint)
+
+
+@pytest.mark.parametrize(
+    ("template", "read"),
+    [
+        ("{{ vars.rate.value }}", {"rate"}),
+        ("{{ vars['rate'].value }}", {"rate"}),
+        ("{{ vars.get('rate').value }}", {"rate"}),
+        ("{{ vars.get('rate', 0.2) }}", set()),
+        ("{{ vars.items()|list }} {{ vars.keys() }} {{ vars.values() }}", set()),
+        ("{% for name in vars %}{{ name }}{% endfor %}", set()),
+    ],
+    ids=["an-attribute", "an-item", "get", "get-or-else", "its-methods", "each-name"],
+)
+def test_the_vars_a_worked_example_reads_are_those_it_names(template, read):
+    assert vars_read(parsed(answering("reads", f'print("{template}")'))) == read
+
+
+def problems_in(library, namespace):
+    [shown] = [
+        row for row in panel_of(library)["namespaces"] if row["name"] == namespace
+    ]
+    return {each["name"]: each["problems"] for each in shown["decompositions"]}
+
+
+def test_a_worked_example_reading_a_var_its_namespace_doesnt_set_is_not_marked(library):
+    # A caller may pass the var as it spawns the agent, which no check can know.
+    change(library, add_namespace, "pricing", "vars: {currency: EUR}\n")
+    reads_rate = answering("apply", 'print("{{ vars.rate.value }}")')
+    stored, _ = change(library, add_decomposition, "pricing", reads_rate)
+    assert stored["problems"] == []
+    assert problems_in(library, "pricing") == {"apply": []}
+
+
+@pytest.mark.parametrize("held", ["vars: null", "vars: 5", "vars: [rate, fee]"])
+def test_a_namespace_left_out_for_its_vars_is_mended_by_a_save(library, held):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("pricing", f"{held}\n"))
+    reads_rate = answering("apply", 'print("{{ vars.rate.value }}")')
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_DECOMPOSITION, ("pricing", "apply", reads_rate))
+    change(library, change_namespace, "pricing", "vars: {currency: EUR}\n")
+    assert change(library, namespace_yaml, "pricing") == "vars: {currency: EUR}\n"
+
+
+def test_taking_away_a_var_read_with_get_is_refused_and_a_var_named_get_is_not_read(
+    library,
+):
+    change(library, add_namespace, "pricing", "vars: {rate: 0.2, get: 1}\n")
+    reads_rate = answering("apply", "print(\"{{ vars.get('rate').value }}\")")
+    change(library, add_decomposition, "pricing", reads_rate)
+    with pytest.raises(LibraryError, match=re.escape('"apply" reads vars.rate')):
+        change(library, change_namespace, "pricing", "vars: {get: 1}\n")
+    change(library, change_namespace, "pricing", "vars: {rate: 0.2}\n")
+
+
 def test_the_names_a_template_may_read_are_those_the_engine_fills_in():
     assert set(FILLED_IN) == set(_render_context([], {}, "a task"))
 
@@ -2156,6 +2237,66 @@ WRITTEN_TEMPLATES = {
     ),
 }
 TICKETS = "open tickets"
+LOOPING = "{{% for i in 'x' * 3000 %}}{{% for j in 'x' * 3000 %}}{body}{{% endfor %}}{{% endfor %}}"
+# Long, so loops reach the limit in a thousand turns, well within the time a render has.
+LOOPED = "ab" * 500
+# Refused as it passes the limit, so long before it would have made it all.
+REFUSED_S = 2
+# Templates that would make a text, list or number a few times past the limit, each a
+# different way; unbounded, each renders in about a second.
+PAST_THE_LIMIT_TEMPLATES = {
+    "a text multiplied": "{{ 'ab' * 3000000 }}",
+    "a list multiplied": "{{ ([1] * 3000000)|length }}",
+    "a power": "{{ 10 ** 3000000 }}",
+    "a number squared and squared": (
+        "{% set ns = namespace(n=2) %}{% for _ in 'x' * 23 %}"
+        "{% set ns.n = ns.n * ns.n %}{% endfor %}{{ ns.n > 1 }}"
+    ),
+    "loops rendering": LOOPING.format(body=LOOPED),
+    "loops in a macro": (
+        f"{{% macro m() %}}{LOOPING.format(body=LOOPED)}{{% endmacro %}}{{{{ m()|length }}}}"
+    ),
+    "loops in a set block": (
+        f"{{% set x %}}{LOOPING.format(body=LOOPED)}{{% endset %}}{{{{ x|length }}}}"
+    ),
+    "a text doubled in a namespace": (
+        "{% set ns = namespace(s='ab') %}{% for _ in 'x' * 23 %}"
+        "{% set ns.s = ns.s ~ ns.s %}{% endfor %}{{ ns.s|length }}"
+    ),
+    "a text doubled by a macro calling itself": (
+        "{% macro m(s, n) %}{% if n %}{{ m(s ~ s, n - 1)|length }}{% endif %}"
+        "{% endmacro %}{{ m('ab', 23) }}"
+    ),
+    "a list doubled in place": (
+        "{% set l = ['ab'] %}{% for _ in 'x' * 23 %}{{ l.extend(l) }}{% endfor %}"
+        "{{ l|length }}"
+    ),
+    "a method": "{{ 'x'.ljust(3000000)|length }}",
+    "a filter": "{{ ('a' * 999999)|replace('a', 'aaa')|length }}",
+    "a printf width": "{{ ('%03000000d' % 1)|length }}",
+    "a printf width given": "{{ ('%0*d' % (3000000, 1))|length }}",
+    "a printf width given, on the left": "{{ ('%*d' % (-3000000, 1))|length }}",
+    "a printf precision": "{{ ('%.3000000f' % 1.0)|length }}",
+    "printf fields together": "{{ (('%0999999d' * 3) % (1, 2, 3))|length }}",
+    "the format filter's width": "{{ ('%03000000d'|format(1))|length }}",
+    "a format width": "{{ '{:>3000000}'.format(1)|length }}",
+    "a format width given": "{{ '{:>{}}'.format(1, 3000000)|length }}",
+    "format fields together": "{{ ('{0:>999999}' * 3).format(1)|length }}",
+}
+# Widths no machine could allocate: unbounded, each fails at once, not as the limit.
+UNALLOCATABLE = 10**15
+WIDE_TEMPLATES = {
+    "center": f"{{{{ 'x'|center({UNALLOCATABLE}) }}}}",
+    "ljust": f"{{{{ 'x'.ljust({UNALLOCATABLE}) }}}}",
+    "rjust": f"{{{{ 'x'.rjust({UNALLOCATABLE}) }}}}",
+    "zfill": f"{{{{ '1'.zfill({UNALLOCATABLE}) }}}}",
+    "expandtabs": f"{{{{ '\\t'.expandtabs({UNALLOCATABLE}) }}}}",
+    "the indent filter": f"{{{{ 'a\\nb'|indent({UNALLOCATABLE}) }}}}",
+    "the wordwrap filter": f"{{{{ 'a b'|wordwrap({UNALLOCATABLE}) }}}}",
+    "the truncate filter": f"{{{{ 'ab'|truncate({UNALLOCATABLE}) }}}}",
+    "a printf width": f"{{{{ '%0{UNALLOCATABLE}d' % 1 }}}}",
+    "a format width": f"{{{{ '{{:>{UNALLOCATABLE}}}'.format(1) }}}}",
+}
 
 
 def test_each_worked_example_a_run_renders_renders_the_same_sandboxed(
@@ -2188,6 +2329,77 @@ def test_each_worked_example_a_run_renders_renders_the_same_sandboxed(
     assert rendered() == unsandboxed
     for name, (_, expected) in WRITTEN_TEMPLATES.items():
         assert unsandboxed[ROOT, name] == [("user", expected)]
+
+
+@pytest.mark.parametrize(
+    "template", PAST_THE_LIMIT_TEMPLATES.values(), ids=PAST_THE_LIMIT_TEMPLATES
+)
+def test_a_run_refuses_a_template_making_anything_past_the_limit(template):
+    started = time.monotonic()
+    with pytest.raises(SecurityError, match=re.escape(PAST_THE_LIMIT)):
+        SANDBOXED().from_string(template).render()
+    assert time.monotonic() - started < REFUSED_S
+
+
+@pytest.mark.parametrize("template", WIDE_TEMPLATES.values(), ids=WIDE_TEMPLATES)
+def test_a_run_refuses_a_width_past_the_limit_before_making_it(template):
+    with pytest.raises(SecurityError, match=re.escape(PAST_THE_LIMIT)):
+        SANDBOXED().from_string(template).render()
+
+
+# Numbers past the limit that pad nothing, each with what it renders.
+NUMBERS_PAST_THE_LIMIT = {
+    "formatted": ("{{ '{:,}'.format(8000000000) }}", "8,000,000,000"),
+    "printf formatted": ("{{ '%d people' % 8000000000 }}", "8000000000 people"),
+    "through the format filter": ("{{ '%.1e'|format(8000000000) }}", "8.0e+09"),
+    "a filter's value": ("{{ 8000000000|filesizeformat }}", "8.0 GB"),
+    "a var's default": ("{{ vars.get('budget', 2000000) }}", "2000000"),
+    "a default": ("{{ nothing|default(5000000) }}", "5000000"),
+    "a tool's argument": ("{{ tool(10000000) }}", "10000000"),
+}
+
+
+@pytest.mark.parametrize(
+    ("template", "rendered"),
+    NUMBERS_PAST_THE_LIMIT.values(),
+    ids=NUMBERS_PAST_THE_LIMIT,
+)
+def test_a_number_past_the_limit_that_pads_nothing_renders(template, rendered):
+    given = {"vars": {}, "tool": lambda number: number}
+    assert SANDBOXED().from_string(template).render(given) == rendered
+
+
+def test_a_template_done_rendering_just_past_its_time_is_kept():
+    def slow():
+        time.sleep(RENDER_S + 0.2)
+        return "done"
+
+    assert SANDBOXED().from_string("{{ slow() }}").render(slow=slow) == "done"
+
+
+def rendering_forever():
+    """How rendering a template that loops for hours, outputting nothing, ends: what it
+    raised, after how long, and whether the thread's tracer is as it was."""
+    looping = LOOPING.replace("3000", "99999").format(body="")
+    tracer, started = sys.gettrace(), time.monotonic()
+    with pytest.raises(TimeoutError) as raised:
+        SANDBOXED().from_string(looping).render()
+    return str(raised.value), time.monotonic() - started, sys.gettrace() is tracer
+
+
+def test_a_template_still_rendering_past_its_time_stops_on_any_thread():
+    with ThreadPoolExecutor() as cells:
+        ended = [rendering_forever(), cells.submit(rendering_forever).result()]
+    for why, seconds, tracer_kept in ended:
+        assert why == TOO_SLOW
+        assert RENDER_S <= seconds < RENDER_S + REFUSED_S
+        assert tracer_kept
+
+
+def test_a_template_making_as_much_as_the_limit_renders():
+    template = "{{ 'ab' * HALF }}{% for _ in 'x' %}{% endfor %}"
+    rendered = SANDBOXED().from_string(template).render(HALF=MAX_RENDERED_CHARS // 2)
+    assert len(rendered) == MAX_RENDERED_CHARS
 
 
 def test_a_reasoner_the_engine_doesnt_know_elsewhere_holds_up_no_other_change(library):
