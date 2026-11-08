@@ -597,6 +597,18 @@ FIELDS_MAPPING = 'The YAML should be a mapping of fields, like "tools: [llm]".'
 BUILTIN_NAMES = frozenset(dir(builtins))
 # Characters that don't show: controls and formats, such as a zero-width space.
 INVISIBLE = ("Cc", "Cf")
+# Lowercase letters of other scripts that look like Latin ones, as those: enough to tell
+# a namespace named to pass for another, not a full table of confusables.
+LATIN_LOOK_ALIKES = str.maketrans(
+    {
+        # Cyrillic
+        "а": "a", "с": "c", "ԁ": "d", "е": "e", "һ": "h", "і": "i", "ј": "j", "ӏ": "l",
+        "о": "o", "р": "p", "ԛ": "q", "ѕ": "s", "у": "y", "х": "x", "ԝ": "w",
+        # Greek
+        "α": "a", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p", "τ": "t",
+        "υ": "u", "χ": "x",
+    }
+)  # fmt: skip
 # What the engine renders a turn's template against, beside prompt_template_variables.
 FILLED_IN = ("task", "vars", "funcs", "coroutines")
 # Never rendered, only parsed and compiled; with no globals, range() is an unknown name.
@@ -1008,9 +1020,10 @@ def own_fields(name, text):
 def read_namespaces(connection):
     """The namespaces that load, as {name: own fields}; those left out, as {name: why};
     and each one's own YAML as the panel shows it, None for one too long or not text.
-    One named so it could pass for another (misleading()) goes too. One under
-    a namespace left out or not there goes too, as the engine can't resolve it; root's
-    stay, as the engine supplies a bare root for a file without one."""
+    One named so it could pass for root (check_stored_name()) or for another that loads
+    (look_alikes()) goes too. One under a namespace left out or not there goes too, as
+    the engine can't resolve it; root's stay, as the engine supplies a bare root for a
+    file without one."""
     query = f"SELECT name, {fitting('yaml')} FROM namespaces ORDER BY rowid"
     namespaces, left, shown = {}, {}, {}
     for name, text, size in connection.execute(query):
@@ -1024,6 +1037,10 @@ def read_namespaces(connection):
             namespaces[name] = own_fields(name, shown[name])
         except LibraryError as error:
             left[name] = warn_left_out("namespaces", name, str(error))
+    for name, other in look_alikes(list(namespaces)).items():
+        del namespaces[name]
+        why = f"Its name, {name!a}, reads as {other}, so it could pass for that one in the menu."
+        left[name] = warn_left_out("namespaces", name, why)
     # Parents first, as each has a dot fewer.
     for name in sorted(namespaces, key=lambda each: each.count(".")):
         parent = parent_of(name)
@@ -2092,32 +2109,43 @@ def check_name(name):
 
 
 def check_stored_name(name):
-    """Raise unless a stored namespace's *name* reads as what it is (misleading()),
-    written out, so one such as r\u043eot (a Cyrillic o) shows what it holds. The save's
-    stricter rules (check_name()) are left to saving, so an older Library's names stay."""
-    why = misleading(name)
-    if why:
-        raise LibraryError(
-            f"Its name, {name!a}, {why}, so it could pass for another namespace in the"
-            " menu."
-        )
-
-
-def misleading(name):
-    """Why namespace *name* could pass for another's: a character you can't see, a
-    spelling of root but root's own, or letters of more than one script; None when it
-    can't."""
+    """Raise unless a stored namespace's *name* holds no character you can't see and,
+    unless it is root, doesn't read as root (look_alike()), written out, so one such as
+    r\u043eot (a Cyrillic o) shows what it holds. The save's stricter rules
+    (check_name()) are left to saving, so an older Library's names stay."""
     hidden = [char for char in name if unicodedata.category(char) in INVISIBLE]
     if hidden:
-        return f"holds a character you can't see (U+{ord(hidden[0]):04X})"
-    folded = unicodedata.normalize("NFKC", name)
-    if name != ROOT and folded.casefold().strip() == ROOT:
-        return "reads as root"
-    letters = [char for char in folded if char.isalpha()]
-    scripts = sorted({unicodedata.name(char, "?").split()[0] for char in letters})
-    if len(scripts) > 1:
-        return f"mixes letters of {' and '.join(each.title() for each in scripts)}"
-    return None
+        why = f"holds a character you can't see (U+{ord(hidden[0]):04X})"
+    elif name != ROOT and look_alike(name) == ROOT:
+        why = "reads as root"
+    else:
+        return
+    raise LibraryError(
+        f"Its name, {name!a}, {why}, so it could pass for another namespace in the menu."
+    )
+
+
+def folded(name):
+    """*name* as it reads, whatever its case or form: NFKC- and case-folded, without
+    outer spaces."""
+    return unicodedata.normalize("NFKC", name).casefold().strip()
+
+
+def look_alike(name):
+    """*name* folded, with each letter of another script that looks like a Latin one as
+    that one, as it would read beside Latin names."""
+    return folded(name).translate(LATIN_LOOK_ALIKES)
+
+
+def look_alikes(names):
+    """Each of *names* holding letters that look like Latin ones and reading as another
+    of them that holds none, by name, with that other."""
+    plain = {folded(name): name for name in names if look_alike(name) == folded(name)}
+    return {
+        name: plain[look_alike(name)]
+        for name in names
+        if look_alike(name) != folded(name) and look_alike(name) in plain
+    }
 
 
 def check_place(connection, name):

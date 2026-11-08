@@ -146,9 +146,9 @@ imports too.
 - A namespace that sets `spawn` has its agents told, each run, where they can hand work; the panel shows that line
   under its System suffix and marks a listed namespace that is gone.
 - A shared Library's rows the engine can't read are left out, so the rest works, and so are worked examples whose
-  template a save would refuse and namespaces whose name could pass for another (`Root`, a look-alike of root, or one
-  holding a character you can't see); the panel marks each ✗ with why, to fix or delete. Its templates run sandboxed,
-  reaching no Python internals.
+  template a save would refuse and namespaces whose name could pass for another (`Root`, a look-alike of root or of
+  another namespace, or one holding a character you can't see); the panel marks each ✗ with why, to fix or delete.
+  Its templates run sandboxed, reaching no Python internals.
 - Every run builds every tool some namespace grants, whatever its chat's namespace: a granted tool's code runs at the
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never

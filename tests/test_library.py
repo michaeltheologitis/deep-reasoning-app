@@ -1381,7 +1381,10 @@ def test_a_left_out_namespaces_delete_waits_for_its_children_and_the_spawns_nami
     assert once_it_went == (spawners, spawners)
 
 
-@pytest.mark.parametrize("name", ["2024-taxes", "team/a", "café", "research.Root"])
+@pytest.mark.parametrize(
+    "name",
+    ["2024-taxes", "team/a", "café", "research.Root", "notes-日本", "ιστορία-notes"],
+)
 def test_a_namespace_named_as_saves_no_longer_name_one_still_reads_as_usable(
     library, name
 ):
@@ -1391,6 +1394,34 @@ def test_a_namespace_named_as_saves_no_longer_name_one_still_reads_as_usable(
         connection.execute(UPSERT_NAMESPACE, (name, "system_suffix: Keep receipts.\n"))
     shown = {each["name"]: each for each in panel_of(library)["namespaces"]}
     assert (shown[name]["usable"], shown[name]["problems"]) == (True, [])
+
+
+PASSES_FOR_RESEARCH = (
+    "Its name, 'r\\u0435search', reads as research, so it could pass for that one in"
+    " the menu."
+)
+
+
+@pytest.mark.parametrize(
+    ("theirs", "problems"),
+    [
+        ("system_suffix: Look it up.\n", [PASSES_FOR_RESEARCH]),
+        ("- not a mapping\n", []),
+    ],
+    ids=["beside-research", "beside-research-left-out"],
+)
+def test_a_namespace_reading_as_another_in_letters_of_another_script_is_left_out(
+    library, theirs, problems
+):
+    cyrillic_e = "r\u0435search"
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("research", theirs))
+        connection.execute(UPSERT_NAMESPACE, (cyrillic_e, "system_suffix: Pass.\n"))
+    shown = {each["name"]: each for each in panel_of(library)["namespaces"]}
+    assert (shown[cyrillic_e]["usable"], shown[cyrillic_e]["problems"]) == (
+        not problems,
+        problems,
+    )
 
 
 def test_a_row_whose_name_isnt_text_is_left_out_and_listed_nowhere(library):

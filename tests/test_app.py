@@ -3731,7 +3731,7 @@ UNREADABLE_ROWS = {
             f"Its name, {json.dumps(ascii(name))[1:-1]}, {why}, so it could pass for",
         )
         for like, name, why in [
-            ("with-a-cyrillic-o", "r\u043eot", "mixes letters of Cyrillic and Latin"),
+            ("with-a-cyrillic-o", "r\u043eot", "reads as root"),
             ("root-capitalised", "Root", "reads as root"),
             ("root-in-full-width", "\uff52\uff4f\uff4f\uff54", "reads as root"),
             ("with-an-rtl-override", "\u202etoor", HIDDEN.format("U+202E")),
