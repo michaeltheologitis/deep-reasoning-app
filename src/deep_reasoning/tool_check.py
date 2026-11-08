@@ -28,6 +28,7 @@ are checked again without it.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -203,18 +204,28 @@ def refuse_unbuilt(
     files: Mapping[str, str | None] | None = None,
 ) -> None:
     """Raise LibraryError, in words, naming each of *tools* that doesn't build, as
-    check_tools finds, beside its file where *files* names one: *done* says what wasn't
-    done, and *note* follows them."""
+    check_tools finds, by the file *files* names for it, where it names one, in place of
+    the one it was built from: *done* says what wasn't done, and *note* follows them."""
     verdicts = check_tools(tools, config, env, work)
     so = f", so it {done}" if done else ""
-    named = {name: f" ({file})" for name, file in (files or {}).items() if file}
+    files = {name: file for name, file in (files or {}).items() if file}
     failed = [
-        f"Tool {name}{named.get(name, '')} doesn't build{so}: {why}"
+        f"Tool {name}{f' ({files[name]})' if name in files else ''} doesn't build{so}:"
+        f" {as_named(why, name, files.get(name))}"
         for name in tools
         if (why := verdicts[name]) is not None
     ]
     if failed:
         raise LibraryError("\n".join([*failed, *([note] if note else [])]))
+
+
+def as_named(why: str, name: str, file: str | None) -> str:
+    """*why* tool *name* doesn't build, naming *file* where it names the file the tool
+    was built from, when *file* is given."""
+    if file is None:
+        return why
+    built_from = rf"(?<![\w./-]){re.escape(tool_file(name))}\b"
+    return re.sub(built_from, lambda _: file, why)
 
 
 def refuse_unbuilt_keyless(

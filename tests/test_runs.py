@@ -239,6 +239,99 @@ async def test_a_run_works_in_its_folder_and_keeps_its_own_files_in_the_run_fold
     assert saved(library, run) == events
 
 
+NAMED_OTHERWISE = '''\
+from deep_reasoner.primitives import Func
+
+
+def count_words(text: str) -> int:
+    """How many words text has."""
+    return len(text.split())
+
+
+class Tally:
+    """A running total: tally.add(k) adds k and returns the total."""
+
+    def __init__(self):
+        self.total = 0
+
+    def add(self, k):
+        self.total += k
+        return self.total
+
+
+def build_wordcount(client, params):
+    return Func(count_words)
+
+
+def build_tally(client, params):
+    return Func(Tally())
+
+
+def build_double(client, params):
+    return Func(lambda x: 2 * x, description="Doubles x.")
+'''
+
+
+async def test_agents_are_shown_each_tool_by_the_name_they_call_it_by(
+    home, library, fake_config, tmp_path
+):
+    source = tmp_path / "named.py"
+    source.write_text(NAMED_OTHERWISE)
+    tools = {
+        name: {"factory": f"build_{name}", "factory_from": str(source)}
+        for name in ("wordcount", "tally", "double")
+    }
+    use = repl("print(wordcount('a b c'), tally.add(2), double(4), wordcount.__name__)")
+    plan = {"Use the tools.": [use, repl("FinalAnswer('used')")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        config = fake_config(
+            fake, tools=tools, namespaces={"root": {"tools": [*tools]}}
+        )
+        _, events = await run_to_the_end(Runs(library, home), "Use the tools.", config)
+    assert events[-1]["outcome"] == "answered", events[-1]
+    told = "\n".join(
+        str(message["content"])
+        for message in fake.calls[0].messages
+        if message["role"] == "system"
+    )
+    assert "- `wordcount(text: str) -> int`\n  How many words text has." in told
+    assert "- `tally`\n  A running total: tally.add(k)" in told
+    assert "- `double(x)`\n  Doubles x." in told
+    assert "count_words(" not in told and "<lambda>" not in told
+    # What each tool is and does is left as it is.
+    assert of_kind(events, "cell.end")[0]["output"] == "3 2 8 count_words"
+
+
+async def test_a_tool_that_moves_the_working_folder_as_it_loads_leaves_cells_in_the_chats(
+    home, library, fake_config, tmp_path
+):
+    folder, elsewhere = tmp_path / "thesis", tmp_path / "elsewhere"
+    folder.mkdir()
+    elsewhere.mkdir()
+    source = tmp_path / "mover.py"
+    source.write_text(
+        f"import os\nfrom deep_reasoner.primitives import Func\n\n"
+        f"os.chdir({str(elsewhere)!r})\n\n"
+        "def build(client, params):\n    return Func(lambda: 1)\n"
+    )
+    write = repl(
+        "import os, pathlib",
+        "pathlib.Path('note.txt').write_text('here')",
+        "print(os.getcwd())",
+    )
+    plan = {"Write a note.": [write, repl("FinalAnswer('noted')")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        tools = {"mover": {"factory": "build", "factory_from": str(source)}}
+        runs = Runs(library, home)
+        config = fake_config(fake, tools=tools)
+        run = runs.start(CHAT, "Write a note.", config, [], folder=folder)
+        events = [event async for event in runs.events(run)]
+    assert events[-1]["outcome"] == "answered", events[-1]
+    assert of_kind(events, "cell.end")[0]["output"] == str(folder)
+    assert [path.name for path in folder.iterdir()] == ["note.txt"]
+    assert list(elsewhere.iterdir()) == []
+
+
 async def test_the_folders_modules_import_but_never_shadow_installed_ones(
     home, library, fake_config, tmp_path
 ):

@@ -62,6 +62,7 @@ from deep_reasoning.library import (
     template_problems,
     texts_in,
     tool_file,
+    tool_name_problem,
     unreachable,
     writing,
 )
@@ -156,6 +157,8 @@ def tool_row(name, block, config_dir, folder):
             " place in every namespace. Rename it in the config; a block may use a"
             " built-in's name only to give that built-in its settings."
         )
+    if problem := tool_name_problem(name):
+        raise LibraryError(problem)
     check_tool_block(name, block)
     if runs_on_the_chats_model(name, block):
         # The config's model or preset may not exist where the chat runs.

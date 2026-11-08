@@ -645,6 +645,7 @@ def test_a_tool_granted_nowhere_and_a_run_setting_the_engine_doesnt_read_are_del
     ("url", "problem"),
     [
         ("/api/tools/nothing", 'The Library holds no tool "nothing" to delete.'),
+        ("/api/tools/llm", "llm is the engine's own, not the Library's, so it can't"),
         ("/api/run-settings/max_iter", "max_iter is a run setting the engine reads"),
     ],
 )
@@ -1793,6 +1794,21 @@ def test_a_panel_save_refused_for_what_costs_nothing_builds_no_tool(
     response = client.request(method, path, json=body)
     assert response.status_code in (400, 409)
     assert refused in response.json()["detail"]
+    assert time.monotonic() - started < SLOW_BUILD_SECONDS
+
+
+def test_the_panel_refuses_to_grant_a_tool_named_as_python_names_what_agents_use(
+    client, imported
+):
+    with closing(open_library(imported)) as connection, writing(connection):
+        block = dump({"factory": "build", "factory_from": "max.py"})
+        connection.execute(UPSERT_TOOL, ("max", block, SLOW))
+    started = time.monotonic()
+    response = client.post(
+        "/api/namespaces", json={"name": "counting", "yaml": "tools: [max]\n"}
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith('Tool "max" would hide Python\'s own')
     assert time.monotonic() - started < SLOW_BUILD_SECONDS
 
 

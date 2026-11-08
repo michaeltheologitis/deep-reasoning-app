@@ -5,6 +5,7 @@ import {
   COST_NA,
   MS_PER_SECOND,
   PRICE_UNKNOWN,
+  STARTING,
   THEME_KEY,
   UNFINISHED,
   UNKNOWN_COST,
@@ -170,8 +171,10 @@ function renderTurn(turn, previous) {
   const open = opened.has(turn);
   const latest = live?.fold.latest;
   const switched = previous && turn.namespace !== previous.namespace && turn.namespace;
-  // a slow model's first answer takes a while; another tab's run may have steps this one hasn't seen
-  const steps = turn.steps.length ? turn.steps.map((step) => renderStep(step, true)) : live && waiting();
+  // a slow model's first answer takes a while, as do the tools a run builds before its root starts;
+  // another tab's run may have steps this one hasn't seen
+  const word = live?.fold.nodes.size ? WAITING : STARTING;
+  const steps = turn.steps.length ? turn.steps.map((step) => renderStep(step, true)) : live && waiting(word);
   const el = element(
     "section",
     { class: "turn" },
@@ -181,7 +184,7 @@ function renderTurn(turn, previous) {
       going ? spinner() : decor("✻"),
       element("span", { class: "text" }, going ? liveSummary(turn, live, switched) : summary(turn, switched)),
     ]),
-    live && !open && (latest ? out(renderTrail(latest)) : out(WAITING)),
+    live && !open && (latest ? out(renderTrail(latest)) : out(word)),
     open && element("div", { class: "steps" }, steps),
     renderTurnAnswer(turn),
     turn.outcome === "failed" && turn.detail && out(failureView(turn.detail, { model: turn.model }), { tone: "err", full: true }),
