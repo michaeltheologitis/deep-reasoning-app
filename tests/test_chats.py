@@ -214,7 +214,7 @@ def test_rename_changes_only_that_chats_title(library):
         ("Plan a trip.\nTo Rome, in May.", "Plan a trip."),
         ("\n\n  Plan a trip.  \r\nTo Rome.", "Plan a trip."),
         (" \n\t\n", NEW_TITLE),
-        ("Plan a trip.\u2028To Rome.\nIn May.", "Plan a trip. To Rome."),
+        ("Plan a trip.\u2028To Rome.\nIn May.", "Plan a trip."),
     ],
 )
 def test_a_new_chat_is_titled_after_its_first_messages_first_line(

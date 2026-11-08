@@ -169,8 +169,9 @@ def choose_folder(path: Path, chat: str, folder: str | None) -> None:
 
 def title_new_chat(path: Path, chat: str, message: str) -> str | None:
     """Title a chat still called "New chat" after *message*'s first line that isn't
-    blank, cut past TITLE_CHARS; the title, or None when the chat keeps its own."""
-    title = capped(message.strip().partition("\n")[0].strip())
+    blank, as capped() breaks lines, cut past TITLE_CHARS; the title, or None when the chat
+    keeps its own."""
+    title = capped(next(iter(message.strip().splitlines()), ""))
     if not title:
         return None
     with connect(path) as connection:

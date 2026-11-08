@@ -92,8 +92,7 @@ deep-reasoning`. A module file in the chat's folder imports too.
 - Each run shows its time, sub-agent count, cost and model. A call is priced by the server's own figure where it sends
   one (OpenRouter does), else from the price list of the vendor whose address it went to (OpenAI, OpenRouter,
   Anthropic, Google). "cost N/A" means a call was cut off before it finished, or its price isn't known, as for a
-  vendor's model on a server of your own; a run that made no call costs $0. The chat's total under the message box
-  shows as many decimals as its finest run's, so it reads as their sum.
+  vendor's model on a server of your own; a run that made no call costs $0.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
   its own words after.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,

@@ -16,6 +16,7 @@ dependencies = [
     "python-dotenv>=1.2.4",
     "pyyaml>=6.0.3",
     "structlog>=25.5.0",
+    # for the agent's Python: pandas' DataFrame.to_markdown() needs it
     "tabulate>=0.10.0",
     "uvicorn>=0.54.0",
 ]

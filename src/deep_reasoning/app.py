@@ -34,6 +34,7 @@ from deep_reasoning.folders import (
     FolderError,
     chosen_folder,
     data_folder,
+    folder_gone,
     holds_files,
     list_folders,
     remove_unless_kept,
@@ -160,6 +161,11 @@ def same_origin(
         raise HTTPException(
             HTTPStatus.FORBIDDEN, "Requests from other sites are refused."
         )
+
+
+def gone_provider(name):
+    """Why a chat's model can't be picked or run: its provider was removed from settings."""
+    return f"There is no provider {name} any more; pick another model."
 
 
 def create_app(library, home):
@@ -416,8 +422,7 @@ def create_app(library, home):
             "namespace": chat["namespace"] or namespace,
             "model": model,
             "folder": shown_folder(chat["folder"]),
-            "folder_missing": chat["folder"] is not None
-            and starting_folder(chat["folder"]) is None,
+            "folder_missing": folder_gone(chat["folder"]),
             "scratch_folder": short_path(scratch_folder(data, chat["id"])),
         }
 
@@ -460,9 +465,7 @@ def create_app(library, home):
                 check_namespace(connection, change.namespace)
         model = change.model
         if model is not None and find_provider(library, model.provider) is None:
-            raise SettingsError(
-                f"There is no provider {model.provider} any more; pick another model."
-            )
+            raise SettingsError(gone_provider(model.provider))
         moved = "folder" in change.model_fields_set
         folder = chosen_folder(change.folder) if moved else None
         if change.title is not None:
@@ -518,9 +521,7 @@ def create_app(library, home):
             raise SettingsError("Pick a model for this chat, under the message box.")
         provider = find_provider(library, model["provider"])
         if provider is None:
-            raise SettingsError(
-                f"There is no provider {model['provider']} any more; pick another model."
-            )
+            raise SettingsError(gone_provider(model["provider"]))
         key = run_key(home, provider)
         folder = working_folder(data, chat)
         client = {"base_url": provider.base_url, "api_key_env": provider.key_env}
