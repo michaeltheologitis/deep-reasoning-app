@@ -18,7 +18,8 @@ const NAMESPACE_KEYS = ["repl", "reasoner", "tools", "vars", "spawn", "system_su
 // a new namespace's name: plain words, joined by dots for a child
 const NAMESPACE_NAME = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
 const INDENT = "  ";
-const EDITOR_KEYS = "tab indents · esc leaves · ctrl+enter saves";
+// a touch keyboard has no Tab or Esc to speak of, so touch screens get no line about them
+const EDITOR_KEYS = matchMedia("(pointer: coarse)").matches ? null : "tab indents · esc leaves · ctrl/⌘+enter saves";
 const CHECK_DELAY_MS = 300;
 // as the server's limit on a decomposition's YAML; a file of more bytes than 4 a character can't fit
 const MAX_YAML_CHARS = 1_000_000;
@@ -135,7 +136,7 @@ function yamlForm({ id, label, action, text, example = null, quiet = false, prob
       autocapitalize: "off",
       placeholder: example,
       rows: example?.trimEnd().split("\n").length,
-      "aria-describedby": `${id}-keys ${id}-problems`,
+      "aria-describedby": [EDITOR_KEYS && `${id}-keys`, `${id}-problems`].filter(Boolean).join(" "),
       oninput: () => edited(form),
       onkeydown: (e) => editorKey(form, e),
     },
@@ -150,7 +151,7 @@ function yamlForm({ id, label, action, text, example = null, quiet = false, prob
     before,
     element("div", { class: "lib-form-line" }, element("label", { for: form.editor.id }, "YAML"), beside),
     form.editor,
-    element("div", { id: `${id}-keys`, class: "lib-keys" }, EDITOR_KEYS),
+    EDITOR_KEYS && element("div", { id: `${id}-keys`, class: "lib-keys" }, EDITOR_KEYS),
     after,
     form.problemList,
     form.newer,
@@ -197,12 +198,16 @@ function fitEditor(editor) {
   editor.style.height = `${editor.scrollHeight + editor.offsetHeight - editor.clientHeight}px`;
 }
 
-// Tab indents, as YAML wants, and Shift+Tab leaves; Esc leaves for Save, or the form's toggle while it can't save, and a second closes the panel; Ctrl+Enter or Cmd+Enter saves.
+// YAML wants Tab to indent, so Esc is the way out of the editor, to Save, or to the toggle while Save is disabled and can't take focus;
+// a Delete asking is taken back first, as anywhere in the panel. Saving from the editor spares the trip.
 function editorKey(form, e) {
   if (e.isComposing) return;
   if (e.key === "Escape") {
     e.stopPropagation();
-    (form.submit.disabled ? form.toggle : form.submit).focus();
+    if (deleting && !deleting.refusal) {
+      deleting = null;
+      render();
+    } else (form.submit.disabled ? form.toggle : form.submit).focus();
   } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     form.el.requestSubmit();
@@ -300,7 +305,20 @@ const decompositionForm = yamlForm({
   after: element("div", { class: "lib-form-line" }, element("label", { for: picker.id }, "namespace"), picker),
 });
 
-const nameInput = element("input", { id: "lib-ns-name", class: "set-input", autocomplete: "off", spellcheck: "false", autocapitalize: "off", placeholder: "research", "aria-describedby": "lib-ns-form-problems", oninput: () => edited(namespaceForm) });
+// checked at once, not after a pause as the YAML is, so Add is ready as soon as the name is
+const nameInput = element("input", {
+  id: "lib-ns-name",
+  class: "set-input",
+  autocomplete: "off",
+  spellcheck: "false",
+  autocapitalize: "off",
+  placeholder: "research",
+  "aria-describedby": "lib-ns-form-problems",
+  oninput: () => {
+    namespaceForm.typed = true;
+    check(namespaceForm);
+  },
+});
 const namespaceForm = yamlForm({
   id: "lib-ns-form",
   label: "+ Add namespace",
@@ -718,7 +736,7 @@ function decompositionsField(name) {
 function renderNamespaces() {
   const tree = library.namespaces.map((namespace) => {
     const star = namespace.name === library.default_namespace && element("span", { class: "lib-star" }, "★ new chats start here");
-    const head = [element("span", { class: "lib-name", title: namespace.name }, namespace.name), star];
+    const head = [element("span", { class: "lib-name" }, namespace.name), star];
     const content = () => [namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
     return element("div", { style: `--depth: ${namespace.depth}` }, disclosure(namespaceKey(namespace.name), head, content));
   });
@@ -827,9 +845,11 @@ function selectTab(name) {
 }
 
 function arrowTabs(e) {
-  const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
-  if (!step) return;
-  selectTab(TABS[(TABS.indexOf(tab) + step + TABS.length) % TABS.length]);
+  const at = TABS.indexOf(tab);
+  const next = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: TABS.length - 1 }[e.key];
+  if (next === undefined) return;
+  e.preventDefault();
+  selectTab(TABS[(next + TABS.length) % TABS.length]);
   tabButtons[TABS.indexOf(tab)].focus();
 }
 
@@ -869,13 +889,13 @@ async function load() {
   let found;
   try {
     found = await request("GET", LIBRARY_URL);
-    stale.textContent = "";
   } catch (error) {
     if (!library) problem = `Could not load the Library (${error.message}).`;
     else if (asked > applied) stale.textContent = `Showing the Library as last read: ${error.message}`;
   }
   if (found && asked > applied) {
     applied = asked;
+    stale.textContent = "";
     // as it was: nothing to redraw, so focusing the window costs nothing
     if (!problem && JSON.stringify(found) === JSON.stringify(library)) return;
     problem = null;

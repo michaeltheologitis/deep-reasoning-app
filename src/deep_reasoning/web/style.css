@@ -226,7 +226,8 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .box, .hints, .above { max-width: 868px; margin: 0 auto; }
 .above { position: relative; }
 .box { display: flex; align-items: flex-start; gap: 1ch; border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; }
-.box:focus-within { border-color: var(--dim); }
+/* the message field's only focus cue, as its textarea has no outline: --fg is over 4:1 on --edge in both themes */
+.box:focus-within { border-color: var(--fg); }
 .prompt { color: var(--dim); }
 textarea:focus-visible { outline: none; }
 textarea { flex: 1; min-width: 0; max-height: 40vh; resize: none; border: 0; outline: 0; padding: 0; background: none; font: inherit; color: inherit; }
@@ -255,7 +256,7 @@ textarea::placeholder { color: var(--dim); }
 }
 .above .menu-pop { position: absolute; right: 0; bottom: 6px; z-index: 4; width: min(46ch, 100%); overflow-y: auto; }
 .above .folder-pop { width: min(60ch, 100%); }
-.folder-form { display: flex; flex-direction: column; gap: 4px; }
+.folder-form { display: contents; }
 .menu-filter, .set-input { min-width: 0; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--edge); border-radius: 3px; padding: 2px 6px; }
 .menu-filter::placeholder, .set-input::placeholder { color: var(--dim); }
 .menu-list { max-height: min(22rem, 45vh); overflow-y: auto; }
@@ -267,7 +268,8 @@ textarea::placeholder { color: var(--dim); }
 .folder-pop .menu-note, .menu-pop > .menu-note { padding-left: 0; }
 .menu-pop > .lib-action { align-self: flex-start; }
 .folder-problem { color: var(--err); }
-.folder-problem:empty { display: none; }
+/* out of the flow while empty, so it takes no gap, yet still a live region when a refusal arrives */
+.folder-problem:empty { position: absolute; }
 .folder-browser { display: flex; flex-direction: column; gap: 1px; max-height: min(16rem, 40vh); overflow-y: auto; padding: 4px 0; border-block: 1px solid var(--faint); }
 .folder-browser .row { width: 100%; margin: 0; }
 .folder-here { color: var(--dim); padding: 0 4px 2px; overflow-wrap: anywhere; }

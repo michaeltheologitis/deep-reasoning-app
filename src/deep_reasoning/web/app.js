@@ -536,7 +536,8 @@ function fillMenu(open) {
   const groups = open.spec.groups(open.field?.value ?? "");
   open.options = groups.flatMap((group) => group.options);
   const current = open.options.findIndex((option) => isCurrentOption(open, option));
-  open.active = open.field?.value ? 0 : Math.max(current, 0);
+  // only spaces typed filter nothing out, so the current option stays the active one
+  open.active = open.field?.value.trim() ? 0 : Math.max(current, 0);
   open.list.replaceChildren(...groups.map((group, i) => menuGroup(open, group, i)));
   open.list.scrollTop = 0;
   markActive(open);
@@ -733,6 +734,8 @@ async function answered(method, url, body) {
 function answering(up) {
   if (notAnswering === !up) return;
   notAnswering = !up;
+  // an open Library panel reads again, so it says, or stops saying, that it shows the Library as last read
+  if (!byId("library").hidden) byId("library").dispatchEvent(new Event(LIBRARY_CHANGED));
   if (notAnswering) {
     retrying = setInterval(refresh, RETRY_MS);
     return;

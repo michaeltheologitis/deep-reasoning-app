@@ -1,7 +1,7 @@
 // What the composer's menus list for what is typed: the models, from each provider's lists as the server reads them, and the namespaces.
 
-// A name a menu's filter keeps: one holding the text typed, in any case.
-export const holds = (name, typed) => name.toLowerCase().includes(typed.trim().toLowerCase());
+// A name a menu's filter keeps: one holding the text typed, trimmed, in any case.
+const holds = (name, typed) => name.toLowerCase().includes(typed.toLowerCase());
 
 // Each provider's featured models and the chat's own, or those matching what is typed and the typed name; one that lists
 // the typed name exactly comes first, with it first, so Enter picks it over another's "use".
@@ -22,6 +22,7 @@ export function modelGroups(lists, query, current) {
 
 // The namespace menu's options whose names hold what is typed, in the Library's order, or a note that none do.
 export function namespaceGroups(options, query) {
-  const shown = options.filter((option) => holds(option.value, query));
-  return [{ options: shown, note: shown.length ? null : `no namespace holds “${query.trim()}”` }];
+  const typed = query.trim();
+  const shown = options.filter((option) => holds(option.value, typed));
+  return [{ options: shown, note: shown.length ? null : `no namespace holds “${typed}”` }];
 }

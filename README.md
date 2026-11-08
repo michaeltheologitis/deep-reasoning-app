@@ -118,8 +118,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   saves it, so a draft can be saved; from the next message, agents in its namespace and those under it are shown
   it as it is, so a new one starts in the namespace of the chat on screen, not root. The code isn't run, so an
   observation isn't checked against it. In its YAML editors Tab indents, Esc leaves the editor (a second closes
-  the panel), and Ctrl+Enter or Cmd+Enter saves. While the app isn't answering, the panel shows the Library as it
-  last read it, and says so.
+  the panel), and Ctrl+Enter or Cmd+Enter saves.
 - Saving refuses what would make every run there fail: a decomposition holding `{{` or `{%` (which the engine reads
   as a Jinja template) whose template doesn't parse, names anything but what the engine fills in (`task`, `vars`,
   `funcs`, `coroutines` and the run settings' `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`),
@@ -138,7 +137,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   says so, and its row goes. A delete the panel can tell would be refused (a tool a namespace grants, a namespace
   with namespaces under it or that another's `spawn` names) says why at once, without asking first. The panel, and
   the namespace menu under the message box, read the Library again whenever you open the panel or come back to the
-  window.
+  window. While the app isn't answering, the panel shows the Library as it last read it, and says so.
 - The Tools tab shows each tool, with what agents are told it does (for one of the Library's own, as far as its
   Python says without running it) and the Python of the Library's own, and deletes one of the Library's that no
   namespace grants. Run settings can't be changed in the panel, but one the engine doesn't read, as an import may

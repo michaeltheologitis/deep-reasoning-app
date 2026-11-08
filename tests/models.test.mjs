@@ -47,7 +47,13 @@ test("untyped, the namespace menu lists every namespace in the Library's order",
 
 test("typed, the namespace menu keeps the names holding the text, in any case", () => {
   assert.deepEqual(names(namespaceGroups(NAMESPACES, " PAPER ")), ["research.papers"]);
-  assert.deepEqual(names(namespaceGroups(NAMESPACES, "r")), ["root", "research", "research.papers", "historian"]);
+  assert.deepEqual(names(namespaceGroups(NAMESPACES, "search")), ["research", "research.papers"]);
+});
+
+test("only spaces typed, the namespace menu keeps every namespace and says nothing", () => {
+  const [group] = namespaceGroups(NAMESPACES, "  ");
+  assert.deepEqual(names([group]), ["root", "research", "research.papers", "historian"]);
+  assert.equal(group.note, null);
 });
 
 test("with no name holding the text, the namespace menu says so", () => {
