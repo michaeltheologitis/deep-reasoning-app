@@ -20,13 +20,11 @@ from structlog.testing import capture_logs
 from deep_reasoning import app_tools
 from deep_reasoning.app_tools import (
     BRIEF_CHARS,
-    CHANGED_MEANWHILE,
     CUT_SHORT,
     EMPTY,
     MAX_FOUND,
     MAX_VALUE_CHARS,
     MAX_VALUE_DEPTH,
-    MAX_YAML_CHARS,
     NESTED_TOO_DEEP,
     NOT_A_REF,
     NOT_A_TOOL,
@@ -48,6 +46,7 @@ from deep_reasoning.app_tools import (
     open_existing,
 )
 from deep_reasoning.library import (
+    CHANGED_MEANWHILE,
     HISTORIAN,
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
@@ -55,6 +54,7 @@ from deep_reasoning.library import (
     LIBRARIAN_HAND_OFFS,
     LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
+    MAX_YAML_CHARS,
     TOO_LONG_ROW,
     UPSERT_TOOL,
     YAML_NOT_TEXT,
@@ -1933,7 +1933,9 @@ def test_a_merge_past_the_yaml_limit_is_refused_and_changes_nothing(fresh):
     tool = library_tool(fresh)
     tool.add_namespace("research", {"system_suffix": half})
     before = stored_namespaces(fresh)
-    refusal = "A namespace's YAML may be at most 1,000,000 characters; with this change"
+    refusal = (
+        "With this change, the namespace's YAML may be at most 1,000,000 characters"
+    )
     with pytest.raises(LibraryError, match=re.escape(refusal)):
         tool.change_namespace("research", {"vars": {"x": half}})
     assert stored_namespaces(fresh) == before

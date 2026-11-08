@@ -2,12 +2,12 @@
 plain words what would break the app, and say what it changed and what it left out."""
 
 import difflib
-import tempfile
-from functools import partial
+from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
-import structlog
 import yaml
+from conflit.config import load_namespaces
 from deep_reasoner.config import load_cli_config
 from deep_reasoner.namespaces import ROOT
 from deep_reasoner.v2.cli import V2Config, build_namespace_registry
@@ -21,6 +21,8 @@ from deep_reasoning.library import (
     ENTRY_NAMESPACE,
     HISTORIAN,
     LIBRARIAN,
+    MAX_YAML_CHARS,
+    NAMESPACE_NAME,
     NOT_RUN_SETTINGS,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
@@ -28,7 +30,11 @@ from deep_reasoning.library import (
     UPSERT_TOOL,
     LibraryError,
     accepted,
-    check_backbones,
+    check_decomposition_name,
+    check_name,
+    check_size,
+    check_tool_block,
+    check_written,
     count,
     decomposition_problems,
     dump,
@@ -39,29 +45,17 @@ from deep_reasoning.library import (
     problem,
     read_library,
     shown,
-    suffix_problem,
     taken,
     template_names,
+    template_problems,
     texts_in,
     tool_file,
     writing,
 )
-from deep_reasoning.tool_check import refuse_unbuilt
-
-log = structlog.get_logger()
+from deep_reasoning.tool_check import refuse_unbuilt_keyless
 
 # The app's own namespaces: a config may name neither, nor a namespace under either.
 APP_NAMESPACES = (HISTORIAN, LIBRARIAN)
-# The run config an import's tool check builds with: a client that reaches nothing, so a
-# factory that calls the model while it is built fails rather than spends; and, as an
-# import leaves out the config's models presets and llm_kwargs, no run has them either.
-NOWHERE = {
-    "client": {
-        "base_url": "http://127.0.0.1:9/v1",
-        "api_key_env": "DEEP_REASONING_NO_KEY",
-        "max_retries": 0,
-    }
-}
 # Said after the tools that don't build.
 NOT_CARRIED = (
     "Each tool is built from its own Python file alone: if it reads a file or module from"
@@ -70,6 +64,12 @@ NOT_CARRIED = (
     " environment."
 )
 NOT_A_MAPPING = 'it should be a mapping of settings, like "max_iter: 20".'
+# Past this, a config's YAML is refused before the engine reads it, measured with each
+# alias written out in full, as values plus their text's characters: the engine expands
+# every alias, so a few lines of them can stand for millions of values.
+MAX_EXPANDED = 4 * MAX_YAML_CHARS
+# Run settings no run survives below.
+AT_LEAST_ONE = ("max_iter", "max_depth")
 # How much of a value an import's report shows.
 BRIEF_CHARS = 60
 UNSET = object()
@@ -110,8 +110,6 @@ def tool_row(name, block, config_dir):
         )
     factory = block.get("factory", name)
     factory_from = block.get("factory_from")
-    if not isinstance(factory, str) or not isinstance(factory_from, str | None):
-        raise LibraryError(f'Tool "{name}": factory and factory_from should be text.')
     the_builtin = factory_from is None and factory == name and name in BUILDERS
     if taken(name) and not the_builtin:
         raise LibraryError(
@@ -120,12 +118,8 @@ def tool_row(name, block, config_dir):
             " place in every namespace. Rename it in the config; a block may use a"
             " built-in's name only to give that built-in its settings."
         )
+    check_tool_block(name, block)
     if factory_from is None:
-        if factory not in BUILDERS:
-            raise LibraryError(
-                f'Tool "{name}" names factory "{factory}", which is not built in; '
-                "give its block a factory_from: file."
-            )
         if factory == "llm":
             # It runs on the chat's model, as the chat does; the config's model or preset may not exist there.
             block = {key: value for key, value in block.items() if key != "model"}
@@ -157,6 +151,7 @@ def read_config(path):
     plain words; a file none of whose keys the engine reads, as a data file, is refused."""
     not_one = f"{path} is not a deep_reasoner config"
     try:
+        check_expanded(path)
         config = load_cli_config(path, schema=V2Config)
     except ValidationError as error:
         raise LibraryError("\n".join(map(config_problem, error.errors()))) from error
@@ -165,9 +160,21 @@ def read_config(path):
     except yaml.YAMLError as error:
         raise LibraryError(yaml_problem(error, path)) from error
     except ValueError as error:
-        # conflit's YamlRootError, a ValueError, is the one that says "YAML root".
-        detail = NOT_A_MAPPING if "YAML root" in str(error) else str(error)
-        raise LibraryError(f"{not_one}: {detail}") from error
+        # conflit's YamlRootError, a ValueError, says "YAML root", after the file it
+        # means, which may be one the config composes.
+        file, mapping, _ = str(error).partition(": YAML root")
+        if mapping:
+            raise LibraryError(
+                f"{file} is not a deep_reasoner config: {NOT_A_MAPPING}"
+            ) from error
+        raise LibraryError(f"{not_one}: {error}") from error
+    except RecursionError as error:
+        raise LibraryError(f"{path} is nested too deeply to read.") from error
+    except TypeError as error:
+        # What conflit raises of a _compose or _conflit that isn't as it reads them.
+        raise LibraryError(
+            f"{path} is not a config the engine can read: {error}."
+        ) from error
     unknown = list(config.model_extra or {})
     if unknown and not config.model_fields_set - {"config_path", *unknown}:
         raise LibraryError(
@@ -232,25 +239,147 @@ def check_imports_no_key(settings, namespaces, tools, secrets):
             raise holds_a_key(place)
 
 
-def check_suffixes(connection, namespaces):
-    """Raise unless the engine renders each of *namespaces*' system_suffix, as the panel
-    refuses one."""
+@contextmanager
+def about(where):
+    """Say *where* a refusal in the block is, before its own words."""
+    try:
+        yield
+    except LibraryError as error:
+        raise LibraryError(f"{where}: {error}") from error
+
+
+def expanded_size(data, cap):
+    """How big *data* is with each alias written out in full, as values plus their
+    text's characters, as the engine expands them; the walk stops past *cap*."""
+    size, stack = 0, [data]
+    while stack and size <= cap:
+        value = stack.pop()
+        size += 1
+        if isinstance(value, str | bytes):
+            size += len(value)
+        elif isinstance(value, dict):
+            stack += [*value, *value.values()]
+        elif isinstance(value, list):
+            stack += value
+    return size
+
+
+def check_expanded(path):
+    """Raise if the config at *path*, with the files conflit composes into it and those
+    in its namespaces_dir, found as conflit and the engine find them, passes MAX_EXPANDED
+    with each alias written out, before the engine writes them out."""
+    composed = load_namespaces(Path(path))
+    files = [payload for _, payload in composed]
+    folders = [each.get("namespaces_dir") for at, each in composed if at == "."]
+    folder = next((each for each in reversed(folders) if isinstance(each, str)), None)
+    if folder:
+        found = (Path(path).resolve().parent / folder).resolve()
+        files += [
+            yaml.safe_load(file.read_text(encoding="utf-8"))
+            for file in sorted(found.glob("**/*.yaml"))
+        ]
+    size = 0
+    for data in files:
+        size += expanded_size(data, MAX_EXPANDED - size)
+        if size > MAX_EXPANDED:
+            raise LibraryError(
+                f"{path} is too big to import: with each alias written out, as the engine"
+                f" reads it, it holds more than {MAX_EXPANDED:,} values and characters."
+            )
+
+
+def check_settings(settings):
+    """Raise unless each run setting fits in the Library and leaves a run something to
+    do."""
+    for key, value in settings.items():
+        with about(f"Setting {key}"):
+            check_size(dump(value), "Its YAML")
+    for key in AT_LEAST_ONE:
+        value = settings.get(key)
+        if value is not None and value < 1:
+            raise LibraryError(
+                f"{key} is {value}, but a run needs at least 1 to take a step: make it 1"
+                " or more, or take it out."
+            )
+
+
+def check_tools_fit(tools):
+    """Raise unless each tool's block and source, of *tools* as tool_row gives them,
+    fits."""
+    for name, (block, source) in tools.items():
+        with about(f"Tool {name}"):
+            check_size(dump(block), "Its YAML")
+            check_size(source or "", "Its source")
+
+
+def check_decompositions(namespaces):
+    """Raise unless each of *namespaces*' decompositions is one the panel would save:
+    well named, fitting, and the only one of its name there."""
+    pairs = [
+        (namespace.name, each)
+        for namespace in namespaces
+        for each in namespace.decompositions
+    ]
+    held = Counter((name, each.name) for name, each in pairs)
+    twice = [key for key, times in held.items() if times > 1]
+    if twice:
+        name, decomposition = twice[0]
+        raise LibraryError(
+            f"Namespace {name} holds more than one decomposition named"
+            f' "{decomposition}": give each its own name.'
+        )
+    for name, each in pairs:
+        with about(f'Namespace {name}, decomposition "{each.name}"'):
+            check_decomposition_name(each.name)
+            check_size(dump(each.model_dump()), "Its YAML")
+
+
+def namespace_named(name):
+    """Namespace *name*, as a refusal names it: quoted when it isn't a plain name, with
+    each character that doesn't show escaped."""
+    if NAMESPACE_NAME.fullmatch(name):
+        return f"Namespace {name}"
+    shown = "".join(each if each.isprintable() else ascii(each)[1:-1] for each in name)
+    return f'Namespace "{shown}"'
+
+
+def check_new_names(before, changes):
+    """Raise unless each namespace new to the Library *before* the import is named as
+    the panel names one."""
+    for name in changes["namespaces"].keys() - before["namespaces"].keys():
+        with about(namespace_named(name)):
+            check_name(name)
+
+
+def check_namespaces(connection, before, changes):
+    """Raise unless each namespace the import writes fits, and is one the panel saves, as
+    the Library stands with the import written (check_written())."""
+    for name, own in changes["namespaces"].items():
+        with about(namespace_named(name)):
+            check_size(dump(own), "Its YAML")
+            check_written(connection, name, name not in before["namespaces"])
+
+
+def check_renders(changes, decompositions, names):
+    """Raise unless each decomposition the import writes renders, its templates reading
+    only *names*, as the panel refuses one that doesn't; its other problems only mark it
+    ✗. The config's *decompositions* are by (namespace, name)."""
     problems = [
-        each for each in map(partial(suffix_problem, connection), namespaces) if each
+        f'Namespace {namespace}, decomposition "{name}": {problem}'
+        for namespace, name in changes["decompositions"]
+        for problem in template_problems(decompositions[namespace, name], names)
     ]
     if problems:
         raise LibraryError("\n".join(problems))
 
 
-def check_builds(tools, environment):
+def check_builds(tools, environment, files):
     """Raise unless each of *tools*, (name, block, source), builds as a run builds it, in
-    a process of its own with *environment*: each that doesn't, in words."""
-    if not tools:
-        return
-    asked = {name: (block, source) for name, block, source in tools}
-    log.info("Building tools to check them", tools=list(asked))
-    with tempfile.TemporaryDirectory() as work:
-        refuse_unbuilt(asked, NOWHERE, environment, Path(work), note=NOT_CARRIED)
+    a process of its own with *environment*: each that doesn't, in words, naming the
+    config's own file for it where *files* has one."""
+    if tools:
+        asked = {name: (block, source) for name, block, source in tools}
+        refuse_unbuilt_keyless(asked, environment, note=NOT_CARRIED, files=files)
 
 
 def library_state(connection):
@@ -370,11 +499,13 @@ def import_config(connection, path, secrets=(), environment=None):
     registry = build_namespace_registry(config)
     unread = NOT_RUN_SETTINGS | set(config.model_extra or {})
     settings = config.model_dump(exclude_unset=True, exclude=unread)
+    check_settings(settings)
     check_not_the_apps([*registry.names, settings.get(ENTRY_NAMESPACE)])
     tools = {
         name: tool_row(name, block, config.config_dir)
         for name, block in config.tools.items()
     }
+    check_tools_fit(tools)
     # A root that sets nothing, like the bare one the engine adds, must not blank the Library's.
     namespaces = [
         namespace
@@ -383,7 +514,13 @@ def import_config(connection, path, secrets=(), environment=None):
         or namespace.decompositions
         or namespace.model_fields_set - {"name", "decompositions"}
     ]
+    check_decompositions(namespaces)
     check_imports_no_key(settings, namespaces, tools, secrets)
+    decompositions = {
+        (namespace.name, each.name): each
+        for namespace in namespaces
+        for each in namespace.decompositions
+    }
     # The command holds the app's lock on the file (owning), so no other writer waits on
     # the builds this holds the write lock through; a config the engine refuses runs no
     # code, as the builds come after its check.
@@ -391,21 +528,19 @@ def import_config(connection, path, secrets=(), environment=None):
         before = library_state(connection)
         imported = imported_state(settings, namespaces, tools, before)
         changes = changes_of(before, imported)
+        check_new_names(before, changes)
         store_changes(connection, changes)
-        stored, registry = accepted(connection)
-        check_backbones(registry, registry.names)
-        check_suffixes(connection, namespaces)
+        stored, _ = accepted(connection)
+        check_namespaces(connection, before, changes)
+        names = template_names(stored)
+        check_renders(changes, decompositions, names)
         built = to_build(before, imported, changes)
-        check_builds(built, environment or {})
-    decompositions = {
-        (namespace.name, each.name): each
-        for namespace in namespaces
-        for each in namespace.decompositions
-    }
+        files = {
+            name: block.get("factory_from") for name, block in config.tools.items()
+        }
+        check_builds(built, environment or {}, files)
     return {
-        "changes": import_report(
-            before, changes, built, decompositions, template_names(stored)
-        ),
+        "changes": import_report(before, changes, built, decompositions, names),
         "left_out": left_out(config),
     }
 

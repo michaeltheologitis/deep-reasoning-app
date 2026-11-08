@@ -27,6 +27,7 @@ import structlog
 from dotenv import dotenv_values, set_key, unset_key
 
 from deep_reasoning.library import open_library, writing
+from deep_reasoning.runs import WITHHELD, secrets_of, worker_env
 
 log = structlog.get_logger()
 
@@ -140,6 +141,16 @@ VENDORS = (
         featured=GEMINI_MODELS,
     ),
 )
+
+
+# A custom server's key, and the address it is for, as .env or the shell holds them.
+SERVER_KEY_VARIABLE = re.compile(r"DEEP_REASONING_[A-Z0-9_]+_KEY")
+SERVER_URL_VARIABLE = re.compile(r"DEEP_REASONING_[A-Z0-9_]+_URL")
+# Claude Code's: an API key it would bill in place of the subscription, and the
+# subscription's own token.
+CLAUDE_CODES_KEYS = (WITHHELD, "CLAUDE_CODE_OAUTH_TOKEN")
+# What a provider's key variable holds where a tool is built to check it: no key.
+NOT_A_KEY = "not-a-key"
 
 
 def saved_keys(home: Path) -> dict[str, str]:
@@ -358,6 +369,33 @@ def providers(library: Path) -> list[Provider]:
 def key_names(library: Path) -> list[str]:
     """Each provider's key variable: what a run's worker may get, and withholds."""
     return [each.key_env for each in providers(library)]
+
+
+def every_key(library: Path, home: Path) -> tuple[list[str], list[str]]:
+    """Each variable that may hold a key, and each key: *library*'s providers', every
+    custom server's, whichever Library lists it, set in the shell or saved in .env in
+    *home*, and Claude Code's; and every key, saved there or set in the shell."""
+    saved = saved_keys(home)
+    servers = [
+        name for name in [*os.environ, *saved] if SERVER_KEY_VARIABLE.fullmatch(name)
+    ]
+    names = list(dict.fromkeys([*key_names(library), *servers, *CLAUDE_CODES_KEYS]))
+    # Every .env entry is a key, but the address each custom server's is for.
+    keys = [name for name in saved if not SERVER_URL_VARIABLE.fullmatch(name)]
+    return names, [*secrets_of(os.environ, names), *secrets_of(saved, keys)]
+
+
+def keyless_environment(library: Path, home: Path) -> dict[str, str]:
+    """What a run's worker gets of this environment, but any key: what a tool built to
+    check it gets. Each of *library*'s providers' key variables holds NOT_A_KEY, so a
+    tool that reads one while it is built still builds, and reads no key."""
+    names, secrets = every_key(library, home)
+    kept = {
+        name: value
+        for name, value in worker_env({}).items()
+        if name not in names and value not in secrets
+    }
+    return kept | dict.fromkeys(key_names(library), NOT_A_KEY)
 
 
 def find_provider(library: Path, name: str) -> Provider | None:

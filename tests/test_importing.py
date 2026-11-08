@@ -5,6 +5,7 @@ import math
 import re
 import shutil
 import tempfile
+import time
 from contextlib import closing
 from datetime import date
 from pathlib import Path
@@ -23,6 +24,7 @@ from deep_reasoning.library import (
     HISTORIANS_EXAMPLES,
     LIBRARIAN,
     LIBRARIAN_HAND_OFFS,
+    MAX_YAML_CHARS,
     UPSERT_NAMESPACE,
     LibraryError,
     add_namespace,
@@ -76,6 +78,10 @@ namespaces:
               FinalAnswer(3)
               </repl>
 """
+
+
+# Far longer than the guard takes, far shorter than writing a bomb out.
+BOMB_SECONDS = 5
 
 
 RAISES_ON_BUILD = "def build(client, params):\n    raise RuntimeError('offline')\n"
@@ -588,7 +594,7 @@ def test_import_refuses_a_tool_that_does_not_build_and_says_why(
     with pytest.raises(LibraryError) as refused:
         import_into(library, config)
     said = str(refused.value)
-    assert said.startswith(f"Tool mine doesn't build: {problem}")
+    assert said.startswith(f"Tool mine (mine.py) doesn't build: {problem}")
     assert said.endswith(NOT_CARRIED)
     assert tempfile.gettempdir() not in said
     assert dumped(library) == before
@@ -792,3 +798,295 @@ def test_an_import_with_a_reasoner_the_engine_doesnt_know_is_refused(library, tm
     with pytest.raises(LibraryError, match="namespace 'odd': unknown reasoner type"):
         import_into(library, config)
     assert dumped(library) == before
+
+
+# A worked example's last turn, as the panel saves one.
+ANSWERS = (
+    '{role: assistant, content: "<think>x</think>\\n<repl>\\nFinalAnswer(1)\\n</repl>"}'
+)
+
+
+def refused_unchanged(library, config, said):
+    """Import *config*, which must be refused saying *said*, leaving *library* as it was."""
+    open_library(library).close()
+    before = dumped(library)
+    with pytest.raises(LibraryError) as refused:
+        import_into(library, config)
+    assert said in str(refused.value)
+    assert dumped(library) == before
+
+
+@pytest.mark.parametrize(
+    ("asked", "problem"),
+    [
+        ("Do {{ nothere }}", 'this one names "nothere"; a template may name only task'),
+        ("Do {{ task ", "this one doesn't parse (unexpected end of template"),
+    ],
+    ids=["a name the engine doesn't fill in", "one that doesn't parse"],
+)
+def test_import_refuses_a_worked_example_whose_template_fails(
+    library, tmp_path, asked, problem
+):
+    config = config_file(
+        tmp_path,
+        "namespaces:\n  helper:\n    decompositions:\n      - name: a\n        messages:\n"
+        f"          - {{role: user, content: '{asked}'}}\n          - {ANSWERS}\n",
+    )
+    said = (
+        'Namespace helper, decomposition "a": Turn 1 (user), line 1: the engine reads'
+        f" text holding {{{{ or {{% as a Jinja template, and {problem}"
+    )
+    refused_unchanged(library, config, said)
+
+
+@pytest.mark.parametrize(
+    ("variables", "problem"),
+    [
+        ("{max: 1}", 'Var "max" would hide Python\'s own max'),
+        ("{class: 1}", 'Var "class" is a Python keyword'),
+        ("{'my var': 1}", 'Var "my var" needs a Python name'),
+        ("{_x: 1}", 'Var "_x" starts with _, which templates may not read'),
+    ],
+)
+def test_import_refuses_a_var_the_panel_refuses(library, tmp_path, variables, problem):
+    config = config_file(tmp_path, f"namespaces:\n  helper: {{vars: {variables}}}\n")
+    refused_unchanged(library, config, f"Namespace helper: {problem}")
+
+
+def test_import_refuses_a_var_a_tool_it_sees_takes_the_place_of(library, tmp_path):
+    config = config_file(tmp_path, "namespaces:\n  helper: {vars: {llm: 1}}\n")
+    said = 'In helper, var "llm" (set in helper) has the name of the tool llm (granted in root)'
+    refused_unchanged(library, config, said)
+
+
+SHAPE = (
+    "A namespace name is words of letters, digits, _ and -, each starting with a letter"
+)
+READS_AS_ROOT = "reads as root, which every namespace goes under already"
+
+
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ("''", 'Namespace "": Name the namespace'),
+        ('"a\\nb"', f'Namespace "a\\nb": {SHAPE}'),
+        ('"a\\u200bb"', f'Namespace "a\\u200bb": {SHAPE}'),
+        ("a/b", f'Namespace "a/b": {SHAPE}'),
+        ('"a\\U0001F600"', f'Namespace "a\U0001f600": {SHAPE}'),
+        ("Root", f'Namespace Root: "Root" {READS_AS_ROOT}'),
+        ("root.child", f'Namespace root.child: "root.child" {READS_AS_ROOT}'),
+        ("-dash", f'Namespace "-dash": {SHAPE}'),
+        ("1abc", f'Namespace "1abc": {SHAPE}'),
+    ],
+    ids=[
+        "empty",
+        "newline",
+        "zero width space",
+        "slash",
+        "emoji",
+        "Root",
+        "under root",
+        "dash first",
+        "digit first",
+    ],
+)
+def test_import_refuses_a_namespace_name_the_panel_refuses(
+    library, tmp_path, name, said
+):
+    config = config_file(tmp_path, f"namespaces:\n  {name}: {{vars: {{year: 1}}}}\n")
+    refused_unchanged(library, config, said)
+
+
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ("' a '", 'decomposition " a ": The name " a " starts or ends with a space'),
+        ('"a\\u200b"', "The name holds a character you can't see (U+200B)"),
+    ],
+)
+def test_import_refuses_a_decomposition_name_that_doesnt_read_as_it_looks(
+    library, tmp_path, name, said
+):
+    config = config_file(
+        tmp_path,
+        "namespaces:\n  helper:\n    decompositions:\n"
+        f"      - {{name: {name}, messages: [{{role: user, content: hi}}]}}\n",
+    )
+    refused_unchanged(library, config, said)
+
+
+def test_import_refuses_two_decompositions_of_one_name_in_a_namespace(
+    library, tmp_path
+):
+    config = config_file(
+        tmp_path,
+        "namespaces:\n  helper:\n    decompositions:\n"
+        "      - {name: same, messages: [{role: user, content: hi}]}\n"
+        "      - {name: same, messages: [{role: user, content: ho}]}\n",
+    )
+    said = 'Namespace helper holds more than one decomposition named "same": give each its own name.'
+    refused_unchanged(library, config, said)
+
+
+# Past MAX_YAML_CHARS in characters, as the Library's readers count them.
+WIDE = "x" * MAX_YAML_CHARS
+TOO_BIG = "may be at most 1,000,000 characters"
+
+
+@pytest.mark.parametrize(
+    ("config", "where"),
+    [
+        (
+            f"namespaces:\n  helper: {{system_suffix: '{WIDE}'}}\n",
+            "Namespace helper: Its YAML",
+        ),
+        (
+            (
+                "namespaces:\n  helper:\n    decompositions:\n"
+                f"      - {{name: a, messages: [{{role: user, content: '{WIDE}'}}]}}\n"
+            ),
+            'Namespace helper, decomposition "a": Its YAML',
+        ),
+        (
+            f"prompt_template_variables: {{dept: '{WIDE}'}}\n",
+            "Setting prompt_template_variables: Its YAML",
+        ),
+        (f"system_prompt: '{WIDE}'\n", "Setting system_prompt: Its YAML"),
+        (
+            f"tools:\n  mine: {{factory: build, factory_from: mine.py, note: '{WIDE}'}}\n",
+            "Tool mine: Its YAML",
+        ),
+        (
+            "tools:\n  mine: {factory: build, factory_from: wide.py}\n",
+            "Tool mine: Its source",
+        ),
+    ],
+    ids=[
+        "a namespace",
+        "a decomposition",
+        "a setting",
+        "the system prompt",
+        "a tool's block",
+        "a tool's source",
+    ],
+)
+def test_import_refuses_what_passes_the_librarys_size_limit(
+    library, tmp_path, config, where
+):
+    (tmp_path / "mine.py").write_text("def build(client, params): ...\n")
+    (tmp_path / "wide.py").write_text(f"def build(client, params): ...\n# {WIDE}\n")
+    refused_unchanged(library, config_file(tmp_path, config), f"{where} {TOO_BIG}")
+
+
+# What conflit says of a _compose entry it can't read.
+ENTRIES = "_compose entries must be a file path string or a {namespace: path} mapping"
+
+
+# Nine aliases deep, each a list of ten of the one before: 10**9 strings, written out.
+ALIAS_BOMB = (
+    "a: &a [x, x, x, x, x, x, x, x, x, x]\n"
+    + "".join(
+        f"{name}: &{name} [{', '.join([f'*{before}'] * 10)}]\n"
+        for before, name in zip("abcdefgh", "bcdefghi")
+    )
+    + "max_iter: 3\n"
+)
+
+
+# Where a config's alias bomb may be: the config itself, a file it composes from a
+# folder beside it (named through that folder), or its namespaces_dir.
+BOMB_PLACES = {
+    "itself": ("bomb.yaml", {}),
+    "in a file it composes": (
+        "config.yaml",
+        {"config.yaml": "_compose: [sub/../parts/bomb.yaml]\n"},
+    ),
+    "in its namespaces_dir": (
+        "config.yaml",
+        {"config.yaml": "namespaces_dir: parts\n", "parts/research.yaml": ALIAS_BOMB},
+    ),
+}
+
+
+@pytest.mark.parametrize("place", BOMB_PLACES)
+def test_import_refuses_an_alias_bomb_without_writing_it_out(library, tmp_path, place):
+    (tmp_path / "bomb.yaml").write_text(ALIAS_BOMB)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "parts").mkdir()
+    (tmp_path / "parts" / "bomb.yaml").write_text(ALIAS_BOMB)
+    config, files = BOMB_PLACES[place]
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
+    said = "is too big to import: with each alias written out, as the engine reads it"
+    started = time.monotonic()
+    refused_unchanged(library, tmp_path / config, said)
+    assert time.monotonic() - started < BOMB_SECONDS
+
+
+def test_import_refuses_a_config_that_composes_itself_in_words(library, tmp_path):
+    (tmp_path / "sub").mkdir()
+    config = config_file(tmp_path, "_compose: [sub/../config.yaml]\n")
+    refused_unchanged(library, config, "YAML compose cycle detected")
+
+
+@pytest.mark.parametrize(
+    "setting",
+    ["max_iter: 0", "max_iter: -3", "max_depth: 0"],
+)
+def test_import_refuses_a_run_setting_no_run_takes_a_step_with(
+    library, tmp_path, setting
+):
+    key, value = setting.split(": ")
+    said = f"{key} is {value}, but a run needs at least 1 to take a step: make it 1 or more"
+    refused_unchanged(library, config_file(tmp_path, f"{setting}\n"), said)
+
+
+@pytest.mark.parametrize(
+    ("composed", "problem"),
+    [
+        ("5", "_compose must be a list."),
+        ("{a: b}", "_compose must be a list."),
+        ("[5]", f"{ENTRIES}, got 'int'."),
+        ("[null]", f"{ENTRIES}, got 'NoneType'."),
+        ("[[a]]", f"{ENTRIES}, got 'list'."),
+    ],
+)
+def test_import_words_a_compose_the_engine_cant_read(
+    library, tmp_path, composed, problem
+):
+    config = config_file(tmp_path, f"_compose: {composed}\n")
+    said = f"{config} is not a config the engine can read: {problem}"
+    refused_unchanged(library, config, said)
+
+
+def test_import_blames_a_file_it_composes_that_is_not_a_config(library, tmp_path):
+    (tmp_path / "list.yaml").write_text("- a\n- b\n")
+    config = config_file(tmp_path, "_compose: [list.yaml]\n")
+    said = f"{tmp_path / 'list.yaml'} {NOT_A_MAPPING}"
+    refused_unchanged(library, config, said)
+
+
+def test_import_refuses_yaml_nested_too_deeply_in_words(library, tmp_path):
+    config = config_file(tmp_path, "max_iter: " + "[" * 5000 + "]" * 5000 + "\n")
+    refused_unchanged(library, config, f"{config} is nested too deeply to read.")
+
+
+def test_a_tool_that_doesnt_build_is_named_with_the_configs_own_file(library, tmp_path):
+    (tmp_path / "helpers").mkdir()
+    (tmp_path / "helpers" / "scraping.py").write_text(RAISES_ON_BUILD)
+    config = config_file(
+        tmp_path,
+        "tools:\n  scrape: {factory: build, factory_from: helpers/scraping.py}\n"
+        "namespaces:\n  helper: {tools: [scrape]}\n",
+    )
+    said = (
+        "Tool scrape (helpers/scraping.py) doesn't build: build in scrape.py raised"
+        " RuntimeError"
+    )
+    refused_unchanged(library, config, said)
+
+
+def test_import_refuses_a_spawn_naming_a_namespace_it_doesnt_bring(library, tmp_path):
+    config = config_file(tmp_path, "namespaces:\n  helper: {spawn: [nowhere]}\n")
+    said = 'Namespace helper: spawn names "nowhere", which is not a namespace in the Library'
+    refused_unchanged(library, config, said)
