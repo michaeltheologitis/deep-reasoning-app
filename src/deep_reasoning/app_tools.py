@@ -53,6 +53,7 @@ from deep_reasoning.library import (
     HISTORY_DESCRIPTION,
     LIBRARY_DESCRIPTION,
     LIBRARY_TOOL,
+    MAX_YAML_CHARS,
     PAGE_DESCRIPTION,
     LibraryError,
     add_decomposition,
@@ -109,9 +110,6 @@ NOT_THIS_CHAT = (
     " pick librarian under the message box."
 )
 NOT_TEXT = "The namespace's name and the YAML should be text."
-# As the panel's limit on a decomposition's file; past 64 MiB, its change event would end
-# the run after the write.
-MAX_YAML_CHARS = 1_000_000
 TOO_LONG = f"The YAML may be at most {MAX_YAML_CHARS:,} characters."
 HOLDS_A_KEY = (
     "What you wrote holds a provider's key, and the Library file is shared, so keys never"

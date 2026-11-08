@@ -345,6 +345,12 @@ def test_a_valid_decomposition_is_stored_and_listed_under_its_namespace(client):
             VALID.replace("next course", "catalog lookup"),
             'course_advisor already has "catalog lookup"; rename it',
         ),
+        (
+            "router",
+            VALID.replace('"CS310"', '"{{ next }}"'),
+            "Turn 2 (assistant), line 1: the engine reads a turn holding {{ or {%",
+        ),
+        ("router", VALID.replace("next course", "'next course '"), "starts or ends"),
     ],
 )
 def test_an_invalid_decomposition_is_refused_with_a_plain_message(
@@ -365,7 +371,8 @@ def test_a_namespace_is_added_edited_and_deleted_through_the_api(client):
     )
     child = client.post("/api/namespaces", json={"name": "research.papers", "yaml": ""})
     edited = client.put(
-        "/api/namespaces/research.papers", json={"yaml": "vars: {year: 2026}\n"}
+        "/api/namespaces/research.papers",
+        json={"yaml": "vars: {year: 2026}\n", "was": ""},
     )
     assert (added.status_code, child.status_code, edited.status_code) == (201, 201, 200)
     papers = by_name(edited.json()["namespaces"])["research.papers"]
@@ -405,7 +412,7 @@ def test_a_namespace_is_added_edited_and_deleted_through_the_api(client):
         (
             "PUT",
             "/api/namespaces/root",
-            {"yaml": "tools: [ghost]\n"},
+            {"yaml": "tools: [ghost]\n", "was": "tools:\n- llm\n"},
             "The engine refuses it: namespace 'root' grants unknown tool 'ghost'",
         ),
         (
@@ -462,11 +469,143 @@ def test_a_namespace_whose_name_holds_a_slash_can_be_edited_and_deleted(
 ):
     with closing(open_library(imported)) as connection, writing(connection):
         connection.execute(UPSERT_NAMESPACE, ("team/a", ""))
-    edited = client.put("/api/namespaces/team%2Fa", json={"yaml": "vars: {x: 1}\n"})
+    edited = client.put(
+        "/api/namespaces/team%2Fa", json={"yaml": "vars: {x: 1}\n", "was": ""}
+    )
     assert by_name(edited.json()["namespaces"])["team/a"]["yaml"] == "vars: {x: 1}\n"
     deleted = client.delete("/api/namespaces/team%2Fa?decompositions=0")
     assert deleted.status_code == 200
     assert "team/a" not in namespaces(client)
+
+
+def decompositions_of(client, namespace):
+    return {
+        each["name"]: each for each in namespaces(client)[namespace]["decompositions"]
+    }
+
+
+def test_a_decomposition_is_edited_under_a_new_name_and_deleted_through_the_api(
+    client,
+):
+    [(name, stored), *_] = [
+        (each["name"], each["yaml"])
+        for each in decompositions_of(client, "root").values()
+    ]
+    renamed = VALID.replace("next course", "hand it on")
+    edited = client.put(
+        "/api/decompositions",
+        json={"namespace": "root", "name": name, "was": stored, "yaml": renamed},
+    )
+    assert edited.status_code == 200, edited.text
+    shown = by_name(by_name(edited.json()["namespaces"])["root"]["decompositions"])
+    assert name not in shown
+    assert shown["hand it on"]["problems"] == [
+        "Turn 2 (assistant) has no <think>…</think>."
+    ]
+    deleted = client.request(
+        "DELETE",
+        "/api/decompositions",
+        json={"namespace": "root", "name": "hand it on", "was": renamed},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert "hand it on" not in decompositions_of(client, "root")
+
+
+def test_an_edit_the_engine_couldnt_render_is_refused_and_changes_nothing(client):
+    [(name, stored), *_] = [
+        (each["name"], each["yaml"])
+        for each in decompositions_of(client, "root").values()
+    ]
+    before = client.get("/api/library").json()
+    body = {"namespace": "root", "name": name, "was": stored}
+    response = client.put(
+        "/api/decompositions", json=body | {"yaml": VALID.replace("CS310", "{% x %}")}
+    )
+    assert response.status_code == 400
+    assert (
+        "this one doesn't parse (Encountered unknown tag 'x'"
+        in response.json()["detail"]
+    )
+    assert client.get("/api/library").json() == before
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "body"),
+    [
+        ("PUT", "/api/namespaces/router", {"yaml": "", "was": "spawn: [nowhere]\n"}),
+        (
+            "PUT",
+            "/api/decompositions",
+            {
+                "namespace": "router",
+                "name": "decline anything else",
+                "was": VALID,
+                "yaml": VALID,
+            },
+        ),
+        (
+            "DELETE",
+            "/api/decompositions",
+            {"namespace": "router", "name": "decline anything else", "was": VALID},
+        ),
+    ],
+    ids=["namespace", "decomposition", "delete"],
+)
+def test_a_save_or_delete_over_a_change_made_meanwhile_is_refused_with_a_conflict(
+    client, method, url, body
+):
+    before = client.get("/api/library").json()
+    response = client.request(method, url, json=body)
+    assert response.status_code == 409
+    assert "was changed after you opened it" in response.json()["detail"]
+    assert client.get("/api/library").json() == before
+
+
+def test_a_tool_granted_nowhere_and_a_run_setting_the_engine_doesnt_read_are_deleted(
+    client, imported
+):
+    block = dump({"factory": "build", "factory_from": "tally.py"})
+    with closing(open_library(imported)) as connection, writing(connection):
+        connection.execute(UPSERT_TOOL, ("tally", block, "def build(c, p): pass\n"))
+        connection.execute(UPSERT_SETTING, ("catalog_path", dump("credits.yaml")))
+    tool = client.delete("/api/tools/tally")
+    setting = client.delete("/api/run-settings/catalog_path")
+    assert (tool.status_code, setting.status_code) == (200, 200)
+    assert "tally" not in by_name(setting.json()["tools"])
+    assert "catalog_path" not in by_name(setting.json()["run_settings"], "label")
+
+
+@pytest.mark.parametrize(
+    ("url", "problem"),
+    [
+        ("/api/tools/nothing", 'The Library holds no tool "nothing" to delete.'),
+        ("/api/run-settings/max_iter", "max_iter is a run setting the engine reads"),
+    ],
+)
+def test_a_tool_or_run_setting_that_cant_be_deleted_is_refused_in_words(
+    client, url, problem
+):
+    before = client.get("/api/library").json()
+    response = client.delete(url)
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith(problem)
+    assert client.get("/api/library").json() == before
+
+
+def test_a_granted_tool_is_not_deleted_and_the_refusal_names_who_grants_it(
+    client, imported
+):
+    block = dump({"factory": "build", "factory_from": "tally.py"})
+    with closing(open_library(imported)) as connection, writing(connection):
+        connection.execute(UPSERT_TOOL, ("tally", block, "def build(c, p): pass\n"))
+    client.post(
+        "/api/namespaces", json={"name": "counting", "yaml": "tools: [tally]\n"}
+    )
+    response = client.delete("/api/tools/tally")
+    assert (response.status_code, response.json()) == (
+        400,
+        {"detail": "tally is granted in counting: take it out of their tools first."},
+    )
 
 
 def test_a_request_naming_another_host_is_refused(client):
@@ -1371,7 +1510,8 @@ async def test_a_tool_no_namespace_grants_never_runs_so_a_broken_one_fails_runs_
             response = await api.post("/api/namespaces", json=grant)
             assert response.status_code == 201, response.text
             granted = await run_events(api, await send(api, chat, "Hi."))
-            response = await api.put("/api/namespaces/uses_broken", json={"yaml": ""})
+            ungrant = {"yaml": "", "was": "tools: [broken]\n"}
+            response = await api.put("/api/namespaces/uses_broken", json=ungrant)
             assert response.status_code == 200, response.text
             again = await run_events(api, await send(api, chat, "Hi."))
     outcomes = [events[-1]["outcome"] for events in (ungranted, granted, again)]

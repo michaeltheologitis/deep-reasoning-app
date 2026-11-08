@@ -769,6 +769,14 @@ class NeverEqual(str):
             EXAMPLE.replace("How many tickets are open?", ESCAPED_KEY),
             "holds a provider's key",
         ),
+        (
+            "drafts",
+            EXAMPLE.replace("How many tickets are open?", '"{{ open }} open?"'),
+            (
+                "Turn 1 (user), line 1: the engine reads a turn holding {{ or {% as a Jinja"
+                ' template, and this one names "open"'
+            ),
+        ),
     ],
     ids=[
         "text-unequal-to-root",
@@ -777,6 +785,7 @@ class NeverEqual(str):
         "too-long",
         "a-key",
         "an-escaped-key",
+        "a-template-the-engine-cant-render",
     ],
 )
 def test_a_write_the_tool_refuses_says_why_and_stores_nothing(

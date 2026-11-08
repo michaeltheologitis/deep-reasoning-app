@@ -1,10 +1,14 @@
 // The Library panel: the decompositions, namespaces, tools and data every run draws on, read from the server's Library file; adding, editing and deleting save there.
-import { LIBRARY_CHANGED, PANEL_CLOSE, caret, closeOtherPanels, element, libraryChanged, request } from "./app.js";
+import { LIBRARY_CHANGED, PANEL_CLOSE, caret, chatNamespace, closeOtherPanels, element, libraryChanged, request } from "./app.js";
 import { turnProblems } from "./turns.js";
 
 const LIBRARY_URL = "api/library";
 const ADD_URL = "api/decompositions";
 const NAMESPACES_URL = "api/namespaces";
+const TOOLS_URL = "api/tools";
+const RUN_SETTINGS_URL = "api/run-settings";
+// the server's answer to a save or delete opened on what has changed since
+const CONFLICT = 409;
 const TABS = ["Decompositions", "Namespaces", "Tools", "Data"];
 const ROOT = "root";
 const ROLES = ["user", "assistant", "system"];
@@ -15,9 +19,20 @@ const NAMESPACE_KEYS = ["repl", "reasoner", "tools", "vars", "spawn", "system_su
 const NAMESPACE_NAME = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
 const INDENT = "  ";
 const CHECK_DELAY_MS = 300;
-const MAX_FILE_BYTES = 1_000_000;
-// what heads a decomposition's turn problems in the add form: they don't stop Add, as a draft may have them
-const WARNED = "Add saves it, but marks it ✗ until these are fixed:";
+// as the server's limit on a decomposition's YAML; a file of more bytes than 4 a character can't fit
+const MAX_YAML_CHARS = 1_000_000;
+const UTF8_MAX_BYTES = 4;
+const counted = new Intl.NumberFormat("en");
+// characters that don't show, as the server reads them: controls and formats, such as a zero-width space
+const INVISIBLE = /[\p{Cc}\p{Cf}]/u;
+// a code point as U+ writes it: hex, at least four digits
+const CODE_POINT_DIGITS = 4;
+const HEX = 16;
+const codePoint = (char) => `U+${char.codePointAt(0).toString(HEX).toUpperCase().padStart(CODE_POINT_DIGITS, "0")}`;
+// what heads a decomposition's turn problems in its form: they don't stop it saving, as a draft may have them, but agents are shown it as it is
+const reach = (namespace) => (namespace === ROOT ? "every namespace" : `${namespace} and the namespaces under it`);
+const headed = (action, namespace, problems) =>
+  problems.length ? [`${action} saves it as it is, and from the next message agents in ${reach(namespace)} are shown it, marked ✗ until these are fixed:`, ...problems] : [];
 // the shape of the generated decompositions, small enough to edit in place
 const TEMPLATE = `name: count the open tickets
 messages:
@@ -63,14 +78,16 @@ const SHAPES = {
 const panel = document.getElementById("library");
 const toggleButton = document.getElementById("library-toggle");
 const opened = new Set();
-// each namespace's Edit YAML form, built once, so a draft survives re-renders
+// each namespace's Edit YAML form and each decomposition's Edit form, by its row's key, built once, so a draft survives re-renders
 const editForms = new Map();
 let editFormCount = 0;
 let library = null;
 let problem = null;
 let tab = TABS[0];
-// the namespace whose Delete is asking, and the server's refusal once it answered
+// the key of the row whose Delete is asking, and the refusal once there is one
 let deleting = null;
+// the confirmation showing, which whatever is done next in the panel clears
+let confirmed = null;
 // each read and change of the Library, numbered as sent: an answer is used only while none sent later has been
 let sent = 0;
 let applied = 0;
@@ -79,6 +96,8 @@ const dot = () => element("span", { class: "lib-dot", "aria-hidden": "true" }, "
 const namespaceNamed = (name) => library.namespaces.find((namespace) => namespace.name === name);
 const decompositionKey = (namespace, name) => `d:${namespace}:${name}`;
 const namespaceKey = (name) => `n:${name}`;
+const toolKey = (name) => `t:${name}`;
+const settingKey = (name) => `s:${name}`;
 const parentOf = (name) => (name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : ROOT);
 
 const body = element("div", { class: "lib-body", id: "library-body", role: "tabpanel" });
@@ -97,9 +116,9 @@ panel.append(
   body,
 );
 
-// A YAML editor its toggle opens, checked as you type; the server's refusal shows where the form's own problems do.
-function yamlForm({ id, label, action, text, problems, warnings = () => [], save, before = [], beside = null, after = [], first = null }) {
-  const form = { problems, warnings, save, first, saving: false, timer: null };
+// A YAML editor its toggle opens, checked as you type; an edit's form keeps what it opened on (was), and stored() reads what is there now.
+function yamlForm({ id, label, action, text, problems, warnings = () => [], save, stored = null, gone = null, opening = null, before = [], beside = null, after = [], first = null }) {
+  const form = { problems, warnings, save, stored, gone, opening, first, was: text, saving: false, timer: null };
   form.toggle = element("button", { type: "button", class: "lib-action", "aria-expanded": "false", "aria-controls": id, "data-key": id, onclick: () => (form.el.hidden ? openForm(form) : closeForm(form)) }, label);
   form.editor = element(
     "textarea",
@@ -107,6 +126,7 @@ function yamlForm({ id, label, action, text, problems, warnings = () => [], save
     text,
   );
   form.problemList = element("div", { id: `${id}-problems`, class: "lib-problems", "aria-live": "polite" });
+  form.newer = element("div", { class: "lib-newer" });
   form.submit = element("button", { type: "submit", class: "lib-action lib-primary" }, action);
   form.el = element(
     "form",
@@ -116,6 +136,7 @@ function yamlForm({ id, label, action, text, problems, warnings = () => [], save
     form.editor,
     after,
     form.problemList,
+    form.newer,
     element("div", { class: "lib-actions" }, form.submit, element("button", { type: "button", class: "lib-action", onclick: () => closeForm(form) }, "Cancel")),
   );
   form.confirmation = element("p", { class: "lib-confirm", role: "status" });
@@ -125,9 +146,10 @@ function yamlForm({ id, label, action, text, problems, warnings = () => [], save
 const addSection = (form) => element("section", { class: "lib-add" }, form.toggle, form.el, form.confirmation);
 
 function openForm(form) {
+  clearSaid();
+  form.opening?.();
   form.el.hidden = false;
   form.toggle.setAttribute("aria-expanded", "true");
-  form.confirmation.textContent = "";
   fitEditor(form.editor);
   check(form);
   (form.first ?? form.editor).focus();
@@ -140,6 +162,7 @@ function closeForm(form) {
   form.toggle.setAttribute("aria-expanded", "false");
   form.el.reset();
   showProblems(form, []);
+  form.newer.replaceChildren();
   form.toggle.focus();
 }
 
@@ -150,6 +173,7 @@ function edited(form) {
 }
 
 function fitEditor(editor) {
+  if (!editor.isConnected) return;
   editor.style.height = "auto";
   editor.style.height = `${editor.scrollHeight + editor.offsetHeight - editor.clientHeight}px`;
 }
@@ -172,21 +196,22 @@ function check(form) {
 
 // unchanged problems are left alone, so the live region doesn't repeat them at every pause in typing
 function showProblems(form, found, warned = []) {
-  const warning = warned.length ? [WARNED, ...warned] : [];
-  if ([...form.problemList.children].map((line) => line.textContent).join("\n") === [...found, ...warning].join("\n")) return;
-  form.problemList.replaceChildren(...found.map((text) => element("p", {}, text)), ...warning.map((text) => element("p", { class: "lib-warning" }, text)));
+  if ([...form.problemList.children].map((line) => line.textContent).join("\n") === [...found, ...warned].join("\n")) return;
+  form.problemList.replaceChildren(...found.map((text) => element("p", {}, text)), ...warned.map((text) => element("p", { class: "lib-warning" }, text)));
 }
 
-// save() sends the YAML and says what was done, and which row to show if any.
+// save() sends the YAML and says what was done, which row to show if any, and where to say it when not under the form (where()).
 async function submit(form, e) {
   e.preventDefault();
   if (form.saving || check(form).length) return;
+  clearSaid();
   form.saving = form.submit.disabled = true;
   let saved;
   try {
-    saved = await form.save(form.editor.value);
+    saved = await form.save(form.editor.value, form);
   } catch (error) {
     showProblems(form, error.message.split("\n"));
+    if (error.status === CONFLICT) await showNewer(form);
     return;
   } finally {
     form.saving = form.submit.disabled = false;
@@ -194,7 +219,31 @@ async function submit(form, e) {
   closeForm(form);
   render();
   if (saved.row) reveal(saved.row);
-  form.confirmation.textContent = saved.said;
+  say(saved.where?.() ?? form.confirmation, saved.said);
+}
+
+// Changed meanwhile: the Library is read again, the draft kept, and what is stored now shown, which saving again replaces.
+async function showNewer(form) {
+  await load();
+  const now = form.stored();
+  if (now == null) {
+    editForms.delete(form.key);
+    form.gone?.(form);
+    return;
+  }
+  form.was = now;
+  form.newer.replaceChildren(element("p", { class: "lib-note" }, "Stored now, which Save replaces with yours:"), element("pre", { class: "code lib-pre" }, now || "(blank: it sets nothing)"));
+}
+
+function say(where, text) {
+  clearSaid();
+  where.textContent = text;
+  confirmed = where;
+}
+
+function clearSaid() {
+  if (confirmed) confirmed.textContent = "";
+  confirmed = null;
 }
 
 // it is drawn only if its tab is still the one showing
@@ -206,15 +255,18 @@ function reveal(key) {
 
 const fileInput = element("input", { type: "file", accept: ".yaml,.yml", onchange: readFile });
 const picker = element("select", { id: "lib-namespace", onchange: () => check(decompositionForm) });
+// only once the shape is right, so the YAML reads and its turns are as turnProblems takes them
+const turnWarnings = (action, namespace) => (text) => headed(action, namespace(), turnProblems(readYaml(text).value.messages));
 const decompositionForm = yamlForm({
   id: "lib-add-form",
   label: "+ Add decomposition",
   action: "Add",
   text: TEMPLATE,
   problems: (text) => decompositionProblems(text, namespaceNamed(picker.value)),
-  // only once the shape is right, so the YAML reads and its turns are as turnProblems takes them
-  warnings: (text) => turnProblems(readYaml(text).value.messages),
+  warnings: turnWarnings("Add", () => picker.value),
   save: addDecomposition,
+  // a new one goes where the chat on screen runs, else where new chats start: root would show a draft to every namespace
+  opening: () => (picker.value = startingNamespace()),
   beside: element("label", { class: "lib-action lib-file-pick" }, "or choose a .yaml file", fileInput),
   after: element("div", { class: "lib-form-line" }, element("label", { for: picker.id }, "namespace"), picker),
 });
@@ -235,8 +287,8 @@ async function readFile() {
   const [file] = fileInput.files;
   fileInput.value = "";
   if (!file) return;
-  if (file.size > MAX_FILE_BYTES) {
-    showProblems(decompositionForm, [`${file.name} is too big to be a decomposition's YAML; choose its .yaml file.`]);
+  if (file.size > MAX_YAML_CHARS * UTF8_MAX_BYTES) {
+    showProblems(decompositionForm, [`${file.name} holds more than ${counted.format(MAX_YAML_CHARS)} characters, the most a decomposition's YAML may hold.`]);
     return;
   }
   decompositionForm.editor.value = await file.text();
@@ -273,57 +325,125 @@ async function addNamespace(text) {
   return { said: `Added namespace "${name}"`, row: namespaceKey(name) };
 }
 
-const saveNamespace = (name) => async (text) => {
-  await changeLibrary("PUT", namespaceUrl(name), { yaml: text });
+const saveNamespace = (name) => async (text, form) => {
+  await changeLibrary("PUT", namespaceUrl(name), { yaml: text, was: form.was });
   return { said: `Saved namespace "${name}"` };
 };
 
-function editForm(name) {
-  const stored = namespaceNamed(name).yaml;
-  if (!editForms.has(name)) {
-    const problems = (text) => namespaceProblems(text, name);
-    editForms.set(name, yamlForm({ id: `lib-edit-${++editFormCount}`, label: "Edit YAML", action: "Save", text: stored, problems, save: saveNamespace(name) }));
-  }
-  const form = editForms.get(name);
-  // a closed form holds no draft, so it follows what is stored
-  if (form.el.hidden) form.editor.defaultValue = stored;
+// A row's edit form, built once; a closed one holds no draft, so it follows what is stored, and an open one keeps what it was opened on.
+function editFormFor(key, stored, build) {
+  if (!editForms.has(key)) editForms.set(key, Object.assign(yamlForm({ id: `lib-edit-${++editFormCount}`, text: stored, ...build() }), { key }));
+  const form = editForms.get(key);
+  if (form.el.hidden) form.editor.defaultValue = form.was = stored;
   return form;
 }
 
-// A namespace with namespaces under it is refused at once; anything else the server may refuse is said after the confirm.
-function askDelete(name) {
-  const children = library.namespaces.filter((each) => each.name.startsWith(`${name}.`)).map((each) => each.name);
-  deleting = { name, refusal: children.length ? `Delete its namespaces first: ${children.join(", ")}.` : null };
-  render();
-  if (!deleting.refusal) reveal(`keep:${name}`);
+const editForm = (name) =>
+  editFormFor(namespaceKey(name), namespaceNamed(name).yaml, () => ({
+    label: "Edit YAML",
+    action: "Save",
+    problems: (text) => namespaceProblems(text, name),
+    save: saveNamespace(name),
+    stored: () => namespaceNamed(name)?.yaml,
+  }));
+
+const storedDecomposition = (namespace, name) => namespaceNamed(namespace)?.decompositions.find((each) => each.name === name);
+
+// Saved under the name its YAML gives, which may be a new one.
+const saveDecomposition = (namespace, name) => async (text, form) => {
+  await changeLibrary("PUT", ADD_URL, { namespace, name, was: form.was, yaml: text });
+  const now = readYaml(text).value.name;
+  const row = decompositionKey(namespace, now);
+  if (now !== name) {
+    editForms.delete(decompositionKey(namespace, name));
+    opened.delete(decompositionKey(namespace, name));
+  }
+  opened.add(row);
+  const marked = storedDecomposition(namespace, now)?.problems.length ? ", marked ✗" : "";
+  // renamed, its row has a new form, drawn by then
+  return { said: `Saved "${now}" in ${namespace}${marked}`, row, where: () => editForms.get(row)?.confirmation };
+};
+
+const decompositionEdit = (namespace, { name, yaml }) =>
+  editFormFor(decompositionKey(namespace, name), yaml, () => ({
+    label: "Edit",
+    action: "Save",
+    problems: (text) => decompositionProblems(text, namespaceNamed(namespace), name),
+    warnings: turnWarnings("Save", () => namespace),
+    save: saveDecomposition(namespace, name),
+    stored: () => storedDecomposition(namespace, name)?.yaml,
+    gone: (form) => moveToAdd(form.editor.value, namespace, name),
+  }));
+
+// Deleted or renamed meanwhile, its Edit draft moves to the add form, on its namespace, so Add saves it as a new one.
+function moveToAdd(draft, namespace, name) {
+  if (decompositionForm.el.hidden) openForm(decompositionForm);
+  if (namespaceNamed(namespace)) picker.value = namespace;
+  decompositionForm.editor.value = draft;
+  check(decompositionForm);
+  const note = `"${name}" was deleted or renamed in ${namespace} meanwhile, so your draft is here: Add saves it as a new one.`;
+  decompositionForm.newer.replaceChildren(element("p", { class: "lib-note" }, note));
+  // measured once the panel has drawn it
+  requestAnimationFrame(() => fitEditor(decompositionForm.editor));
 }
 
-function keepNamespace(name) {
+// Each read: a closed edit form whose row went is dropped, and an open one hands its draft on; one saving is its save's to settle.
+function pruneForms() {
+  for (const [key, form] of editForms) {
+    if (form.saving || form.stored() != null) continue;
+    editForms.delete(key);
+    if (!form.el.hidden) form.gone?.(form);
+  }
+}
+
+// The row whose Delete asks is keyed; a refusal given at once, from what the panel holds, skips the confirm.
+function askDelete(key, refusal = null) {
+  clearSaid();
+  deleting = { key, refusal };
+  render();
+  if (!refusal) reveal(`keep:${key}`);
+}
+
+function keep(key) {
   deleting = null;
   render();
-  reveal(`delete:${name}`);
+  reveal(`delete:${key}`);
 }
 
-// It sends the count the confirm said, so the server deletes no more than that.
-async function deleteNamespace(name, button) {
+// remove() deletes it and says so: where, what, and which row to show.
+async function confirmDelete(key, remove, button) {
   button.disabled = true;
-  const said = namespaceNamed(name).decompositions.length;
+  let said;
   try {
-    await changeLibrary("DELETE", `${namespaceUrl(name)}?decompositions=${said}`);
+    said = await remove();
   } catch (error) {
-    deleting = { name, refusal: error.message };
+    deleting = { key, refusal: error.message };
     // a refusal may come from a change made elsewhere, so the next confirm asks about what is there now
     await load();
     render();
-    reveal(`delete:${name}`);
+    reveal(`delete:${key}`);
     return;
   }
   deleting = null;
-  opened.delete(namespaceKey(name));
-  editForms.delete(name);
   render();
-  reveal(namespaceKey(parentOf(name)));
-  namespaceForm.confirmation.textContent = `Deleted namespace "${name}"`;
+  if (said.row) reveal(said.row);
+  else tabButtons[TABS.indexOf(tab)].focus();
+  say(said.where, said.text);
+}
+
+// A Delete button beside the row's other actions, or the confirm in their place, as the chat list's; a refusal shows under them.
+function deletable(key, actions, { question, refusal = () => null, remove }) {
+  if (deleting?.key === key && !deleting.refusal) {
+    return element(
+      "div",
+      { class: "lib-actions confirm", role: "group", "aria-labelledby": "lib-delete-question" },
+      element("span", { id: "lib-delete-question" }, question),
+      element("button", { type: "button", class: "yes", onclick: (e) => confirmDelete(key, remove, e.currentTarget) }, "Delete"),
+      element("button", { type: "button", class: "no", "data-key": `keep:${key}`, onclick: () => keep(key) }, "Keep"),
+    );
+  }
+  const ask = element("button", { type: "button", class: "lib-action", "data-key": `delete:${key}`, onclick: () => askDelete(key, refusal()) }, "Delete");
+  return [element("div", { class: "lib-actions" }, actions, ask), deleting?.key === key && element("div", { class: "lib-problems", role: "alert" }, deleting.refusal)];
 }
 
 function deleteQuestion(namespace) {
@@ -333,27 +453,29 @@ function deleteQuestion(namespace) {
   return `Delete namespace ${namespace.name}${what}?${fallback}`;
 }
 
-// The confirm takes the buttons' place, as the chat list's does.
+// It sends the count the confirm said, so the server deletes no more than that.
+async function deleteNamespace(name) {
+  const said = namespaceNamed(name).decompositions.length;
+  await changeLibrary("DELETE", `${namespaceUrl(name)}?decompositions=${said}`);
+  opened.delete(namespaceKey(name));
+  editForms.delete(namespaceKey(name));
+  return { where: namespaceForm.confirmation, text: `Deleted namespace "${name}"`, row: namespaceKey(parentOf(name)) };
+}
+
+// A namespace with namespaces under it is refused at once; anything else the server may refuse is said after the confirm.
 function namespaceActions(namespace) {
   const { name } = namespace;
   const form = editForm(name);
-  const asking = deleting?.name === name;
-  if (asking && !deleting.refusal) {
-    return element(
-      "div",
-      { class: "lib-actions confirm", role: "group", "aria-labelledby": "lib-delete-question" },
-      element("span", { id: "lib-delete-question" }, deleteQuestion(namespace)),
-      element("button", { type: "button", class: "yes", onclick: (e) => deleteNamespace(name, e.currentTarget) }, "Delete"),
-      element("button", { type: "button", class: "no", "data-key": `keep:${name}`, onclick: () => keepNamespace(name) }, "Keep"),
-    );
-  }
-  const remove = name !== ROOT && element("button", { type: "button", class: "lib-action", "data-key": `delete:${name}`, onclick: () => askDelete(name) }, "Delete");
-  return [
-    element("div", { class: "lib-actions" }, form.toggle, remove),
-    asking && element("div", { class: "lib-problems", role: "alert" }, deleting.refusal),
-    form.el,
-    form.confirmation,
-  ];
+  const children = library.namespaces.filter((each) => each.name.startsWith(`${name}.`)).map((each) => each.name);
+  const actions =
+    name === ROOT
+      ? element("div", { class: "lib-actions" }, form.toggle)
+      : deletable(namespaceKey(name), form.toggle, {
+          question: deleteQuestion(namespace),
+          refusal: () => (children.length ? `Delete its namespaces first: ${children.join(", ")}.` : null),
+          remove: () => deleteNamespace(name),
+        });
+  return [actions, form.el, form.confirmation];
 }
 
 // the YAML is checked as deep_reasoner's models would check it
@@ -377,23 +499,32 @@ function readYaml(text) {
   }
 }
 
-function decompositionProblems(text, namespace) {
+// characters as Python counts them, which a string's length overcounts past the BMP
+const characters = (text) => (text.length > MAX_YAML_CHARS ? [...text].length : text.length);
+
+// editing: the name of the one an Edit form holds, which its YAML may keep
+function decompositionProblems(text, namespace, editing = null) {
   if (!text.trim()) return ["Write the decomposition's YAML above, or choose a .yaml file."];
+  const length = characters(text);
+  if (length > MAX_YAML_CHARS) return [`A decomposition's YAML may be at most ${counted.format(MAX_YAML_CHARS)} characters; this has ${counted.format(length)}.`];
   const { value: parsed, problem } = readYaml(text);
   if (problem) return [problem];
   if (!isMapping(parsed)) return ["The YAML should be a mapping: a name: line, then messages:, as in the template."];
   const extra = Object.keys(parsed).filter((key) => !DECOMPOSITION_KEYS.includes(key));
   return [
     extra.length > 0 && `Remove ${quoted(extra)}: only name and messages go in the YAML; pick the namespace below.`,
-    nameProblem(parsed.name, namespace),
+    nameProblem(parsed.name, namespace, editing),
     ...messageProblems(parsed.messages),
   ].filter(Boolean);
 }
 
-function nameProblem(name, namespace) {
+function nameProblem(name, namespace, editing) {
   if (name === undefined) return 'Add a name: line, like "name: count the open tickets".';
   if (typeof name !== "string" || !name.trim()) return 'The name should be text, like "name: count the open tickets".';
-  if (namespace.decompositions.some((each) => each.name === name)) return `${namespace.name} already has "${name}"; rename it, or pick another namespace.`;
+  if (name !== name.trim()) return `The name "${name}" starts or ends with a space; take it out, so it reads as it looks.`;
+  const hidden = name.match(INVISIBLE);
+  if (hidden) return `The name holds a character you can't see (${codePoint(hidden[0])}); take it out, so it reads as it looks.`;
+  if (name !== editing && namespace?.decompositions.some((each) => each.name === name)) return `${namespace.name} already has "${name}"; rename it, pick another namespace, or Edit that one.`;
   return null;
 }
 
@@ -482,10 +613,28 @@ function checkMark(problems) {
   return element("span", { class: `lib-check ${count ? "failed" : "passed"}`, role: "img", "aria-label": label, title: label }, count ? "✗" : "✓");
 }
 
-function decompositionRow(namespace, { name, yaml, problems }) {
+function decompositionRow(namespace, decomposition) {
+  const { name, yaml, problems } = decomposition;
+  const key = decompositionKey(namespace, name);
   const head = [element("span", { class: "lib-name" }, name), checkMark(problems)];
-  const content = () => [problems.length > 0 && element("div", { class: "lib-problems lib-warning" }, problems.map((text) => element("p", {}, text))), element("pre", { class: "code lib-pre" }, yaml)];
-  return disclosure(decompositionKey(namespace, name), head, content);
+  const remove = async () => {
+    await changeLibrary("DELETE", ADD_URL, { namespace, name, was: yaml });
+    opened.delete(key);
+    editForms.delete(key);
+    return { where: decompositionForm.confirmation, text: `Deleted "${name}" from ${namespace}`, row: decompositionForm.el.id };
+  };
+  const content = () => {
+    const form = decompositionEdit(namespace, decomposition);
+    const question = `Delete "${name}" from ${namespace}? Agents in ${reach(namespace)} stop seeing it from the next message.`;
+    return [
+      problems.length > 0 && element("div", { class: "lib-problems lib-warning" }, problems.map((text) => element("p", {}, text))),
+      element("pre", { class: "code lib-pre" }, yaml),
+      deletable(key, form.toggle, { question, remove }),
+      form.el,
+      form.confirmation,
+    ];
+  };
+  return disclosure(key, head, content);
 }
 
 function renderDecompositions() {
@@ -522,11 +671,31 @@ function renderNamespaces() {
     const content = () => [namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
     return element("div", { style: `--depth: ${namespace.depth}` }, disclosure(namespaceKey(namespace.name), head, content));
   });
-  const run = disclosure("run-settings", element("span", { class: "lib-name" }, "Run settings"), () => namespaceFields(library.run_settings));
+  const run = disclosure("run-settings", element("span", { class: "lib-name" }, "Run settings"), runSettings);
   return [addSection(namespaceForm), element("div", { class: "lib-rows lib-tree" }, run, tree)];
 }
 
+// The engine reads only the settings it knows, so one it doesn't, as an import may bring, can be deleted; the rest stay as they are.
+function runSettings() {
+  const rows = library.run_settings.map(({ label, items, removable }) => {
+    const remove = async () => {
+      await changeLibrary("DELETE", `${RUN_SETTINGS_URL}/${encodeURIComponent(label)}`);
+      return { where: namespaceForm.confirmation, text: `Deleted run setting "${label}"`, row: "run-settings" };
+    };
+    return [label, [sourced(items), removable && deletable(settingKey(label), [], { question: `Delete run setting ${label}?`, remove })]];
+  });
+  return fields(rows);
+}
+
+const toolsSaid = element("p", { class: "lib-confirm", role: "status" });
+
+// A tool any namespace grants is built by every run, so the server deletes it only once none does.
 function renderTool(tool) {
+  const remove = async () => {
+    await changeLibrary("DELETE", `${TOOLS_URL}/${encodeURIComponent(tool.name)}`);
+    opened.delete(toolKey(tool.name));
+    return { where: toolsSaid, text: `Deleted tool "${tool.name}"` };
+  };
   return [
     fields([
       ["Factory", tool.factory],
@@ -535,17 +704,19 @@ function renderTool(tool) {
       ["Granted in", tool.granted_in.join(", ") || "no namespace"],
     ]),
     tool.config && element("pre", { class: "code lib-pre" }, tool.config),
-    // A tool whose value is a function tells the agent its docstring, which only a build shows.
-    tool.description && element("pre", { class: `code ${tool.description.includes("\n") ? "lib-pre" : "lib-doc"}` }, tool.description),
+    // A tool whose value is a function tells the agent its docstring, which only a build shows; it wraps, as one may run long.
+    tool.description && element("pre", { class: "code lib-doc" }, tool.description),
+    tool.source != null && [element("p", { class: "lib-note" }, `Its Python, ${tool.file}:`), element("pre", { class: "code lib-pre" }, tool.source)],
+    tool.stored && deletable(toolKey(tool.name), [], { question: `Delete tool ${tool.name}?`, remove }),
   ];
 }
 
 function renderTools() {
   const rows = library.tools.map((tool) => {
     const granted = tool.granted_in.length ? `granted in ${tool.granted_in.join(", ")}` : "not granted";
-    return disclosure(`t:${tool.name}`, rowHead(tool.name, granted, tool.badge), () => renderTool(tool));
+    return disclosure(toolKey(tool.name), rowHead(tool.name, granted, tool.badge), () => renderTool(tool));
   });
-  return [element("div", { class: "lib-rows" }, rows)];
+  return [element("div", { class: "lib-rows" }, toolsSaid, rows)];
 }
 
 function dataTable({ name, columns, rows }) {
@@ -583,6 +754,7 @@ function render() {
 
 function flip(key) {
   deleting = null;
+  clearSaid();
   if (opened.has(key)) opened.delete(key);
   else opened.add(key);
   render();
@@ -590,6 +762,7 @@ function flip(key) {
 
 function selectTab(name) {
   deleting = null;
+  clearSaid();
   tab = name;
   render();
   body.scrollTop = 0;
@@ -602,8 +775,10 @@ function arrowTabs(e) {
   tabButtons[TABS.indexOf(tab)].focus();
 }
 
+// Opened, it reads the Library again, as an import or another tab may have changed it.
 function setOpen(open) {
   deleting = null;
+  clearSaid();
   if (!open && panel.contains(document.activeElement)) toggleButton.focus();
   panel.hidden = !open;
   toggleButton.setAttribute("aria-expanded", String(open));
@@ -611,15 +786,22 @@ function setOpen(open) {
   closeOtherPanels(panel);
   render();
   tabButtons[TABS.indexOf(tab)].focus();
+  load();
+}
+
+// where the chat on screen runs, else where new chats start, else root
+function startingNamespace() {
+  return [chatNamespace(), library.default_namespace].find((name) => name && namespaceNamed(name)) ?? ROOT;
 }
 
 // The decomposition form's picker keeps its pick while that namespace is there.
 function useLibrary(found) {
   library = found;
   fileName.textContent = ` · ${library.file}`;
-  const picked = namespaceNamed(picker.value) ? picker.value : ROOT;
-  picker.replaceChildren(...library.namespaces.map(({ name }) => element("option", { value: name, selected: name === ROOT }, name)));
+  const picked = namespaceNamed(picker.value) ? picker.value : startingNamespace();
+  picker.replaceChildren(...library.namespaces.map(({ name }) => element("option", { value: name }, name)));
   picker.value = picked;
+  pruneForms();
 }
 
 // At start, and after each change the agent makes in a run; drafts live in their forms, so they survive.
@@ -633,6 +815,8 @@ async function load() {
   }
   if (found && asked > applied) {
     applied = asked;
+    // as it was: nothing to redraw, so focusing the window costs nothing
+    if (!problem && JSON.stringify(found) === JSON.stringify(library)) return;
     problem = null;
     useLibrary(found);
     libraryChanged(library);
@@ -647,8 +831,12 @@ panel.addEventListener(LIBRARY_CHANGED, load);
 panel.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   e.stopPropagation();
-  if (deleting && !deleting.refusal) keepNamespace(deleting.name);
+  if (deleting && !deleting.refusal) keep(deleting.key);
   else setOpen(false);
+});
+// Back in this window, the Library is read again while the panel is open: a CLI import or another tab may have changed it.
+window.addEventListener("focus", () => {
+  if (!panel.hidden) load();
 });
 // Elsewhere, Esc closes the panel unless the chat used it, to stop its run or keep a chat; app.js's handler runs first.
 document.addEventListener("keydown", (e) => {
