@@ -115,9 +115,11 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 - In a chat in the `librarian` namespace, picked under the message box, the agent can add or edit a decomposition in
   a namespace you name, add a namespace or change one's own fields (its system suffix, vars, tools and spawn), and
   write a new tool of its own in Python (or replace one) that it then grants to a namespace, with the app's own
-  `library` tool; a chat in a namespace without it can't, even through a sub-agent. A tool it writes is built once
-  to check it, only in a chat whose namespace runs the local REPL, and can't take a built-in's or the app's name or
-  replace a tool root grants or one built into the engine. The tool never
+  `library` tool; a chat in a namespace without it can't, even through a sub-agent. A tool it writes, or a tool of
+  yours it grants, is built first to check it, as another chat would build it (in a process of its own, from an empty
+  folder), and one that doesn't build there is refused: granted, it would stop every chat. That works only in a chat
+  whose namespace runs the local REPL. A tool it writes can't take a built-in's or the app's name or replace a tool
+  root grants or one built into the engine. The tool never
   changes root, a namespace's REPL or backbone (`repl`, `reasoner`), which namespaces grant `library`, `history` or `page`,
   the system prompt or the run settings; never grants a tool that runs Claude Code, which would bill your
   subscription; adds no namespace under one that grants `library` or runs Claude Code; never deletes, and never
@@ -140,6 +142,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 - Every run builds every tool some namespace grants, whatever namespace its chat is in (only which agents can call a
   tool is per namespace): once any namespace grants a tool, its code runs at the start of every message in every
   chat, and a granted tool that stops building stops every chat until you take it out of the namespaces' tools in
-  the panel. A tool no namespace grants never runs.
+  the panel; the failed run says which tool, and which namespaces grant it. A tool no namespace grants never runs,
+  but once when the librarian writes or is about to grant it, to check it builds.
 
 The previous app, built on OpenHands, is in history at `a80bb2e`; its design docs are on the `design-docs` branch.

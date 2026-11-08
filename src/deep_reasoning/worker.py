@@ -24,6 +24,7 @@ from typing import Any, NoReturn, TextIO
 import structlog
 import yaml
 from deep_reasoner.core import configure_structlog_fixture
+from deep_reasoner.tools import ToolBuildError
 from deep_reasoner.v2.agent import _parts
 from deep_reasoner.v2.cli import V2Config, build_reasoner, close_run
 from deep_reasoner.v2.decompositions import as_cli_act
@@ -112,6 +113,32 @@ def for_claude(message: dict[str, str]) -> dict[str, str]:
 def detail_of(error: BaseException) -> str:
     """An exception as deep_reasoner words agent.end's detail."""
     return f"{type(error).__name__}: {error}"
+
+
+def build_failure(error: ToolBuildError, config: dict[str, Any]) -> str:
+    """Why a run whose tools don't build couldn't start, in words: for each tool, what
+    went wrong, which namespaces grant it, and how to take it out."""
+    namespaces, tools = config.get("namespaces") or {}, config.get("tools") or {}
+    paragraphs = []
+    for failure in error.failures:
+        tool, detail = failure.tool, failure.detail
+        # The run's copy of the tool's file is in its run folder: name the file alone.
+        file = (tools.get(tool) or {}).get("factory_from")
+        if file:
+            folder = Path(file).parent
+            for shown in (str(folder), os.path.relpath(folder)):
+                detail = detail.replace(shown + os.sep, "")
+        granting = [
+            name
+            for name, fields in namespaces.items()
+            if tool in ((fields or {}).get("tools") or [])
+        ]
+        paragraphs.append(
+            f"Tool {tool} doesn't build, so no chat can run while a namespace grants it:"
+            f" {detail}\nIt is granted in {', '.join(granting)}: take it out of their"
+            " tools in the Library panel's Namespaces tab (Edit YAML)."
+        )
+    return "\n\n".join(paragraphs)
 
 
 @dataclass
@@ -366,7 +393,12 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     except Exception as error:
         log.exception("worker.run_failed")
         outcome = "stopped" if stop_asked.is_set() else "failed"
-        recorder.emit("turn.end", outcome=outcome, answer=None, detail=detail_of(error))
+        detail = (
+            build_failure(error, spec["config"])
+            if isinstance(error, ToolBuildError)
+            else detail_of(error)
+        )
+        recorder.emit("turn.end", outcome=outcome, answer=None, detail=detail)
         finish(reasoner)
     if reasoner.stopped:
         recorder.emit("turn.end", outcome="stopped", answer=None, detail=None)

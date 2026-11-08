@@ -10,6 +10,7 @@ from fake_model import WORD_COUNT
 from structlog.testing import capture_logs
 
 from deep_reasoning.app_tools import (
+    CHANGED_MEANWHILE,
     EMPTY,
     MAX_FOUND,
     MAX_VALUE_CHARS,
@@ -1108,6 +1109,169 @@ def test_a_tool_is_built_from_a_file_deleted_after_the_build(fresh):
     with pytest.raises(LibraryError, match="raised RuntimeError: built"):
         tool.write_tool("other", RAISING, "build")
     assert list((fresh.parent / "run-tools" / "checks").iterdir()) == []
+
+
+HELPED = """from deep_reasoner.primitives import Func
+from helper import count
+
+
+def build(client, params):
+    return Func(count)
+"""
+READS_A_FILE = """from pathlib import Path
+
+from deep_reasoner.primitives import Func
+
+
+def build(client, params):
+    words = Path("words.txt").read_text().split()
+    return Func(lambda: words)
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "refusal"),
+    [
+        (HELPED, "raised ModuleNotFoundError: No module named 'helper'"),
+        (READS_A_FILE, "raised FileNotFoundError"),
+    ],
+    ids=["a-module", "a-file"],
+)
+def test_a_tool_needing_what_only_this_chats_folder_has_doesnt_build(
+    fresh, tmp_path, monkeypatch, source, refusal
+):
+    # The worker runs in the chat's folder, with it last on sys.path.
+    folder = tmp_path / "chat-folder"
+    folder.mkdir()
+    (folder / "helper.py").write_text("def count(text):\n    return len(text)\n")
+    (folder / "words.txt").write_text("a b c")
+    monkeypatch.chdir(folder)
+    monkeypatch.syspath_prepend(str(folder))
+    with pytest.raises(LibraryError, match=re.escape(refusal)) as refused:
+        library_tool(fresh).write_tool("counter", source, "build")
+    assert "doesn't build, so it wasn't written" in str(refused.value)
+    assert stored_tools(fresh) == []
+
+
+def stored_as(library, name, source):
+    """Tool *name* of *source*, built by its build function, stored as an import stores
+    one, granted nowhere."""
+    block = dump({"factory": "build", "factory_from": f"{name}.py"})
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_TOOL, (name, block, source))
+
+
+@pytest.mark.parametrize(
+    ("method", "name"), [("add_namespace", "research"), ("change_namespace", "drafts")]
+)
+def test_granting_a_tool_that_doesnt_build_is_refused_as_it_would_stop_every_chat(
+    fresh, method, name
+):
+    stored_as(fresh, "broken", RAISING)
+    before = stored_namespaces(fresh)
+    refusal = (
+        "Tool broken doesn't build, so it wasn't granted (granted, it would stop every"
+        " chat; fix it with write_tool first): build in broken.py raised RuntimeError:"
+        " built"
+    )
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        getattr(library_tool(fresh), method)(name, "tools: [broken]\n")
+    assert stored_namespaces(fresh) == before
+
+
+def test_granting_a_tool_that_builds_grants_it(fresh):
+    stored_as(fresh, "counter", WORD_COUNT)
+    library_tool(fresh).change_namespace("drafts", "tools: [counter]\n")
+    assert ("drafts", "tools: [counter]\n") in stored_namespaces(fresh)
+
+
+def test_a_tool_changed_while_it_was_built_for_a_grant_is_not_granted(fresh):
+    # Its build replaces it in the Library, as another chat's write would meanwhile.
+    replaces_itself = f"""import sqlite3
+
+from deep_reasoner.primitives import Func
+
+
+def build(client, params):
+    with sqlite3.connect({str(fresh)!r}) as connection:
+        connection.execute("UPDATE tools SET source = source || '#' WHERE name = 'sly'")
+    return Func(len)
+"""
+    stored_as(fresh, "sly", replaces_itself)
+    before = stored_namespaces(fresh)
+    with pytest.raises(LibraryError, match=re.escape(CHANGED_MEANWHILE)):
+        library_tool(fresh).change_namespace("drafts", "tools: [sly]\n")
+    assert stored_namespaces(fresh) == before
+
+
+# A factory that leaves a mark when it runs.
+MARKS = """from pathlib import Path
+
+from deep_reasoner.primitives import Func
+
+
+def build(client, params):
+    Path({marker!r}).write_text("ran")
+    return Func(len)
+"""
+
+
+@pytest.mark.parametrize(
+    ("method", "name", "text", "refusal"),
+    [
+        (
+            "add_namespace",
+            "nowhere.child",
+            "tools: [marks]\n",
+            'Add namespace "nowhere" first',
+        ),
+        ("add_namespace", "drafts", "tools: [marks]\n", "There is already a namespace"),
+        ("add_namespace", "re search", "tools: [marks]\n", "A namespace name is words"),
+        (
+            "add_namespace",
+            "research",
+            "tools: [marks]\nspawn: [nowhere]\n",
+            'spawn names "nowhere"',
+        ),
+        (
+            "add_namespace",
+            "research",
+            "tools: [marks]\nvars: {max: 3}\n",
+            "would hide Python's own max",
+        ),
+        ("change_namespace", "nowhere", "tools: [marks]\n", "has no namespace"),
+    ],
+    ids=[
+        "no-parent",
+        "already-there",
+        "a-bad-name",
+        "spawn-to-none",
+        "a-bad-var",
+        "none",
+    ],
+)
+def test_a_grant_refused_for_what_is_cheap_to_check_never_builds_the_tool(
+    fresh, tmp_path, method, name, text, refusal
+):
+    marker = tmp_path / "ran.txt"
+    stored_as(fresh, "marks", MARKS.format(marker=str(marker)))
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        getattr(library_tool(fresh), method)(name, text)
+    assert not marker.exists()
+
+
+def test_a_chat_whose_namespace_runs_a_sandboxed_repl_may_not_grant_a_tool_nor_build_it(
+    fresh, tmp_path
+):
+    marker = tmp_path / "ran.txt"
+    stored_as(fresh, "marks", MARKS.format(marker=str(marker)))
+    sandboxed = "tools: [library]\nrepl: {type: restricted}\n"
+    with closing(open_library(fresh)) as connection:
+        change_namespace(connection, "librarian", sandboxed)
+    with pytest.raises(LibraryError, match=re.escape(NOT_LOCAL)):
+        library_tool(fresh).change_namespace("drafts", "tools: [marks]\n")
+    assert not marker.exists()
+    assert ("drafts", "") in stored_namespaces(fresh)
 
 
 def page_of(library, chat=CHAT, key_names=()):

@@ -358,12 +358,15 @@ run's model client and params = `settings` (a dict of plain values), and it retu
 deep_reasoner.primitives.Func(value, description=...): value is what agents call by the \
 tool's name (a function, or an object whose methods they call), and description is what \
 they are told it does (value's docstring when not given; name the methods). It is built \
-once here to check it, and only in a chat whose namespace runs the local REPL. Agents see \
-it only in a namespace that grants it (add its name to a namespace's tools with \
-change_namespace, from the next message), but once any namespace grants it, its module \
-and factory run at the start of every run of every chat, so a tool that stops building \
-stops every chat until the user takes it out of the namespaces' tools in the Library \
-panel.
+once here to check it, as another chat would build it: in a process of its own, from an \
+empty folder, so a tool that needs a file or module only this chat's folder has doesn't \
+build. Building it doesn't call it: say it was built, not tried. Agents see it only in a \
+namespace that grants it (add its name to a namespace's tools with change_namespace, \
+from the next message), but once any namespace grants it, its module and factory run at \
+the start of every run of every chat, so add_namespace and change_namespace first build \
+each custom tool they grant that the namespace didn't, and refuse one that doesn't \
+build, as it would stop every chat. Writing or granting a custom tool works only in a \
+chat whose namespace runs the local REPL.
 Each write returns what it did, as {done, what, name} (and namespace, but for a \
 tool); a refusal raises ValueError saying why."""
 PAGE_DESCRIPTION = """\
@@ -1431,18 +1434,17 @@ def hidden_vars(registry, names):
             )
 
 
-def write_namespace(connection, namespace, text):
-    """Store *namespace* as its YAML *text*, inside a transaction that keeps it only if
-    its vars are well named, every namespace it may spawn into is there, the engine
-    accepts the Library, and there and below each backbone is one the engine builds and
-    no tool takes a var's place. A namespace elsewhere is not its to answer for."""
+def check_fields(connection, namespace):
+    """Raise unless *namespace*'s vars are well named and every namespace it may spawn
+    into is in the Library, or is itself."""
     problems = list(filter(None, map(var_problem, namespace.vars)))
     if problems:
         raise LibraryError("\n".join(problems))
-    connection.execute(UPSERT_NAMESPACE, (namespace.name, text))
     # The engine lets a spawn name no namespace, and fails only when the agent spawns there.
     missing = [
-        each for each in namespace.spawn or [] if not has_namespace(connection, each)
+        each
+        for each in namespace.spawn or []
+        if each != namespace.name and not has_namespace(connection, each)
     ]
     if missing:
         raise LibraryError(
@@ -1451,6 +1453,15 @@ def write_namespace(connection, namespace, text):
                 for each in missing
             )
         )
+
+
+def write_namespace(connection, namespace, text):
+    """Store *namespace* as its YAML *text*, inside a transaction that keeps it only if
+    its fields pass check_fields, the engine accepts the Library, and there and below
+    each backbone is one the engine builds and no tool takes a var's place. A namespace
+    elsewhere is not its to answer for."""
+    check_fields(connection, namespace)
+    connection.execute(UPSERT_NAMESPACE, (namespace.name, text))
     _, registry = accepted(connection)
     below = [each for each in registry.names if namespace.name in registry.chain(each)]
     check_backbones(registry, below)
@@ -1462,25 +1473,34 @@ def add_namespace(connection, name, text, allowed=None):
     LibraryError saying why not; the YAML stored. Its decompositions are added afterwards.
     *allowed*, given the connection under the write lock first and the namespace, raises to
     refuse."""
+    check_name(name)
+    namespace, stored = authored(name, text)
+    with writing(connection):
+        if allowed is not None:
+            allowed(connection, namespace)
+        check_place(connection, name)
+        write_namespace(connection, namespace, stored)
+    return stored
+
+
+def check_name(name):
+    """Raise unless *name* names a namespace: plain words, joined by dots for a child."""
     if not name:
         raise LibraryError(NAME_IT)
     if not NAMESPACE_NAME.fullmatch(name):
         raise LibraryError(NAME_SHAPE)
-    namespace, stored = authored(name, text)
+
+
+def check_place(connection, name):
+    """Raise unless a new namespace *name* has a place in the Library: none holds its
+    name, and the one it goes under is there."""
+    if has_namespace(connection, name):
+        raise LibraryError(
+            f'There is already a namespace "{name}"; open it and use Edit YAML.'
+        )
     parent = name.rpartition(".")[0]
-    with writing(connection):
-        if allowed is not None:
-            allowed(connection, namespace)
-        if has_namespace(connection, name):
-            raise LibraryError(
-                f'There is already a namespace "{name}"; open it and use Edit YAML.'
-            )
-        if parent and not has_namespace(connection, parent):
-            raise LibraryError(
-                f'Add namespace "{parent}" first: "{name}" goes under it.'
-            )
-        write_namespace(connection, namespace, stored)
-    return stored
+    if parent and not has_namespace(connection, parent):
+        raise LibraryError(f'Add namespace "{parent}" first: "{name}" goes under it.')
 
 
 def change_namespace(connection, name, text, allowed=None, was=None):
