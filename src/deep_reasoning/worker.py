@@ -24,6 +24,7 @@ from typing import Any, NoReturn, TextIO
 import structlog
 import yaml
 from deep_reasoner.core import configure_structlog_fixture
+from deep_reasoner.namespaces import NamespaceRegistry
 from deep_reasoner.tools import ToolBuildError
 from deep_reasoner.v2.agent import _parts
 from deep_reasoner.v2.cli import (
@@ -124,8 +125,7 @@ def detail_of(error: BaseException) -> str:
 def build_failure(error: ToolBuildError, config: V2Config) -> str:
     """Why a run couldn't start, as tools its *config* declares don't build, in words:
     for each, what went wrong, which namespaces grant it, and how to take it out."""
-    registry = build_namespace_registry(config)
-    names = in_chain_order(registry)
+    granting = partial(granted_by, granting_registry(config))
     paragraphs = []
     for failure in error.failures:
         tool, detail = failure.tool, failure.detail
@@ -135,10 +135,10 @@ def build_failure(error: ToolBuildError, config: V2Config) -> str:
             folder = Path(file).parent
             for shown in (str(folder), os.path.relpath(folder)):
                 detail = detail.replace(shown + os.sep, "")
-        granting = granted_in(registry, names, tool)
+        namespaces = granting(tool)
         where = (
-            f"It is granted in {', '.join(granting)}: take it out of their tools"
-            if granting
+            f"It is granted in {', '.join(namespaces)}: take it out of their tools"
+            if namespaces
             else "Take it out of the tools of each namespace that grants it"
         )
         paragraphs.append(
@@ -146,6 +146,23 @@ def build_failure(error: ToolBuildError, config: V2Config) -> str:
             f" {detail}\n{where} in the Library panel's Namespaces tab (Edit YAML)."
         )
     return "\n\n".join(paragraphs)
+
+
+def granting_registry(config: V2Config) -> NamespaceRegistry | None:
+    """*config*'s namespaces, to name those that grant a tool that doesn't build; None
+    when they can't be read, so the failure is still worded, without them."""
+    try:
+        return build_namespace_registry(config)
+    except Exception:
+        log.exception("worker.granting_namespaces_unknown")
+        return None
+
+
+def granted_by(registry: NamespaceRegistry | None, tool: str) -> list[str]:
+    """The namespaces of *registry* that grant *tool* themselves; none without one."""
+    if registry is None:
+        return []
+    return granted_in(registry, in_chain_order(registry), tool)
 
 
 @dataclass

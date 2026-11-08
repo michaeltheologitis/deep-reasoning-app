@@ -9,6 +9,7 @@ from deep_reasoner.v2.messages import code
 from deep_reasoner.v2.repl_coro import REPL
 from genai_prices import Usage, calc_price
 
+from deep_reasoning import worker
 from deep_reasoning.worker import (
     Recorder,
     build_failure,
@@ -331,4 +332,18 @@ def test_a_run_whose_tool_doesnt_build_says_which_where_and_how_to_take_it_out(
         "Tool broken doesn't build, so no chat can run while a namespace grants it: build"
         f" in broken.py raised RuntimeError: no index\n{where} in the Library panel's"
         " Namespaces tab (Edit YAML)."
+    )
+
+
+def test_a_run_whose_namespaces_cant_be_read_still_says_which_tool_doesnt_build(
+    monkeypatch,
+):
+    def unreadable(config):
+        raise ValueError("no registry")
+
+    monkeypatch.setattr(worker, "build_namespace_registry", unreadable)
+    config = V2Config.model_validate({"tools": {"broken": BROKEN}})
+    assert build_failure(BUILD_ERROR, config).endswith(
+        "no index\nTake it out of the tools of each namespace that grants it in the"
+        " Library panel's Namespaces tab (Edit YAML)."
     )
