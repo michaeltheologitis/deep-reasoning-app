@@ -144,19 +144,17 @@ imports too.
   draft stays beside what is stored. A delete the panel knows would be refused says why at once. The panel and the
   namespace menu read the Library again when you open the panel or come back to the window.
 - Each run tells the agents of every namespace but root which namespace they are in, so "hand this to stats" reaching
-  `stats` is done there, and, when it sets `spawn`, where they can hand work; the panel shows that line under its
-  System suffix and marks a listed namespace that is gone.
+  `stats` is done there; of one whose REPL isn't the one above it (root: the local one), where their Python runs;
+  and, when it sets `spawn`, where they can hand work. The panel shows that line under its System suffix and marks a
+  listed namespace that is gone; the librarian can't store it in a suffix.
 - A shared Library's rows the engine can't read are left out, so the rest works; the panel marks each ✗ with why,
   to fix or delete. Its templates run sandboxed, reaching no Python internals.
 - Every run builds every tool some namespace grants, whatever its chat's namespace: a granted tool's code runs at the
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never
   runs, but to check it builds.
-- A new Library's root has a `system_suffix`, which every namespace inherits, telling agents what app they are in
-  (on your computer, unsandboxed, writing files in the chat's folder, the ✻ line opening an answer's tree, chats
-  saved in the Library file), that a namespace's suffix is your own text and no secret, to answer each number from what Python computed and
-  printed, to combine sub-agents' results in words with formulas as plain text, and to put their results in their
-  answer, leaving their own failed cells out; edit or delete it in the panel.
+- A new Library's root has a `system_suffix`, which every namespace inherits, telling agents about the app and how to
+  answer; read, edit or delete it in the panel.
 
 **The librarian**
 - In a chat in `librarian`, the agent adds or edits worked examples, adds namespaces and changes their

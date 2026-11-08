@@ -20,6 +20,7 @@ from structlog.testing import capture_logs
 
 from deep_reasoning.importing import NOT_CARRIED, import_config
 from deep_reasoning.library import (
+    HERE_LINE,
     HISTORIAN,
     LIBRARIAN,
     MAX_YAML_CHARS,
@@ -497,7 +498,8 @@ def test_an_imported_suffix_may_read_the_configs_own_template_variables(
     )
     import_into(library, written)
     namespace = run_config(library, tmp_path).namespaces["research"]
-    assert namespace.system_suffix.startswith("Answer for {{ dept }}.\n\n")
+    here = HERE_LINE.render(name="research", above=False, loops=True)
+    assert namespace.system_suffix == f"Answer for {{{{ dept }}}}.\n\n{here}"
 
 
 NOT_A_MAPPING = 'is not a deep_reasoner config: it should be a mapping of settings, like "max_iter: 20".'

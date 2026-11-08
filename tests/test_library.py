@@ -45,6 +45,7 @@ from deep_reasoning.library import (
     LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
+    LOCAL_REPL,
     MAX_ROW_BYTES,
     MAX_YAML_CHARS,
     NAME_NOT_TEXT,
@@ -52,6 +53,7 @@ from deep_reasoning.library import (
     NO_SUB_AGENTS,
     PAGE_DESCRIPTION,
     ROOT_SUFFIX,
+    SANDBOX_LINE,
     SHAPES,
     SPAWN_LINE,
     UNREAD_SETTING,
@@ -221,10 +223,12 @@ def test_a_fresh_library_grants_llm_at_root_history_and_page_to_the_historian_an
     # Each suffix as stored, then where its agents may hand work, for the run only.
     to_historian = SPAWN_LINE.render(allowed=[HISTORIAN], above=False)
     assert config.namespaces[HISTORIAN].system_suffix == (
-        HISTORIAN_SUFFIX.rstrip("\n") + f"\n\n{here(HISTORIAN)} {NO_SUB_AGENTS}"
+        HISTORIAN_SUFFIX.rstrip("\n")
+        + f"\n\n{here(HISTORIAN, loops=False)} {NO_SUB_AGENTS}"
     )
     assert config.namespaces[LIBRARIAN].system_suffix == (
-        LIBRARIAN_SUFFIX.rstrip("\n") + f"\n\n{here(LIBRARIAN)} {to_historian}"
+        LIBRARIAN_SUFFIX.rstrip("\n")
+        + f"\n\n{here(LIBRARIAN, loops=False)} {to_historian}"
     )
 
 
@@ -415,8 +419,10 @@ def test_a_spawn_list_the_librarian_restricts_keeps_both_hand_offs(library, tmp_
     assert shown["scheduler"] == shown[ROOT]
 
 
-def here(name):
-    return HERE_LINE.render(name=name)
+def here(name, above=False, loops=True):
+    """The line telling namespace *name*'s agents where they are: *above* when one above
+    it is told too, *loops* when they may hand work to their own namespace."""
+    return HERE_LINE.render(name=name, above=above, loops=loops)
 
 
 def run_suffixes(library, tmp_path):
@@ -463,19 +469,21 @@ def test_a_namespace_that_sets_a_spawn_list_ends_its_suffix_with_where_it_can_ha
     assert run_suffixes(team, tmp_path)[name].endswith(line)
 
 
-def test_a_spawn_line_is_inherited_shown_in_the_panel_and_never_stored(team, tmp_path):
+def test_run_lines_are_inherited_shown_in_the_panel_and_never_stored(team, tmp_path):
     own = run_suffixes(team, tmp_path)
     # One that sets none is told only where it is, and inherits its parent's line.
-    assert own["searcher.deep"] == here("searcher.deep")
+    deep = here("searcher.deep", above=True, loops=False)
+    assert own["searcher.deep"] == deep
     assert own[ROOT] == ROOT_SUFFIX
     rows = panel_rows(team)
     assert rows["searcher"]["yaml"] == TEAM["searcher"]
     *_, inherited, its_own = field(rows["searcher.deep"], "System suffix")
     assert inherited == {
-        "value": f"{here('searcher')} {NO_SUB_AGENTS}",
+        "value": f"{here('searcher', loops=False)} {NO_SUB_AGENTS}",
         "source": "added at run time, inherited from searcher",
         "here": False,
     }
+    assert its_own["value"] == deep
     assert its_own["source"] == "added at run time, set here"
 
 
@@ -484,11 +492,37 @@ def test_each_namespace_but_root_is_told_which_it_is(library, tmp_path):
         add_namespace(connection, "statistician", "system_suffix: Compute.\n")
     own = run_suffixes(library, tmp_path)
     assert own["statistician"] == f"Compute.\n\n{here('statistician')}"
-    assert (
-        'a task that asks for statistician ("hand this to statistician")'
-        in (own["statistician"])
-    )
     assert own[ROOT] == ROOT_SUFFIX
+
+
+def told_it_runs_in(repl):
+    return SANDBOX_LINE.render(type=repl, local=LOCAL_REPL)
+
+
+def test_a_namespace_whose_repl_isnt_the_one_above_is_told_where_its_python_runs(
+    library, tmp_path
+):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "boxed", "repl: {type: restricted}\n")
+        add_namespace(connection, "boxed.inner", "")
+        add_namespace(connection, "boxed.out", "repl: {type: local}\n")
+    own = run_suffixes(library, tmp_path)
+    # Root's suffix speaks of the local REPL, which root and the fresh namespaces run.
+    assert own[ROOT] == ROOT_SUFFIX
+    assert own[HISTORIAN].endswith(NO_SUB_AGENTS)
+    assert own["boxed"] == f"{here('boxed')} {told_it_runs_in('restricted')}"
+    assert own["boxed.inner"] == here("boxed.inner", above=True)
+    assert own["boxed.out"] == (
+        f"{here('boxed.out', above=True)} {told_it_runs_in(LOCAL_REPL)}"
+    )
+
+
+def test_root_running_a_sandbox_from_the_run_settings_is_told_so(library, tmp_path):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_SETTING, ("repl", dump({"type": "restricted"})))
+    own = run_suffixes(library, tmp_path)
+    assert own[ROOT] == f"{ROOT_SUFFIX.rstrip()}\n\n{told_it_runs_in('restricted')}"
+    assert own[HISTORIAN].endswith(NO_SUB_AGENTS)
 
 
 @pytest.mark.parametrize(
@@ -502,7 +536,7 @@ def test_a_spawn_line_follows_the_own_suffix_after_one_blank_line(
     with closing(open_library(library)) as connection:
         add_namespace(connection, "searcher", f"spawn: []\n{text}")
     assert run_suffixes(library, tmp_path)["searcher"] == (
-        f"Search.\n\n{here('searcher')} {NO_SUB_AGENTS}"
+        f"Search.\n\n{here('searcher', loops=False)} {NO_SUB_AGENTS}"
     )
 
 
@@ -512,7 +546,7 @@ def test_a_spawn_list_naming_only_namespaces_that_are_gone_reads_as_a_leaf(
     with closing(open_library(library)) as connection, writing(connection):
         connection.execute(UPSERT_NAMESPACE, ("lonely", "spawn: [ghost]\n"))
     assert run_suffixes(library, tmp_path)["lonely"] == (
-        f"{here('lonely')} {NO_SUB_AGENTS}"
+        f"{here('lonely', loops=False)} {NO_SUB_AGENTS}"
     )
     [spawn] = field(panel_rows(library)["lonely"], "May spawn into")
     assert spawn["value"] == "ghost (not a namespace now)"
@@ -1088,7 +1122,7 @@ def test_a_namespace_is_added_at_the_top_and_its_child_inherits_from_it(
         [
             ROOT_SUFFIX,
             f"Cite each source.\n\n{here('research')}",
-            here("research.papers"),
+            here("research.papers", above=True),
         ]
     )
 

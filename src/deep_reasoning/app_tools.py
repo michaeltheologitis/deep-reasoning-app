@@ -56,6 +56,7 @@ from deep_reasoning.library import (
     HISTORY_DESCRIPTION,
     LIBRARY_DESCRIPTION,
     LIBRARY_TOOL,
+    LOCAL_REPL,
     PAGE_DESCRIPTION,
     TAKEN_NAMES,
     LibraryError,
@@ -81,6 +82,7 @@ from deep_reasoning.library import (
     reading,
     refuse_keys,
     run_config_and_registry,
+    run_line_parts,
     running_code,
     same_grants,
     sees,
@@ -177,15 +179,20 @@ CHECKS = "checks"
 # What wasn't done when a tool doesn't build: written, or granted.
 WRITTEN = "wasn't written"
 GRANTED = f"wasn't granted ({STOPS_EVERY_CHAT}; fix it with write_tool first)"
-# Any other REPL is a sandbox, and building a tool runs its code outside it.
-LOCAL_REPL = "local"
 # Told to the library tool's agents in a chat that can't write, such as a sub-agent's.
 READ_ONLY_HERE = jinja2.Template(
     "\nIn this chat you may only read the Library: its namespace, {{ namespace }}, doesn't"
     " grant library, so the tool refuses every write, here and in any sub-agent. Asked"
     " for a change, don't try it: answer, with FinalAnswer, what you would change, and"
     " that the user should {{ pick }} and ask there; but root, which every chat builds"
-    " on, only the user changes, in the Library panel (Namespaces, root, Edit YAML).",
+    " on, only the user changes, in the Library panel: Namespaces → root → Edit YAML for"
+    " its instructions, Decompositions for its examples.",
+    undefined=jinja2.StrictUndefined,
+)
+# show(name) lists the lines a run adds after a suffix, which the librarian may copy.
+RUN_TIME_LINE = jinja2.Template(
+    "system_suffix holds “{{ line }}”, which the app adds at run time: leave it out, or"
+    " its agents read it twice.",
     undefined=jinja2.StrictUndefined,
 )
 NOT_LOCAL = (
@@ -1130,6 +1137,19 @@ def check_locks(
         check_inherited(config, registry, name, above)
 
 
+def check_no_run_lines(registry: NamespaceRegistry, namespace: NamespaceConfig) -> None:
+    """Raise if *namespace*'s system_suffix holds a line a run adds after a suffix, as
+    show(name) lists them, that its stored one doesn't."""
+    suffix = namespace.system_suffix or ""
+    stored = ""
+    if namespace.name in registry.names:
+        stored = registry.config(namespace.name).system_suffix or ""
+    for lines in run_line_parts(registry).values():
+        for line in lines:
+            if line in suffix and line not in stored:
+                raise LibraryError(RUN_TIME_LINE.render(line=line))
+
+
 def check_inherited(
     config: V2Config, registry: NamespaceRegistry, name: str, above: str
 ) -> None:
@@ -1360,6 +1380,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         config, registry = config_and_registry(connection)
         check_grant(registry)
         check_locks(config, registry, namespace)
+        check_no_run_lines(registry, namespace)
         if afresh:
             check_local(registry)
 
