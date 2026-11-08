@@ -18,7 +18,7 @@ from deep_reasoner.v2.cli import (
 )
 from structlog.testing import capture_logs
 
-from deep_reasoning.importing import NOT_CARRIED, import_config
+from deep_reasoning.importing import KEEP_VARIABLES, NOT_CARRIED, import_config
 from deep_reasoning.library import (
     HISTORIAN,
     LIBRARIAN,
@@ -1223,6 +1223,32 @@ def test_an_entry_namespace_the_library_already_holds_is_imported(library, tmp_p
     import_into(library, config_file(tmp_path, "namespaces:\n  research: {}\n"))
     said = import_into(library, config_file(tmp_path, "entry_namespace: research\n"))
     assert "  New chats start in research, not root." in said
+
+
+READS_TERM = """\
+prompt_template_variables: {term: fall}
+namespaces:
+  root:
+    decompositions:
+    - name: this term
+      messages:
+      - {role: user, content: "Which courses run in {{ term }}?"}
+      - {role: assistant, content: "<think>List them.</think>\\n<repl>FinalAnswer(1)</repl>"}
+"""
+
+
+def test_import_refuses_to_take_away_a_variable_a_kept_worked_example_reads(
+    library, tmp_path
+):
+    (tmp_path / "first").mkdir()
+    import_into(library, config_file(tmp_path / "first", READS_TERM))
+    config = config_file(tmp_path, "prompt_template_variables: {season: spring}\n")
+    said = (
+        'Namespace root, decomposition "this term", kept: Turn 1 (user), line 1: the'
+        ' engine reads text holding {{ or {% as a Jinja template, and this one names "term"'
+    )
+    refused_unchanged(library, config, said)
+    refused_unchanged(library, config, KEEP_VARIABLES)
 
 
 def test_import_refuses_yaml_nested_too_deeply_in_words(library, tmp_path):

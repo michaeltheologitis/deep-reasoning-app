@@ -77,6 +77,11 @@ NOT_CARRIED = (
 )
 NOT_A_MAPPING = 'it should be a mapping of settings, like "max_iter: 20".'
 COMPOSE = "_compose"
+KEEP_VARIABLES = (
+    "Those the Library holds read a template variable the config's"
+    " prompt_template_variables takes away, so no run would show them: keep the variable"
+    " in the config, or replace those worked examples in it."
+)
 OUTSIDE = (
     "an import reads only files in the config's folder and below: copy the file in, or"
     " pass --within with a folder holding both."
@@ -460,17 +465,28 @@ def check_namespaces(connection, before, changes):
             check_written(connection, name, name not in before["namespaces"])
 
 
-def check_renders(changes, decompositions, names):
+def check_renders(changes, decompositions, names, stored):
     """Raise unless each decomposition the import writes renders, its templates reading
-    only *names*, as the panel refuses one that doesn't; its other problems only mark it
-    ✗. The config's *decompositions* are by (namespace, name)."""
+    only *names*, as the panel refuses one that doesn't, and so does each of the
+    Library's *stored* ones (read_decompositions()) that renders now and that the import
+    keeps, as one that stops is left out of every run; their other problems only mark
+    them ✗. The config's *decompositions* are by (namespace, name)."""
     problems = [
         f'Namespace {namespace}, decomposition "{name}": {problem}'
         for namespace, name in changes["decompositions"]
         for problem in template_problems(decompositions[namespace, name], names)
     ]
-    if problems:
-        raise LibraryError("\n".join(problems))
+    kept = [
+        f'Namespace {row["namespace"]}, decomposition "{row["name"]}", kept: {problem}'
+        for row in stored
+        if row["decomposition"] is not None
+        and (row["namespace"], row["name"]) not in changes["decompositions"]
+        for problem in template_problems(row["decomposition"], names)
+    ]
+    if kept:
+        kept.append(KEEP_VARIABLES)
+    if problems or kept:
+        raise LibraryError("\n".join(problems + kept))
 
 
 def check_builds(tools, environment, files):
@@ -629,14 +645,14 @@ def import_config(connection, path, secrets=(), environment=None, within=None):
         before, earlier = library_state(read), as_the_engine_reads(read)
         imported = imported_state(settings, namespaces, tools, before)
         changes = changes_of(before, imported)
-        names = [ROOT, *registry.names, *before["namespaces"]]
-        check_entry(settings.get(ENTRY_NAMESPACE), names)
+        namespace_names = [ROOT, *registry.names, *before["namespaces"]]
+        check_entry(settings.get(ENTRY_NAMESPACE), namespace_names)
         check_new_names(before, changes)
         store_changes(connection, changes)
         later = accepted(connection)
         check_namespaces(connection, before, changes)
         names = template_names(later[0].prompt_template_variables)
-        check_renders(changes, decompositions, names)
+        check_renders(changes, decompositions, names, read["decompositions"])
         built = to_build(before, imported, changes)
         files = {
             name: block.get("factory_from") for name, block in config.tools.items()
