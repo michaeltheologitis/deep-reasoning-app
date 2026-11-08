@@ -38,7 +38,7 @@ from deep_reasoner.v2.messages import NoCodeBlock, code
 from genai_prices import Usage, calc_price
 
 from deep_reasoning.app_tools import CLAUDE_CODE
-from deep_reasoning.library import granted_in, in_chain_order
+from deep_reasoning.library import granted_in, in_chain_order, sandbox_templates
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
     FINAL_ANSWER,
@@ -435,6 +435,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
 
 
 def main() -> None:
+    sandbox_templates()
     folder = Path(sys.argv[1])
     # The cwd is the chat's folder: its own modules import, after every installed one.
     sys.path.append(os.getcwd())
