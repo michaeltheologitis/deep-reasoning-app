@@ -8,6 +8,7 @@ import stat
 import threading
 from contextlib import closing
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -45,13 +46,18 @@ from deep_reasoning.chats import TITLE_CHARS, create_chat
 from deep_reasoning.folders import data_folder
 from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
+    FRESH_NAMESPACES,
     HAND_OFF_TURNS,
     HISTORIAN,
     HISTORIAN_SUFFIX,
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
+    LIBRARIAN,
+    LIBRARIAN_HAND_OFFS,
+    LIBRARIAN_SUFFIX,
     LIBRARIANS_EXAMPLES,
     PAGE_DESCRIPTION,
+    ROOT_SUFFIX,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
@@ -300,6 +306,7 @@ def test_a_fresh_library_shows_llm_granted_at_root_history_and_page_in_the_histo
         {"value": "page", "source": "granted here", "here": True},
     ]
     assert field(by_name[HISTORIAN], "System suffix") == [
+        {"value": ROOT_SUFFIX.strip(), "source": "inherited from root", "here": False},
         {"value": HISTORIAN_SUFFIX.strip(), "source": "set here", "here": True},
     ]
     assert field(by_name["librarian"], "Tools")[-1] == {
@@ -425,7 +432,7 @@ def test_a_namespace_is_added_edited_and_deleted_through_the_api(client):
         (
             "PUT",
             "/api/namespaces/root",
-            {"yaml": "tools: [ghost]\n", "was": "tools:\n- llm\n"},
+            {"yaml": "tools: [ghost]\n", "was": dump(FRESH_NAMESPACES["root"])},
             "The engine refuses it: namespace 'root' grants unknown tool 'ghost'",
         ),
         (
@@ -839,17 +846,20 @@ async def test_a_chats_earlier_messages_and_answers_are_never_rendered(
     ]
 
 
-def historian_or(historian, others):
-    """A responder that asks *historian* for the historian, whose system prompt holds its
-    suffix, and *others* for every other agent: the historian's task is the user's
-    message, as root's is."""
+def told_or(suffix, theirs, others):
+    """A responder that asks *theirs* for the agents whose system prompt holds *suffix*,
+    and *others* for every other agent: a specialist root hands the user's message to has
+    it as its task, as root does."""
 
     def respond(messages):
         system = [each["content"] for each in messages if each["role"] == "system"]
-        told = any(HISTORIAN_SUFFIX.strip() in each for each in system)
-        return (historian if told else others)(messages)
+        told = any(suffix.strip() in each for each in system)
+        return (theirs if told else others)(messages)
 
     return respond
+
+
+historian_or = partial(told_or, HISTORIAN_SUFFIX)
 
 
 ASKED_HOW = "How did you count?"
@@ -1312,12 +1322,12 @@ async def test_a_change_to_the_library_applies_from_the_next_message(
     assert showing(thanking, ASKED) == [False]
 
 
-# A fresh Library's decompositions, as the panel lists them: root's hand-offs, the
-# historian's examples, and the librarian's.
+# A fresh Library's decompositions, as the panel lists them: root's hand-offs (to the
+# librarian, then to the historian), the historian's examples, and the librarian's.
 FRESH_DECOMPOSITIONS = [
     [{"name": parsed(text).name, "yaml": text, "problems": []} for text in texts]
     for texts in (
-        [hand_off(text) for text in HISTORIANS_EXAMPLES],
+        [*LIBRARIAN_HAND_OFFS, *(hand_off(text) for text in HISTORIANS_EXAMPLES)],
         HISTORIANS_EXAMPLES,
         LIBRARIANS_EXAMPLES,
     )
@@ -1762,6 +1772,7 @@ async def test_a_tool_handed_the_agents_llm_gets_the_chats_model(
 # The chat's messages before each of the librarian's examples is asked, each with the
 # fake's cells: what its observations print comes from them.
 LIBRARIANS_EARLIER = {
+    "read the Library": {},
     "add a namespace with a worked example": {},
     "undo a change": {
         "Add a namespace for astronomy.": [
@@ -1861,6 +1872,39 @@ async def test_the_librarians_undo_example_writes_the_before_back_as_it_was(
         "tools": ["llm"],
     }
     assert undone["after"] == namespaces["astronomy"]["yaml"]
+
+
+def named(texts, name):
+    [found] = [parsed(text) for text in texts if parsed(text).name == name]
+    return found
+
+
+@pytest.mark.anyio
+async def test_root_hands_a_question_about_the_library_to_the_librarian_which_may_only_read(
+    library_on, connect
+):
+    handing_off = named(LIBRARIAN_HAND_OFFS, "read the Library")
+    reading = named(LIBRARIANS_EXAMPLES, "read the Library")
+    question = reading.messages[0].content
+    roots = {question: [handing_off.messages[-1].content]}
+    librarians = {question: [reading.messages[-1].content]}
+    responder = told_or(LIBRARIAN_SUFFIX, scripted(librarians), scripted(roots))
+    with FakeOpenAI(responder) as fake:
+        async with connect(library_on(fake)) as api:
+            events = await run_events(
+                api, await send(api, await new_chat(api), question)
+            )
+    namespaces = [each["namespace"] for each in kinds(events, "agent.start")]
+    assert namespaces == ["root", LIBRARIAN]
+    # Each suffix its agents get, root's first, with where it comes from.
+    assert events[-1]["answer"] == (
+        f"The historian's agents are told:\n\n{ROOT_SUFFIX.strip()}\n(inherited from"
+        f" root)\n\n{HISTORIAN_SUFFIX.strip()}\n(set here)"
+    )
+    librarians_prompt = system_prompts(fake.calls[-1:])[0]
+    assert "In this chat you may only read the Library: its namespace, root," in (
+        librarians_prompt
+    )
 
 
 SPAWNED_PLAN = {
@@ -2056,7 +2100,7 @@ async def test_a_follow_up_shows_an_earlier_messages_steps_on_a_page_its_turn_li
     ]
     assert (table["columns"], table["rows"]) == (["course", "credits"], [["C1", "3"]])
     assert tab.status_code == 200
-    assert PAGE_DESCRIPTION in fake.calls[-1].messages[0]["content"]
+    assert PAGE_DESCRIPTION in system_prompts(fake.calls[-1:])[0]
 
 
 @pytest.mark.anyio

@@ -1,0 +1,9 @@
+name: read the Library
+messages:
+  - {role: user, content: "What does the historian's suffix say?"}
+  - role: assistant
+    content: |
+      <think>The user asks what this app's Library holds, in any words or language: here the historian's system_suffix, or any namespace's fields or worked examples, root's included, or what changed. That is the Library, not this chat's record, which the historian reads; ctx and my own prompt show only part of it. The librarian reads it. Hand it the user's message as written (ctx.task, never reworded) and this conversation, and answer with what it says.</think>
+      <repl>
+      FinalAnswer(subagent(ctx.task, namespace="librarian", history=ctx.history))
+      </repl>
