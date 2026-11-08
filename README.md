@@ -131,6 +131,12 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   the check, as a shared Library may hold, is marked ✗ with why. Runs render templates sandboxed, so a shared
   Library's templates reach no Python internals: a worked example that tries fails the run, naming it, and a system prompt or
   suffix that tries is shown to the model as written.
+- A shared Library file may hold a decomposition, namespace, tool or run setting the engine can't read (YAML that
+  doesn't parse or has the wrong shape, or over 1,000,000 characters). It is left out, so it reads as unset and the
+  rest works. The panel marks it ✗ with why and can delete it; Edit fixes a decomposition short enough to show, or a
+  namespace (one too long to show from a blank draft). Runs ignore a grant of a tool left out until it is fixed or
+  deleted. A namespace under one left out is left out too, and chats can't pick either until it is fixed; root still
+  runs, on the engine's bare root.
 - A save or delete in the panel is refused if what you opened was changed meanwhile (by the librarian, another tab
   or an import): your draft stays, beside what is stored now, and saving again replaces it. One deleted meanwhile
   says so, and its row goes. A delete the panel can tell would be refused (a tool a namespace grants, a namespace

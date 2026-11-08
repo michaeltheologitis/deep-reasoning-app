@@ -1170,7 +1170,7 @@ async function readNamespaces() {
 
 // The namespaces a chat can pick, and the default one new chats start in, as the Library panel reads them.
 function useLibrary(found) {
-  library.namespaces = found.namespaces.map(({ name }) => name);
+  library.namespaces = found.namespaces.filter(({ usable }) => usable).map(({ name }) => name);
   library.defaultNamespace = found.default_namespace;
 }
 

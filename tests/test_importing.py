@@ -663,8 +663,12 @@ def test_a_row_that_isnt_yaml_is_left_out_with_a_warning_and_an_import_can_mend_
     config = config_file(tmp_path, "namespaces:\n  helper: {vars: {a: 1}}\n")
     with capture_logs() as logs:
         assert import_into(library, config) == ["Namespaces:", "  helper: added"]
-    unread = {entry["name"] for entry in logs if entry["event"] == "library.row_unread"}
-    assert unread == {"helper"}
+    left_out = {
+        (entry["table"], entry["row"])
+        for entry in logs
+        if entry["event"] == "library.row_left_out"
+    }
+    assert left_out == {("namespaces", repr("helper"))}
     assert run_config(library, tmp_path).namespaces["helper"].vars == {"a": 1}
 
 

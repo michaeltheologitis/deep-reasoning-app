@@ -68,7 +68,9 @@ from deep_reasoning.library import (
     check_name,
     check_namespace,
     check_place,
+    check_tool_block,
     config_and_registry,
+    config_of,
     count,
     distrust,
     dump,
@@ -82,8 +84,10 @@ from deep_reasoning.library import (
     namespace_yaml,
     parsed,
     parsed_python,
+    read_library,
     reading,
     refuse_keys,
+    run_config_and_registry,
     running_code,
     sees,
     store_tool,
@@ -1071,6 +1075,7 @@ def check_tool(
             f'"{name}" is taken: it is a Python keyword, a built-in or app tool, or a name'
             f" the REPL binds itself ({', '.join(TAKEN_NAMES)}). Pick another."
         )
+    check_tool_block(name, {"factory": factory, "factory_from": tool_file(name)})
     if max(len(source), len(dump(settings))) > MAX_YAML_CHARS:
         raise LibraryError(TOOL_TOO_LONG)
     check_whole([source, *texts_in(settings)])
@@ -1206,8 +1211,9 @@ def in_brief(row: dict[str, Any], registry: NamespaceRegistry) -> dict[str, Any]
 def tool_entries(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     """Every tool, as the panel's Tools tab lists them, with its settings and a custom
     tool's Python source."""
-    config, registry = config_and_registry(connection)
-    sources = {name: source for name, _, source in library_tools(connection)}
+    read = read_library(connection)
+    config, registry = run_config_and_registry(config_of(read))
+    sources = {name: source for name, (_, source) in read["tools"].items()}
     rows = tool_rows(config, registry, in_chain_order(registry), sources)
     return [
         {
@@ -1298,14 +1304,14 @@ def granted_afresh(
     connection: sqlite3.Connection,
     registry: NamespaceRegistry,
     namespace: NamespaceConfig,
-) -> dict[str, tuple[str, str]]:
+) -> dict[str, tuple[dict[str, Any], str]]:
     """The custom tools *namespace* grants that no namespace of the Library, *registry*,
-    grants yet, so no run builds yet, each as its stored YAML and source."""
+    grants yet, so no run builds yet, each as its stored block and source."""
     granted = {tool for each in registry.names for tool in registry.config(each).tools}
     afresh = set(namespace.tools) - granted
     return {
-        name: (text, source)
-        for name, text, source in library_tools(connection)
+        name: (block, source)
+        for name, (block, source) in library_tools(connection).items()
         if name in afresh and source is not None
     }
 
@@ -1334,8 +1340,14 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def show(name: str | None = None) -> Any:
         """Every namespace in brief, or namespace *name* as the Library panel shows it."""
         with app_file(library, "ro") as connection, reading(connection):
-            config, registry = config_and_registry(connection)
-            rows = namespace_rows(connection, config, registry)
+            read = read_library(connection)
+            config, registry = run_config_and_registry(config_of(read))
+            # Not those the engine can't read, as a shared file may hold: no agent runs there.
+            rows = [
+                row
+                for row in namespace_rows(read, config, registry)
+                if row["name"] in registry.names
+            ]
         if name is None:
             return [in_brief(row, registry) for row in rows]
         return named(rows, name, "namespace", "show()")
@@ -1417,10 +1429,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             else:
                 check_namespace(connection, name)
             check_fields(connection, namespace)
-        built = {
-            tool: (loaded(text), source) for tool, (text, source) in afresh.items()
-        }
-        check_builds(built, tools_dir, GRANTED)
+        check_builds(afresh, tools_dir, GRANTED)
         return afresh
 
     def write_decomposition(namespace: str, yaml: Any) -> dict[str, Any]:
@@ -1514,10 +1523,9 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
 
         def write() -> Event:
             allowed = partial(may_write_tool, name=name)
-            found = written(library, store_tool, name, block, source, allowed=allowed)
-            before = None if found is None else tool_text(name, *found)
+            before = written(library, store_tool, name, block, source, allowed=allowed)
             after = tool_text(name, dump(block), source)
-            done = "added" if found is None else "replaced"
+            done = "added" if before is None else "replaced"
             return logged(done, before, after, what="tool", name=name)
 
         return stop_proof(write)
