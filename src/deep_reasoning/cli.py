@@ -32,7 +32,14 @@ from deep_reasoning.library import (
     open_library,
     schema_version,
 )
-from deep_reasoning.settings import DEFAULT_FOLDER, ENV_FILE, settings_in
+from deep_reasoning.runs import secrets_of, worker_env
+from deep_reasoning.settings import (
+    DEFAULT_FOLDER,
+    ENV_FILE,
+    providers,
+    saved_keys,
+    settings_in,
+)
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -160,19 +167,36 @@ def take(lock, library, refused):
         )
 
 
+def provider_keys(library, home):
+    """Each provider's key variable, and each key, saved in settings or set in the shell:
+    none may be imported."""
+    names = [each.key_env for each in providers(library)]
+    return names, [*secrets_of(os.environ, names), *secrets_of(saved_keys(home), names)]
+
+
+def keyless(names, secrets):
+    """What a run's worker gets of this environment, but any provider's key: what the
+    tools an import builds to check them get."""
+    return {
+        name: value
+        for name, value in worker_env({}).items()
+        if name not in names and value not in secrets
+    }
+
+
 def import_or_exit(library, config, home):
     folder_or_exit(library, home)
     with owning(library, NOT_IMPORTED) as connection, contextlib.closing(connection):
         try:
-            imported = import_config(connection, config)
+            names, secrets = provider_keys(library, home)
+            said = import_config(connection, config, secrets, keyless(names, secrets))
         except (OSError, ValueError, yaml.YAMLError, sqlite3.Error) as error:
             sys.exit(f"Could not import {config}; the Library is unchanged.\n{error}")
-    log.info(
-        "Imported into the Library",
-        config=str(config),
-        library=str(library),
-        **imported,
-    )
+    if said["changes"]:
+        header = f"Imported {config} into the Library at {library}."
+    else:
+        header = f"Imported {config}: the Library at {library} already held all of it."
+    print("\n".join([header, *said["changes"], *said["left_out"]]))
 
 
 def file_or_exit(library):

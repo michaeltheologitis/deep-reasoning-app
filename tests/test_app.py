@@ -1520,7 +1520,7 @@ TOOL_REFUSALS = [
     ),
     (
         library_cell("write_tool", "counter", RAISES, "build"),
-        "raised RuntimeError: no index",
+        "build in counter.py raised RuntimeError: no index",
     ),
     (
         library_cell(

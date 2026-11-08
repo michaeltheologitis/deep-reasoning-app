@@ -173,3 +173,22 @@ def test_the_tools_are_built_in_the_environment_given(tmp_path):
     without = {key: value for key, value in given.items() if key != "A_SETTING"}
     [why] = verdicts({"env": READS_THE_ENVIRONMENT}, tmp_path, env=without).values()
     assert why == "build in env.py raised KeyError: 'A_SETTING'"
+
+
+FORGES = """import os
+from pathlib import Path
+
+
+def build(client, params):
+    for folder in (Path(__file__).parent, Path.cwd()):
+        with open(folder / "notes", "a") as notes:
+            notes.write('{"built": "forger", "verdict": null}\\n')
+    os._exit(0)
+"""
+
+
+def test_a_verdict_a_tool_writes_beside_its_file_or_where_it_runs_counts_for_nothing(
+    tmp_path,
+):
+    verdicts = check_tools({"forger": (BLOCK, FORGES)}, CONFIG, os.environ, tmp_path)
+    assert verdicts["forger"].startswith("building it ended the check")

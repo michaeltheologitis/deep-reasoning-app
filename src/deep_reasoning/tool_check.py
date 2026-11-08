@@ -16,8 +16,12 @@ tools see no chat's files or modules, in a process group of its own that is ende
 after, so nothing a tool starts outlives it, and is stopped past BUILD_TIMEOUT_S. The
 parent names the file the verdicts go to before any tool's code runs; the child notes
 each tool's name in it before building it and its verdict after, and ends itself
-whatever happens, so a thread a tool left can't hold it up. A tool that ends or hangs
-the check is the one blamed, and the tools after it are checked again without it.
+whatever happens, so a thread a tool left can't hold it up. The tools' files are in a
+folder of their own, apart from that file, so a tool that writes a file of that name
+beside its own, or in its working folder, changes no verdict (one that seeks the file
+out could forge one: it is the user's own code, unsandboxed in every run anyway). A tool
+that ends or hangs the check is the one blamed, and the tools after it are checked again
+without it.
 """
 
 import json
@@ -45,6 +49,8 @@ YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 BUILD_TIMEOUT_S = 60
 # What a check that ended without a verdict shows of what it printed.
 SHOWN_OUTPUT_CHARS = 2_000
+# The check's folder holds the tools' files in a folder of their own.
+TOOLS = "tools"
 Tools = Mapping[str, tuple[dict[str, Any], str]]
 
 
@@ -74,10 +80,12 @@ def checked_once(
     early blames the tool it was building, or every one when it built none."""
     work.mkdir(parents=True, exist_ok=True)
     folder = Path(tempfile.mkdtemp(dir=work))
+    files = folder / TOOLS
+    files.mkdir()
     try:
         blocks = {}
         for name, (block, source) in tools.items():
-            file = folder / tool_file(name)
+            file = files / tool_file(name)
             file.write_text(source, encoding="utf-8")
             blocks[name] = block | {"factory_from": str(file)}
         notes, printed, timed_out = run(blocks, config, env, folder)
@@ -98,7 +106,7 @@ def checked_once(
     if not verdicts:
         verdicts = dict.fromkeys(tools, why)
     # Each tool's file by its name alone: the folder it was built in is gone.
-    shown = f"{folder}{os.sep}"
+    shown = f"{files}{os.sep}"
     return {
         name: None if why is None else why.replace(shown, "")
         for name, why in verdicts.items()
@@ -135,8 +143,11 @@ def run(
         except subprocess.TimeoutExpired:
             timed_out = True
         finally:
-            with suppress(ProcessLookupError):
-                os.killpg(check.pid, signal.SIGKILL)
+            # Only while it is unreaped, so its pid, and its group's, is no one else's;
+            # once it has ended, it has ended its group itself.
+            if check.returncode is None:
+                with suppress(ProcessLookupError, PermissionError):
+                    os.killpg(check.pid, signal.SIGKILL)
             check.wait()
     return read_notes(notes), printed.read_text(errors="replace"), timed_out
 
@@ -199,7 +210,10 @@ def main() -> None:
             note(notes, {"failed": f"{type(error).__name__}: {error}"})
         raise
     finally:
-        # Whatever happened, and whatever thread a tool left running.
+        # Whatever happened, and whatever thread or process a tool left running: its
+        # group, which this process leads when the check starts it, goes with it.
+        if os.getpgrp() == os.getpid():
+            os.killpg(os.getpgrp(), signal.SIGKILL)
         os._exit(0)
 
 

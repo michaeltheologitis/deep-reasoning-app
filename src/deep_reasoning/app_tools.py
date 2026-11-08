@@ -26,10 +26,8 @@ folder. Each change is logged as library.change, which the worker records as a r
 and changes() reads this chat's back, so the agent can write a before back.
 """
 
-import ast
 import copy
 import json
-import keyword
 import os
 import re
 import sqlite3
@@ -44,18 +42,19 @@ from typing import Any
 import structlog
 import yaml
 from deep_reasoner.namespaces import ROOT, NamespaceConfig, NamespaceRegistry
-from deep_reasoner.primitives import RESERVED_NAMES, Func
+from deep_reasoner.primitives import Func
 from deep_reasoner.v2.cli import V2Config
 
 from deep_reasoning import tool_check
 from deep_reasoning.library import (
     APP_TOOLS,
-    BUILDERS,
+    CLAUDE_CODE,
     HISTORY_DESCRIPTION,
     LIBRARY_DESCRIPTION,
     LIBRARY_TOOL,
     MAX_YAML_CHARS,
     PAGE_DESCRIPTION,
+    TAKEN_NAMES,
     LibraryError,
     add_decomposition,
     add_namespace,
@@ -72,6 +71,7 @@ from deep_reasoning.library import (
     fields_of,
     in_chain_order,
     library_tools,
+    literals,
     loaded,
     merged,
     namespace_rows,
@@ -79,8 +79,11 @@ from deep_reasoning.library import (
     parsed,
     parsed_python,
     reading,
+    refuse_keys,
     running_code,
     store_tool,
+    taken,
+    texts_in,
     tool_file,
     tool_rows,
     tool_text,
@@ -144,8 +147,6 @@ HOLDS_A_KEY = (
 # reasoner: claude_code would bill the user's subscription.
 LOCKED_FIELDS = ("repl", "reasoner")
 USERS_CHOICE = "the user's choice, in the Library panel's Namespaces tab (Edit YAML)."
-# A tool of this factory, or a reasoner of this type, runs on the user's subscription.
-CLAUDE_CODE = "claude_code"
 NOT_A_TOOL = (
     "name, source and factory should be text, and settings a dict of plain values (text,"
     " numbers, True, False, None, and lists and dicts of them keyed by text, each one"
@@ -157,7 +158,6 @@ MAX_NESTING = 20
 # A run hands the factory every key of the tool's block but these.
 OWN_KEYS = ("factory", "factory_from")
 SETS_OWN_KEYS = "settings may not hold factory or factory_from: write_tool sets them."
-TAKEN_NAMES = (*BUILDERS, *APP_TOOLS, *sorted(RESERVED_NAMES))
 TOOL_TOO_LONG = (
     f"The source, and the settings as YAML, may each be at most {MAX_YAML_CHARS:,}"
     " characters."
@@ -878,26 +878,9 @@ def build_page(client: Any, params: dict[str, Any]) -> Func:
     return Func(SimpleNamespace(new=new), description=PAGE_DESCRIPTION)
 
 
-def texts_in(data: Any) -> Iterator[str]:
-    """Every text in parsed YAML *data*, keys included; each mapping or list once, as
-    aliases may share or nest them."""
-    stack, seen = [data], set()
-    while stack:
-        value = stack.pop()
-        if isinstance(value, str):
-            yield value
-        elif isinstance(value, dict | list) and id(value) not in seen:
-            seen.add(id(value))
-            stack.extend(
-                [*value, *value.values()] if isinstance(value, dict) else value
-            )
-
-
 def check_no_key(texts: list[str], key_names: list[str]) -> None:
     """Raise if any of *texts* holds the value of a key variable in *key_names*."""
-    secrets = secrets_of(os.environ, key_names)
-    if any(secret in text for secret in secrets for text in texts):
-        raise LibraryError(HOLDS_A_KEY)
+    refuse_keys(texts, secrets_of(os.environ, key_names), HOLDS_A_KEY)
 
 
 def yaml_text(value: Any) -> str:
@@ -978,7 +961,7 @@ def check_tool(
     if settings and any(key in settings for key in OWN_KEYS):
         raise LibraryError(SETS_OWN_KEYS)
     tool_file(name)
-    if keyword.iskeyword(name) or name in TAKEN_NAMES:
+    if taken(name):
         raise LibraryError(
             f'"{name}" is taken: it is a Python keyword, a built-in or app tool, or a name'
             f" the REPL binds itself ({', '.join(TAKEN_NAMES)}). Pick another."
@@ -986,14 +969,8 @@ def check_tool(
     if max(len(source), len(dump(settings))) > MAX_YAML_CHARS:
         raise LibraryError(TOOL_TOO_LONG)
     check_whole([source, *texts_in(settings)])
-    module = parsed_python(source)
-    # Its literals too, as an escape can spell a key the raw text doesn't hold.
-    literals = [
-        node.value if type(node.value) is str else node.value.decode("latin-1")
-        for node in ast.walk(module)
-        if isinstance(node, ast.Constant) and type(node.value) in (str, bytes)
-    ]
-    check_no_key([*texts, *texts_in(settings), *literals], key_names)
+    # texts holds the source itself.
+    check_no_key([*texts, *texts_in(settings), *literals(source)], key_names)
 
 
 def check_tool_locks(config: V2Config, registry: NamespaceRegistry, name: str) -> None:

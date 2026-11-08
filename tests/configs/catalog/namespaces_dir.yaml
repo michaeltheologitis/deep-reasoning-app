@@ -1,0 +1,11 @@
+# Namespaces loaded from a DIRECTORY instead of inline. `namespaces_dir` is resolved
+# relative to THIS config file, and nests via subfolders — `namespaces/librarian/
+# archive.yaml` is the `librarian.archive` namespace.
+_compose:
+  - client.yaml
+
+model: "qwen/qwen3.6-flash"
+namespaces_dir: namespaces
+entry_namespace: librarian
+system_prompt: |
+  You answer questions about a university course catalog by writing Python in a REPL.

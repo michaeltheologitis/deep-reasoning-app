@@ -1,0 +1,8 @@
+# A NESTED sub-namespace: the folder path `librarian/archive.yaml` becomes the dotted
+# name `librarian.archive`. It inherits the catalog + `llm` from its parents and adds
+# an archive of retired courses.
+vars:
+  archive:
+    CS050:
+      title: Intro to Punch Cards
+      retired: true
