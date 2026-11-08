@@ -909,7 +909,11 @@ def template_problem(label, text, names):
     except TemplateSyntaxError as error:
         return f"{label}, line {error.lineno}: {TEMPLATE}, and this one doesn't parse ({error.message}). {ESCAPE}"
     except TEMPLATE_FAILURES as error:
-        return f"{label}: {TEMPLATE}, and this one can't be compiled ({error or type(error).__name__}). {ESCAPE}"
+        # A SyntaxError's own line is in the Python Jinja generates, not in the turn.
+        reason = getattr(error, "msg", None) or str(error) or type(error).__name__
+        return (
+            f"{label}: {TEMPLATE}, and this one can't be compiled ({reason}). {ESCAPE}"
+        )
     return None
 
 

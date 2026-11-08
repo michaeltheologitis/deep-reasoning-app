@@ -1148,7 +1148,7 @@ BILLIONS_OF_LOOPS = (
             (
                 "Turn 2 (assistant): the engine reads a turn holding {{ or {% as a Jinja"
                 " template, and this one can't be compiled (too many statically nested"
-                " blocks"
+                " blocks)."
             ),
         ),
         (
