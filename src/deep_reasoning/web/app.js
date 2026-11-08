@@ -191,7 +191,7 @@ function renderRename(chat) {
 
 // Keep is focused, as in the Library panel's confirms.
 function renderConfirmDelete(chat) {
-  const question = chat.scratch_files ? "Delete this chat? Its scratch folder, with the files the agent wrote there, goes too." : "Delete this chat?";
+  const question = chat.scratch_files ? "Delete this chat? Its scratch folder, and any files the agent wrote there, goes too." : "Delete this chat?";
   return element(
     "li",
     { class: "chat confirm", role: "group", "aria-labelledby": "chat-delete-question" },
@@ -228,9 +228,9 @@ function renderList() {
 
 const focusRow = (chat, kind = "chat") => chat && refocus(`${kind}:${chat.id}`);
 
-// The scratch folder goes with the chat, so the question names it once the server says it holds files.
+// The scratch folder goes with the chat, so the question names it unless the server says it holds no files.
 async function askDelete(chat) {
-  chat.scratch_files = false;
+  chat.scratch_files = true;
   setUi({ deleting: chat });
   focusRow(chat, "chat-keep");
   let scratch;
@@ -241,7 +241,7 @@ async function askDelete(chat) {
     return;
   }
   chat.scratch_files = scratch.files;
-  if (ui.deleting === chat && scratch.files) renderList();
+  if (ui.deleting === chat && !scratch.files) renderList();
 }
 
 function keep(chat) {
