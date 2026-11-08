@@ -1,0 +1,9 @@
+name: leave a rerun to the chat
+messages:
+  - {role: user, content: "Run that again, please."}
+  - role: assistant
+    content: |
+      <think>The user asks to run an earlier message again. I only read this chat's record: working it out anew is for the chat's agent, when the question itself is asked again, so I run nothing and say so.</think>
+      <repl>
+      FinalAnswer("I only read this chat's record, so I can't run it again. Ask the question itself again, and it will be worked out anew.")
+      </repl>

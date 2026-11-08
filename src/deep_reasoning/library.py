@@ -144,6 +144,11 @@ You are an agent of Deep Reasoning, an app where agents like you answer each cha
 message, reasoning in Python and handing parts to sub-agents. What its agents know (each \
 namespace's instructions, tools and worked examples, root's reaching every chat) is its \
 Library, which the user edits in the Library panel (top right).
+Compute each number in Python and print it, then answer from the variable, as \
+FinalAnswer(f"{total:,.2f}"), in that cell or a later one: never type a number you \
+computed. Asked whether an earlier answer was right, check what was recorded, as the \
+worked examples show, rather than work it out again. Combine sub-agents' results into one answer in words, prose or a Markdown \
+table, and pass FinalAnswer a string, never a raw dict or list.
 """
 # library writes the Library, so it is granted in a namespace of its own, which a chat
 # picks when it wants edits, and which no namespace inherits from.
@@ -183,10 +188,12 @@ HISTORIAN = "historian"
 HISTORY_TOOL = "history"
 HISTORIAN_SUFFIX = """\
 You are the historian: you answer questions about this chat's earlier messages (how or \
-why an answer was reached, what an agent did, what went wrong) from what was recorded. \
-The question was handed to you, so never hand it on with subagent: read the record with \
-history and quote the real code and outputs. Never redo the work or guess; answer in a \
-later cell, from what you printed, and never repeat a read you already printed.
+why an answer was reached, what an agent did, what went wrong) from what was recorded, \
+and never work anything out again: asked to run or redo something, say you only read the \
+record, and that asking the question itself again works it out anew. The question was \
+handed to you, so never hand it on with subagent: read the record with history and quote \
+the real code and outputs. Never guess; answer in a later cell, from what you printed, \
+and never repeat a read you already printed.
 Only what a cell printed, or passed to FinalAnswer as an expression, shows what code \
 gave: a value typed into FinalAnswer(...) by hand is the agent's claim, so say the record \
 doesn't show it was computed.
@@ -234,6 +241,8 @@ HISTORIANS_EXAMPLES = read_examples(
     "wrong_place_example.yaml",
     "nothing_example.yaml",
 )
+# The historian's alone, as root reruns what the user asks to see run again.
+HISTORIANS_OWN = read_examples("rerun_example.yaml")
 # The librarian's; without the worked-example one, models type real <repl> tags in a cell.
 LIBRARIANS_EXAMPLES = read_examples(
     "read_library_example.yaml", "worked_example_example.yaml", "undo_example.yaml"
@@ -250,6 +259,17 @@ LIBRARIAN_HAND_OFFS = read_examples(
 CANT_REACH = jinja2.Template(
     "{% if gone %}there is no {{ target }} namespace now"
     "{% else %}this namespace's spawn list leaves it out{% endif %}",
+    undefined=jinja2.StrictUndefined,
+)
+# What the agents of a namespace that sets a spawn list are told, in the run's config only;
+# below a namespace that sets one too, theirs comes after its line, and holds.
+SPAWN_LINE = jinja2.Template(
+    "{% if allowed %}You can hand work to sub-agents only in {{ allowed | join(', ') }}"
+    " or namespaces under them: pass namespace= on every subagent call, as in"
+    ' subagent(namespace="{{ allowed[0] }}")'
+    "{% else %}You can't hand work to sub-agents: subagent is refused here, so do the"
+    " work yourself{% endif %}{% if above %}, whatever the line above on sub-agents"
+    " says{% endif %}.",
     undefined=jinja2.StrictUndefined,
 )
 # What a namespace that can't make a worked example's hand-off is shown in its place, by
@@ -712,7 +732,7 @@ def seed_new_library(connection):
     # Root's hand-offs to the historian come last: nearer the task, they are followed more.
     examples = [(ROOT, text) for text in LIBRARIAN_HAND_OFFS]
     examples += [(ROOT, hand_off(text)) for text in HISTORIANS_EXAMPLES]
-    examples += [(HISTORIAN, text) for text in HISTORIANS_EXAMPLES]
+    examples += [(HISTORIAN, text) for text in [*HISTORIANS_EXAMPLES, *HISTORIANS_OWN]]
     examples += [(LIBRARIAN, text) for text in LIBRARIANS_EXAMPLES]
     rows = [(namespace, parsed(text).name, text) for namespace, text in examples]
     connection.executemany(UPSERT_DECOMPOSITION, rows)
@@ -1019,11 +1039,12 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     for name in APP_TOOLS.keys() & config["tools"]:
         config["tools"][name] |= told
     try:
-        run, registry = run_config_and_registry(config)
+        resolved, registry = run_config_and_registry(config)
         editors = [
             name for name in registry.names if sees(registry, name, LIBRARY_TOOL)
         ]
-        config = without_impossible_hand_offs(config, run, registry)
+        config = without_impossible_hand_offs(config, resolved, registry)
+        config = with_spawn_lines(config, registry)
     except ValueError as error:
         # The worker refuses such a Library itself, in its own words.
         log.warning("library.not_checked", error=str(error))
@@ -1031,6 +1052,24 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     if LIBRARY_TOOL in config["tools"]:
         config["tools"][LIBRARY_TOOL]["editors"] = editors
     return config | {"entry_namespace": namespace}
+
+
+def with_spawn_lines(config, registry):
+    """*config* with a line in the own system_suffix of each namespace that sets a spawn
+    list, saying where its agents can hand work, as the engine refuses them elsewhere."""
+    for name in registry.names:
+        allowed = registry.config(name).spawn
+        fields = config["namespaces"].get(name)
+        if allowed is None or fields is None:
+            continue
+        above = any(
+            registry.config(each).spawn is not None
+            for each in registry.chain(name)[:-1]
+        )
+        line = SPAWN_LINE.render(allowed=allowed, above=above)
+        own = (fields.get("system_suffix") or "").rstrip("\n")
+        fields["system_suffix"] = "\n".join(filter(None, [own, line])) + "\n"
+    return config
 
 
 def default_namespace(library_path):
