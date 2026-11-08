@@ -1,5 +1,5 @@
 // The Library panel: the decompositions, namespaces, tools and data every run draws on, read from the server's Library file; adding, editing and deleting save there.
-import { LIBRARY_CHANGED, PANEL_CLOSE, caret, chatNamespace, closeOtherPanels, element, libraryChanged, request } from "./app.js";
+import { LIBRARY_CHANGED, PANEL_CLOSE, TOUCH, caret, chatNamespace, closeOtherPanels, element, libraryChanged, request, showPanel } from "./app.js";
 import { turnProblems } from "./turns.js";
 
 const LIBRARY_URL = "api/library";
@@ -19,9 +19,10 @@ const NAMESPACE_KEYS = ["repl", "reasoner", "tools", "vars", "spawn", "system_su
 const NAMESPACE_NAME = /^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z][A-Za-z0-9_-]*)*$/;
 const INDENT = "  ";
 // a touch keyboard has no Tab or Esc to speak of, so touch screens get no line about them
-const EDITOR_KEYS = matchMedia("(pointer: coarse)").matches ? null : "tab indents · esc leaves · ctrl/⌘+enter saves";
+const EDITOR_KEYS = TOUCH ? null : "tab indents · esc leaves · ctrl/⌘+enter saves";
 const CHECK_DELAY_MS = 300;
-// What a namespace's save says while it runs: a tool it grants afresh is built first.
+// What a namespace's save says while it runs, as the engine checks the whole Library, and a tool it grants afresh is built first.
+const SAVING = "Saving…";
 const BUILDING = "Saving. A custom tool this grants for the first time is built first, to check it, which can take up to a minute.";
 // as the server's limit on a decomposition's YAML; a file of more bytes than 4 a character can't fit
 const MAX_YAML_CHARS = 1_000_000;
@@ -46,7 +47,8 @@ messages:
   content: |
     <think>Count the tickets whose status is open, and print the count to check it.</think>
     <repl>
-    print(sum(t["status"] == "open" for t in tickets))
+    open_tickets = sum(t["status"] == "open" for t in tickets)
+    print(open_tickets)
     </repl>
 - role: user
   content: |
@@ -55,9 +57,9 @@ messages:
     </observation>
 - role: assistant
   content: |
-    <think>12 tickets are open. Answer with the count.</think>
+    <think>12 tickets are open. Answer from the count the code holds, not a number typed in.</think>
     <repl>
-    FinalAnswer(12)
+    FinalAnswer(f"{open_tickets} tickets are still open.")
     </repl>
 `;
 // a namespace's own fields, shown as the empty editor's placeholder; what it leaves out it inherits, as llm from root
@@ -216,7 +218,11 @@ function editorKey(form, e) {
     if (deleting && !deleting.refusal) {
       deleting = null;
       render();
-    } else (form.submit.disabled ? form.toggle : form.submit).focus();
+    } else {
+      // the check due after the last keystroke, run now, may disable Save
+      check(form);
+      (form.submit.disabled ? form.toggle : form.submit).focus();
+    }
   } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     form.el.requestSubmit();
@@ -254,17 +260,24 @@ async function submit(form, e) {
   try {
     saved = await form.save(form.editor.value, form);
   } catch (error) {
+    // cleared first, so a refusal in the words already shown is said again
+    showProblems(form, []);
     showProblems(form, error.message.split("\n"));
     if (error.status === CONFLICT) await showNewer(form);
-    return;
   } finally {
     form.saving = form.submit.disabled = false;
     form.status.textContent = "";
   }
+  if (!saved) return giveFocusBack(form);
   closeForm(form);
   render();
   if (saved.row) reveal(saved.row);
   say(saved.where?.() ?? form.confirmation, saved.said);
+}
+
+// Disabled while it saved, Save let focus fall to the page; a refusal gives it back.
+function giveFocusBack(form) {
+  if (document.activeElement === document.body && !form.el.hidden && form.el.isConnected) form.submit.focus();
 }
 
 // Changed meanwhile: the Library is read again, the draft kept, and what is stored now shown, which saving again replaces.
@@ -450,6 +463,7 @@ function moveToAdd(draft, namespace, name) {
   check(decompositionForm);
   const note = `"${name}" was deleted or renamed in ${namespace} meanwhile, so your draft is here: Add saves it as a new one.`;
   decompositionForm.newer.replaceChildren(element("p", { class: "lib-note" }, note));
+  decompositionForm.editor.focus();
   // measured once the panel has drawn it
   requestAnimationFrame(() => fitEditor(decompositionForm.editor));
 }
@@ -640,7 +654,7 @@ function building(text) {
   const { value } = readYaml(text);
   const asked = isMapping(value) && isTextList(value.tools) ? value.tools : [];
   const afresh = (name) => library.tools.some((tool) => tool.name === name && tool.source != null && !tool.granted_in.length);
-  return asked.some(afresh) ? BUILDING : "";
+  return asked.some(afresh) ? BUILDING : SAVING;
 }
 
 // A namespace that sets nothing inherits everything, so blank YAML is fine.
@@ -751,11 +765,13 @@ function chain(name) {
   return [ROOT, ...parts.map((_, i) => parts.slice(0, i + 1).join("."))];
 }
 
-// a namespace's decompositions and its ancestors', as deep_reasoner resolves them
+// a namespace's decompositions and its ancestors', as deep_reasoner resolves them: one it can't read isn't there for it
 function decompositionsField(name) {
   const levels = new Map();
   for (const level of chain(name)) {
-    for (const each of namespaceNamed(level)?.decompositions ?? []) levels.set(each.name, level);
+    for (const each of namespaceNamed(level)?.decompositions ?? []) {
+      if (each.read) levels.set(each.name, level);
+    }
   }
   const items = [...levels].map(([value, level]) => ({ value, source: level === name ? "attached here" : `inherited from ${level}`, here: level === name }));
   return { label: "Decompositions", items };
@@ -883,9 +899,7 @@ function arrowTabs(e) {
 function setOpen(open) {
   deleting = null;
   clearSaid();
-  if (!open && panel.contains(document.activeElement)) toggleButton.focus();
-  panel.hidden = !open;
-  toggleButton.setAttribute("aria-expanded", String(open));
+  showPanel(panel, toggleButton, open);
   if (!open) return;
   closeOtherPanels(panel);
   render();

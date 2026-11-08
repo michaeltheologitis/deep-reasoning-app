@@ -449,6 +449,37 @@ def test_errors_give_what_a_sub_agents_cell_raised_and_its_index_in_its_steps(li
         assert history.steps(1, node=2)[each["index"]]["code"] == each["code"]
 
 
+def test_the_record_holds_a_raised_traceback_without_the_engines_frame_as_shown(
+    library,
+):
+    events = recorded("raising")
+    plant(library, CHAT, events)
+    history = history_of(library)
+    raised = {
+        event["code"]: event["output"].split("\n")
+        for event in events
+        if event["kind"] == "cell.end" and event["status"] == "failed"
+    }
+    steps = history.steps(1, node=2)
+    failed = [
+        step for step in steps if step["kind"] == "cell" and step["status"] == "failed"
+    ]
+    assert len(failed) == len(raised) == 3
+    for step in failed:
+        lines = raised[step["code"]]
+        engine = next(i for i, line in enumerate(lines) if "deep_reasoner" in line)
+        # the frame's File line, its source and its carets, as tree.test.mjs has them
+        assert step["output"].split("\n") == lines[:engine] + lines[engine + 3 :]
+        assert 'File "<string>", line' in step["output"]
+    assert "run_code" not in str(steps)
+    assert history.find("run_code") == []
+    assert history.full(1, 2, 1)["output"] == failed[0]["output"]
+    assert (
+        history.errors(1)[0]["error"]
+        == "ValueError: 2 problems:\ntools: bad\nspawn: bad"
+    )
+
+
 @pytest.mark.parametrize("outcome", [["failed"], {"failed": True}])
 def test_a_crafted_outcome_that_is_no_text_leaves_errors_and_find_working(
     library, outcome

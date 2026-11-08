@@ -152,11 +152,12 @@ def inserted(connection: sqlite3.Connection, chat: Chat) -> bool:
 
 
 def capped(title: str) -> str:
-    return title[:TITLE_CHARS].rstrip()
+    """*title* on one line, each line break a space, cut past TITLE_CHARS."""
+    return " ".join(title.splitlines())[:TITLE_CHARS].rstrip()
 
 
 def rename_chat(path: Path, chat: str, title: str) -> None:
-    """Title the chat *title*, cut past TITLE_CHARS."""
+    """Title the chat *title*, on one line, cut past TITLE_CHARS."""
     with connect(path) as connection:
         connection.execute(
             "UPDATE chats SET title = ? WHERE id = ?", (capped(title), chat)
@@ -187,8 +188,9 @@ def choose_folder(path: Path, chat: str, folder: str | None) -> None:
 
 def title_new_chat(path: Path, chat: str, message: str) -> str | None:
     """Title a chat still called "New chat" after *message*'s first line that isn't
-    blank, cut past TITLE_CHARS; the title, or None when the chat keeps its own."""
-    title = capped(message.strip().partition("\n")[0].strip())
+    blank, as capped() breaks lines, cut past TITLE_CHARS; the title, or None when the chat
+    keeps its own."""
+    title = capped(next(iter(message.strip().splitlines()), ""))
     if not title:
         return None
     with connect(path) as connection:

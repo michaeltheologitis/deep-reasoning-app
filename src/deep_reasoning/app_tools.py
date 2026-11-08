@@ -240,6 +240,15 @@ NOT_FINDABLE = (
     "find takes the text to look for, as text (a str) of one character or more."
 )
 ENDED_BADLY = ("failed", "stopped", "exhausted")
+# The REPL's frame atop a raised traceback, plain or an exception group's, with its source
+# line and any carets: the engine's, not the cell's, so the fold drops it from a cell's
+# output, as the chat does (EXEC_FRAME in tree.js); a step the historian printed carried it.
+ENGINE_FRAME = re.compile(
+    r"^((?:Traceback|  \+ Exception Group Traceback) \(most recent call last\):\n)"
+    r'((?:  \| )?)  File "[^"\n]*deep_reasoner[/\\][^"\n]*", line \d+, in \S+\n'
+    r"\2    \S.*\n(?:\2    [ ~^]*\^[ ~^]*\n)?",
+    re.MULTILINE,
+)
 # What find searches in each kind of step, as (kind, field).
 SEARCHED = {
     "think": [("think", "text")],
@@ -321,6 +330,8 @@ def end_cell(tree: Tree, event: Event) -> None:
     cell = tree.cells.get(event.get("cell"))
     if cell is not None:
         cell |= {key: event.get(key) for key in ("code", "output", "status")}
+        if isinstance(cell["output"], str):
+            cell["output"] = ENGINE_FRAME.sub(r"\1", cell["output"])
 
 
 def add_usage(tree: Tree, event: Event) -> None:
@@ -448,12 +459,12 @@ def cut(value: Any, depth: int = 0, limit: int = MAX_VALUE_CHARS) -> Any:
 
 
 def error_of(output: Any) -> str | None:
-    """What a failed cell raised, as its traceback's exception lines; else, as in a record
-    from someone else, its output's last line."""
+    """What a failed cell raised, as its last traceback's exception lines, the engine's
+    frame atop it dropped; else, as in a record from someone else, its output's last line."""
     if not isinstance(output, str):
         return None
     lines = output.strip().splitlines()
-    return raised_error(output) or (lines[-1] if lines else None)
+    return raised_error(output, raised=True) or (lines[-1] if lines else None)
 
 
 def capped(found: list[dict[str, Any]], narrower: str) -> list[dict[str, Any]]:

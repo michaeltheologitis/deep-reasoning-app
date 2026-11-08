@@ -206,17 +206,18 @@ def namespaces(client):
     }
 
 
-def test_the_namespace_menu_reads_the_panels_namespaces_and_default(client):
+def test_the_namespace_menu_reads_the_panels_namespaces_and_default(client, library):
+    plant_row(library, "namespaces", ("broken", "tools: 5\n"))
     panel = client.get("/api/library").json()
     menu = client.get("/api/namespaces").json()
     assert menu == {
         "namespaces": [
-            {"name": each["name"], "usable": True}
+            {"name": each["name"], "usable": each["usable"]}
             for each in panel["namespaces"]
-            if each["usable"]
         ],
         "default_namespace": panel["default_namespace"],
     }
+    assert {"name": "broken", "usable": False} in menu["namespaces"]
 
 
 def field(namespace, label):
@@ -1372,7 +1373,8 @@ async def test_the_library_tool_adds_a_decomposition_then_replaces_it_each_chang
     assert f"'problems': {EXAMPLE_PROBLEMS}" in output
     assert librarian["decompositions"] == [
         *LIBRARIANS_SEEDED,
-        {"name": "count the tickets", "yaml": REWORDED, "problems": EXAMPLE_PROBLEMS},
+        {"name": "count the tickets", "yaml": REWORDED, "problems": EXAMPLE_PROBLEMS}
+        | {"read": True},
     ]
     assert [events[-1]["outcome"] for events in (added, replaced)] == ["answered"] * 2
     assert any("The `library` tool" in each for each in system_prompts(fake.calls[-1:]))
@@ -1409,7 +1411,10 @@ async def test_a_change_to_the_library_applies_from_the_next_message(
 # A fresh Library's decompositions, as the panel lists them: root's hand-offs (to the
 # librarian, then to the historian), the historian's examples, and the librarian's.
 FRESH_DECOMPOSITIONS = [
-    [{"name": parsed(text).name, "yaml": text, "problems": []} for text in texts]
+    [
+        {"name": parsed(text).name, "yaml": text, "problems": [], "read": True}
+        for text in texts
+    ]
     for texts in (
         [*LIBRARIAN_HAND_OFFS, *(hand_off(text) for text in HISTORIANS_EXAMPLES)],
         HISTORIANS_EXAMPLES,
@@ -2175,7 +2180,8 @@ async def test_in_a_librarian_chat_a_sub_agent_handed_the_tool_elsewhere_writes(
     librarian = next(each for each in namespaces if each["name"] == "librarian")
     assert librarian["decompositions"] == [
         *LIBRARIANS_SEEDED,
-        {"name": "count the tickets", "yaml": EXAMPLE, "problems": EXAMPLE_PROBLEMS},
+        {"name": "count the tickets", "yaml": EXAMPLE, "problems": EXAMPLE_PROBLEMS}
+        | {"read": True},
     ]
 
 
@@ -2354,6 +2360,16 @@ def test_a_blank_title_is_refused(client, title):
     response = client.patch(f"/api/chats/{chat['id']}", json={"title": title})
     assert response.status_code == 422
     assert client.get("/api/chats").json() == [chat]
+
+
+@pytest.mark.parametrize(
+    "typed", ["Trip\nto Rome", "Trip\r\nto Rome", "Trip\u2028to Rome"]
+)
+def test_a_title_holding_a_line_break_is_kept_on_one_line(client, typed):
+    chat = client.post("/api/chats").json()
+    renamed = client.patch(f"/api/chats/{chat['id']}", json={"title": typed})
+    assert renamed.json()["title"] == "Trip to Rome"
+    assert client.get("/api/chats").json() == [renamed.json()]
 
 
 def test_a_title_past_the_longest_kept_is_cut(client):
@@ -3501,7 +3517,9 @@ def test_a_namespace_or_model_the_app_does_not_have_is_refused(client):
         422,
     )
     assert nowhere.json()["detail"].startswith('The Library has no namespace "nowhere"')
-    assert nobody.json()["detail"] == "There is no provider Nobody."
+    assert nobody.json()["detail"] == (
+        "There is no provider Nobody any more; pick another model."
+    )
     read = client.get(f"/api/chats/{chat}").json()
     assert (read["namespace"], read["model"]) == ("router", None)
 
@@ -3638,6 +3656,18 @@ async def test_a_run_in_a_folder_that_is_gone_is_refused_and_nothing_starts(
     assert refused.json() == {"detail": "That folder no longer exists — pick another."}
     assert read["turns"] == [] and read["title"] == "New chat"
     assert fake.calls == [] and not (data / "runs").exists()
+
+
+def test_a_chat_whose_folder_is_gone_is_listed_as_missing_it(client, home):
+    thesis = home / "thesis"
+    thesis.mkdir()
+    chat = client.post("/api/chats").json()
+    picked = client.patch(f"/api/chats/{chat['id']}", json={"folder": str(thesis)})
+    thesis.rmdir()
+    [listed] = client.get("/api/chats").json()
+    assert (chat["folder_missing"], picked.json()["folder_missing"]) == (False, False)
+    assert listed["folder_missing"] is True
+    assert client.get(f"/api/chats/{chat['id']}").json()["folder_missing"] is True
 
 
 @pytest.mark.parametrize(
@@ -4116,6 +4146,7 @@ def test_a_decomposition_the_engine_cant_read_shows_its_yaml_and_why_agents_dont
                 " template."
             ),
         ],
+        "read": False,
     }
 
 

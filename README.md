@@ -20,7 +20,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 
 **Add a key** in **settings** (bottom left): OpenAI `OPENAI_API_KEY`, OpenRouter `OPENROUTER_API_KEY`, Anthropic
 `DEEP_REASONING_ANTHROPIC_KEY` or Google Gemini `GEMINI_API_KEY`, or add a custom server (any OpenAI-compatible URL:
-vLLM, Ollama, …). A key already set in your shell works too. Then pick a model under the message box.
+vLLM, Ollama, …). A key already set in your shell works too. A new chat starts on the model you picked last, or else
+on a current model of the first provider with a key; pick another under the message box.
 
 ## Concepts in five lines
 
@@ -54,16 +55,25 @@ vLLM, Ollama, …). A key already set in your shell works too. Then pick a model
    to the stats namespace: …". Root isn't told which namespaces you have, so it won't pick yours on its own.
 
 **To change every chat**, edit root's `system_suffix`, which every namespace inherits: in the library panel's
-**Namespaces** tab, open `root`, **Edit YAML**, add a line such as `Answer in British English.`, and Save. It applies
-from the next message. The librarian never changes root; asked to, it says how to do this.
+**Namespaces** tab, open `root`, **Edit YAML**, add a line at the end of the text under `system_suffix: |`, indented
+like the lines above it (unindented, it is no longer part of the text and the YAML is refused), and Save:
+
+```yaml
+system_suffix: |
+  …the lines already there…
+  Answer in British English.
+```
+
+It applies from the next message. The librarian never changes root; asked to, it says how to do this.
 
 **One message at a time:** a tab runs one message at a time, across all its chats. A message sent while another
-chat's run is going stays in the box, and the hint names the chat whose run is going; Esc there stops it.
+chat's run is going stays in the box, and the hint names the chat whose run is going; open that chat and press Esc
+to stop it.
 
 **The agent's Python** runs on your computer by default, unsandboxed, in the chat's working folder, with the app's
-own Python packages: numpy, pandas and requests are there; scipy, sympy and matplotlib are not. Add packages by
-starting the app with them: `uv run --with scipy --with sympy deep-reasoning`. A module file in the chat's folder
-imports too.
+own Python packages: numpy, pandas (with tabulate, so `to_markdown()` works) and requests are there; scipy, sympy
+and matplotlib are not. Add packages by starting the app with them: `uv run --with scipy --with sympy
+deep-reasoning`. A module file in the chat's folder imports too.
 
 ## What it supports
 
@@ -73,15 +83,16 @@ imports too.
   files).
 - The chat used last is listed first, and a reload opens it; **+ New chat** reuses an empty chat; an unsent message
   stays with its chat; a title is cut past 200 characters.
-- Several tabs on one app keep in step: coming back to a tab shows the chats, messages, runs and picks another tab
-  changed, and follows a run another tab started; a chat deleted in another tab leaves the list with a note.
+- Several tabs on one app keep in step: coming back to a tab shows the chats, messages, runs, picks, settings and
+  theme another tab changed, and follows a run another tab started; a chat deleted in another tab leaves the list
+  with a note.
 - Each message's run shows live as a tree of sub-agents you open level by level; what you open stays open after a
   reload. A sub-agent on another model than the chat's names it on its row.
 - Esc stops a run, saying so at once, though a cell busy in C (a long `time.sleep`) holds it up a few seconds.
 - Each run shows its time, sub-agent count, cost and model. A call is priced by the server's own figure where it sends
   one (OpenRouter does), else from the price list of the vendor whose address it went to (OpenAI, OpenRouter,
-  Anthropic, Google); any other, such as a vendor's model on a server of your own, costs N/A, as does a run whose
-  calls never finished, never $0.
+  Anthropic, Google). "cost N/A" means a call was cut off before it finished, or its price isn't known, as for a
+  vendor's model on a server of your own; a run that made no call costs $0.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
   its own words after.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,
@@ -94,13 +105,15 @@ imports too.
   Library grants this to the historian, so "show me on a page how you got that" goes there.
 - Each chat has its own model, namespace and working folder, picked under the message box (typing filters the
   menus); a change applies from the next message.
-- Light and dark themes with text at WCAG AA contrast; phone width, where the chats are a drawer (☰; Esc shuts it);
-  no internet needed: the page loads nothing but the app.
+- Light and dark themes with text at WCAG AA contrast; phone width, where the chats are a drawer (☰; Esc shuts it)
+  and the Library and settings fill the screen; on a touch screen a **send** button sends and Enter makes a new line.
+  No internet needed: the page loads nothing but the app.
 
 **Models and keys**
 - The vendors above, and custom servers (any OpenAI-compatible URL, with an optional key).
 - The model menu shows the current models of each vendor you have a key for, and all of a custom server's; typing
-  searches the vendor's whole list of chat models (an exact name first, so Enter picks it), and any name is accepted.
+  searches every provider's whole list of chat models, in any case, and Enter picks the first model listed (an exact
+  name first); any other name is accepted, after every listed one.
   The model shows with its provider.
 - Settings keeps keys in `~/.deep-reasoning/.env`, readable only by you, and never shows them again; a saved key wins
   over the shell's.

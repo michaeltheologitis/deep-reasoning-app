@@ -14,6 +14,7 @@ This project's Notion page (todos, changelog, notes): https://app.notion.com/p/4
 ### The page and the server
 
 - The page reads chats and runs from the API; `web/fold.js` folds a run's events into the tree, the same for a saved turn and a live one. A live run streams over SSE from `?after=` the last seq the page has, so a reload catches up without gaps or repeats.
+- Tabs keep in step without a push channel: coming back to a tab reads the chats, the Library and settings again (and the model lists once the providers changed); the theme follows `localStorage`'s `storage` event. At phone width a side panel covers the page, and what is behind it is `inert`.
 - Answers and pages are model output: Markdown only where marked finds some, else shown as written; raw HTML shows as text, an image is a link, never fetched, links open in a new tab, and DOMPurify keeps only what marked makes and web, mail or relative links (`web/tree.js`).
 - The server listens on 127.0.0.1 only, and refuses requests naming another host or sent from another site's page (`Origin`). Its pages carry a Content-Security-Policy, so they load and send nothing but to the app, whatever an answer holds.
 

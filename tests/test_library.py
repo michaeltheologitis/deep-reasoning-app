@@ -1549,6 +1549,7 @@ def test_a_decomposition_is_edited_in_its_place_and_may_take_a_new_name(imported
         "name": "route it",
         "yaml": renamed,
         "problems": ["Turn 2 (assistant) has no <think>…</think>."],
+        "read": True,
     }
 
 
