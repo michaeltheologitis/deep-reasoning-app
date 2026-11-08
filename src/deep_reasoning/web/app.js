@@ -894,7 +894,8 @@ function wire() {
   setInterval(() => {
     if (state.live) tick();
   }, SPIN_MS);
-  addEventListener("pagehide", keepOpen);
+  // beforeunload comes before a live run's stream is cut, which drops its chat's turns; some phones send only pagehide
+  for (const unloading of ["beforeunload", "pagehide"]) addEventListener(unloading, keepOpen);
 }
 
 // The nodes open in each chat's turns, kept for this tab as it unloads, so a reload opens them again.
