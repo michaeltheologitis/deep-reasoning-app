@@ -443,7 +443,7 @@ def test_errors_give_what_a_sub_agents_cell_raised_and_its_index_in_its_steps(li
         assert history.steps(1, node=2)[each["index"]]["code"] == each["code"]
 
 
-def test_steps_show_a_raised_traceback_without_the_engines_frame_as_the_page_does(
+def test_the_record_holds_a_raised_traceback_without_the_engines_frame_as_shown(
     library,
 ):
     events = recorded("raising")
@@ -466,6 +466,7 @@ def test_steps_show_a_raised_traceback_without_the_engines_frame_as_the_page_doe
         assert step["output"].split("\n") == lines[:engine] + lines[engine + 3 :]
         assert 'File "<string>", line' in step["output"]
     assert "run_code" not in str(steps)
+    assert history.find("run_code") == []
     assert history.full(1, 2, 1)["output"] == failed[0]["output"]
     assert (
         history.errors(1)[0]["error"]
