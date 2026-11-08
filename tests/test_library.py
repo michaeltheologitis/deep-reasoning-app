@@ -1344,30 +1344,32 @@ def answering(name, code):
 
 
 TURN_2_TEMPLATE = (
-    "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a Jinja"
+    "Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a Jinja"
     " template"
 )
 # Templates no run renders: each with why, as the check words it.
-INTERNALS = "reaches into Python internals ({}), which a run refuses"
-INCLUDES = "includes another template ({{% {} %}}), which a worked example can't"
+INCLUDING = "includes another template, which a run can't"
+
+
+def reaching(name):
+    return f"reaches into Python internals ({name}), which a run refuses"
+
+
 REFUSED_TEMPLATES = {
     "an-attribute-of-the-task": (
-        'print("{{ task.__class__.__name__ }}")',
-        INTERNALS.format("__class__"),
+        'print("{{ task.__class__ }}")',
+        reaching("__class__"),
     ),
     "an-attribute-of-a-jinja-global": (
         'print("{{ cycler.__init__ }}")',
-        INTERNALS.format("__init__"),
+        reaching("__init__"),
     ),
-    "a-key": ("print(\"{{ vars['_hidden'] }}\")", INTERNALS.format("_hidden")),
-    "the-attr-filter": (
-        "print(\"{{ task|attr('upper') }}\")",
-        "reads an attribute through |attr, which a worked example can't; write .name instead",
-    ),
-    "an-include": ("{% include 'x.html' %}", INCLUDES.format("include")),
-    "an-extends": ("{% extends 'x.html' %}", INCLUDES.format("extends")),
-    "an-import": ("{% import 'x.html' as x %}", INCLUDES.format("import")),
-    "a-from-import": ("{% from 'x.html' import x %}", INCLUDES.format("from")),
+    "an-unsafe-name": ('print("{{ funcs.llm.mro }}")', reaching("mro")),
+    "a-key": ("print(\"{{ vars['_hidden'] }}\")", reaching("_hidden")),
+    "an-include": ("{% include 'x.html' %}", INCLUDING),
+    "an-extends": ("{% extends 'x.html' %}", INCLUDING),
+    "an-import": ("{% import 'x.html' as x %}", INCLUDING),
+    "a-from-import": ("{% from 'x.html' import x %}", INCLUDING),
 }
 # Templates that would stop the panel if rendered or compiled unguarded.
 NESTED_TOO_DEEP = "{% for a in [1] %}" * 21 + "x" + "{% endfor %}" * 21
@@ -1382,14 +1384,14 @@ BILLIONS_OF_LOOPS = (
         (
             'print(f"{{{total}}}")',
             (
-                "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a"
+                "Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a"
                 " Jinja template, and this one doesn't parse (expected token ':', got '}')."
             ),
         ),
         (
             'print("{{ total }}")',
             (
-                "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a"
+                "Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a"
                 ' Jinja template, and this one names "total"; a template may name only'
                 " task, vars, funcs, coroutines and the run settings'"
                 " prompt_template_variables, which the engine fills in."
@@ -1398,25 +1400,25 @@ BILLIONS_OF_LOOPS = (
         (
             'print("{{ task }}")  {# a note',
             (
-                "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a"
+                "Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a"
                 " Jinja template, and this one doesn't parse (Missing end of comment tag)."
             ),
         ),
         (
             NESTED_TOO_DEEP,
             (
-                "Turn 2 (assistant): the engine reads a turn holding {{ or {% as a Jinja"
+                "Turn 2 (assistant): the engine reads text holding {{ or {% as a Jinja"
                 " template, and this one can't be compiled (too many statically nested"
                 " blocks)."
             ),
         ),
         (
             BILLIONS_OF_LOOPS,
-            'Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a Jinja template, and this one names "range"',
+            'Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a Jinja template, and this one names "range"',
         ),
         (
             "{{ lipsum(n=100000) }}",
-            'Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a Jinja template, and this one names "lipsum"',
+            'Turn 2 (assistant), line 4: the engine reads text holding {{ or {% as a Jinja template, and this one names "lipsum"',
         ),
         *(
             (code, f"{TURN_2_TEMPLATE}, and this one {why}.")
@@ -1505,7 +1507,7 @@ def test_a_shared_files_decomposition_the_engine_cant_render_is_marked_with_why(
     for name in stored:
         [problem] = marked[name]
         assert problem.startswith("Turn 2 (assistant)")
-        assert "the engine reads a turn holding {{ or {% as a Jinja template" in problem
+        assert "the engine reads text holding {{ or {% as a Jinja template" in problem
     monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
     monkeypatch.chdir(tmp_path)
     reasoner, _alias = build_reasoner(run_config(library, tmp_path), run_dir=tmp_path)
@@ -1555,6 +1557,28 @@ def test_a_decomposition_past_a_million_characters_is_refused(library):
         ("vars: {1abc: 1}\n", 'Var "1abc" needs a Python name, like "year"'),
         ("vars: {my var: 1}\n", 'Var "my var" needs a Python name'),
         ("vars: {class: 1}\n", 'Var "class" is a Python keyword'),
+        (
+            "vars: {_hidden: 1}\n",
+            (
+                'Var "_hidden" starts with _, which templates may not read; rename it,'
+                ' like "hidden".'
+            ),
+        ),
+        (
+            "system_suffix: 'Answer for {{ dept }}.'\n",
+            (
+                "Its system_suffix, line 1: the engine reads text holding {{ or {% as a"
+                ' Jinja template, and this one names "dept"'
+            ),
+        ),
+        (
+            "system_suffix: 'Answer as {{ task.__class__ }}.'\n",
+            (
+                "Its system_suffix, line 1: the engine reads text holding {{ or {% as a"
+                " Jinja template, and this one reaches into Python internals"
+                " (__class__), which a run refuses."
+            ),
+        ),
         ("vars: {1: a}\n", 'A var\'s name should be text, like "year", not 1.'),
         (
             "vars: {llm: 1}\n",
@@ -1568,9 +1592,14 @@ def test_a_decomposition_past_a_million_characters_is_refused(library):
 def test_a_namespace_that_would_fail_its_runs_or_hide_a_var_is_refused(
     library, text, problem
 ):
+    change(library, add_namespace, "drafts", "")
     before = dumped(library)
     with pytest.raises(LibraryError, match=re.escape(problem)):
         change(library, add_namespace, "research", text)
+    with pytest.raises(
+        LibraryError, match=re.escape(problem.replace("research", "drafts"))
+    ):
+        change(library, change_namespace, "drafts", text)
     assert dumped(library) == before
 
 
@@ -1630,6 +1659,10 @@ WRITTEN_TEMPLATES = {
         "1:open 2:tickets ",
     ),
     "a template variable": ("{{ term }}", "fall"),
+    "a list it builds": (
+        "{% set seen = [] %}{{ seen.append(task) }} {{ seen|join }}",
+        "None open tickets",
+    ),
 }
 TICKETS = "open tickets"
 
@@ -1658,6 +1691,7 @@ def test_each_worked_example_a_run_renders_renders_the_same_sandboxed(
         }
 
     unsandboxed = rendered()
+    # restored after the test
     monkeypatch.setattr(deep_reasoner.llm, "_JinjaEnv", deep_reasoner.llm._JinjaEnv)
     sandbox_templates()
     assert rendered() == unsandboxed

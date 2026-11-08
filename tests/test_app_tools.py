@@ -672,6 +672,11 @@ SHELL_KEY_ENV = "A_PROVIDERS_KEY"
 SHELL_KEY = "sk-a-key-from-the-shell"
 # The key in YAML's double quotes with its "s" escaped: the text never holds it, the data does.
 ESCAPED_KEY = '"\\x73' + SHELL_KEY[1:] + '"'
+# How a namespace whose system_suffix reads a Python internal is refused.
+SUFFIX_REFUSED = (
+    "Its system_suffix, line 1: the engine reads text holding {{ or {% as a Jinja"
+    " template, and this one reaches into Python internals (_x), which a run refuses."
+)
 
 
 # The engine config of the run the library tool is in, as its spec.yaml holds it: a
@@ -852,7 +857,7 @@ class NeverEqual(str):
             "drafts",
             EXAMPLE.replace("How many tickets are open?", '"{{ open }} open?"'),
             (
-                "Turn 1 (user), line 1: the engine reads a turn holding {{ or {% as a Jinja"
+                "Turn 1 (user), line 1: the engine reads text holding {{ or {% as a Jinja"
                 ' template, and this one names "open"'
             ),
         ),
@@ -1145,6 +1150,16 @@ def test_a_namespace_whose_yaml_spells_a_key_with_an_escape_is_refused(
     before = stored_namespaces(fresh)
     with pytest.raises(LibraryError, match="holds a provider's key"):
         getattr(library_tool(fresh), method)(name, f"system_suffix: {ESCAPED_KEY}\n")
+    assert stored_namespaces(fresh) == before
+
+
+@pytest.mark.parametrize(
+    ("method", "name"), [("add_namespace", "research"), ("change_namespace", "drafts")]
+)
+def test_a_namespace_whose_suffix_no_run_renders_is_refused(fresh, method, name):
+    before = stored_namespaces(fresh)
+    with pytest.raises(LibraryError, match=re.escape(SUFFIX_REFUSED)):
+        getattr(library_tool(fresh), method)(name, {"system_suffix": "{{ task._x }}"})
     assert stored_namespaces(fresh) == before
 
 

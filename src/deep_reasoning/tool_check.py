@@ -38,7 +38,7 @@ from deep_reasoner.tools import ToolBuildError
 from deep_reasoner.v2 import LLM
 from deep_reasoner.v2.cli import V2Config, make_tool
 
-from deep_reasoning.library import dump, sandbox_templates, tool_file
+from deep_reasoning.library import dump, tool_file
 
 YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 # A factory that takes longer is refused: every run would wait on it.
@@ -189,7 +189,6 @@ def build_all(asked: dict[str, Any], notes: Path) -> None:
 
 
 def main() -> None:
-    sandbox_templates()
     notes = None
     try:
         asked = yaml.load(sys.stdin, Loader=YAML_LOADER)

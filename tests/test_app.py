@@ -352,7 +352,7 @@ def test_a_valid_decomposition_is_stored_and_listed_under_its_namespace(client):
         (
             "router",
             VALID.replace('"CS310"', '"{{ next }}"'),
-            "Turn 2 (assistant), line 1: the engine reads a turn holding {{ or {%",
+            "Turn 2 (assistant), line 1: the engine reads text holding {{ or {%",
         ),
         ("router", VALID.replace("next course", "'next course '"), "starts or ends"),
     ],
