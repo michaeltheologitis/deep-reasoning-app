@@ -21,7 +21,6 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from deep_reasoning.chats import (
     CHAT_ID,
-    chats_on,
     choose,
     choose_folder,
     create_chat,
@@ -171,20 +170,6 @@ def gone_provider(name):
     return f"There is no provider {name} any more; pick another model."
 
 
-def refused_chats(number):
-    """What deleting a namespace *number* chats are on, at least one, does to them, in
-    words, as the run of a chat whose namespace is gone is refused."""
-    if number == 1:
-        return (
-            "1 chat is on it: its next message is refused until it picks another"
-            " namespace."
-        )
-    return (
-        f"{number} chats are on it: their next message is refused until they pick"
-        " another namespace."
-    )
-
-
 def create_app(library, home):
     """The app over the app file at *library*: the Library, the chats, their runs' events
     and the app's settings, which each request opens afresh. The keys are in *home*, and
@@ -250,12 +235,7 @@ def create_app(library, home):
         return JSONResponse({"detail": detail}, status_code=HTTPStatus.CONFLICT)
 
     def library_panel(connection):
-        shown = panel(connection)
-        on = chats_on(connection)
-        for row in shown["namespaces"]:
-            if on[row["name"]]:
-                row["deleting"].append(refused_chats(on[row["name"]]))
-        return {"file": library.name, **shown}
+        return {"file": library.name, **panel(connection)}
 
     @app.get("/api/library")
     def read_library():

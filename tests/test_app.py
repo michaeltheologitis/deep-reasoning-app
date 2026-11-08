@@ -1261,8 +1261,8 @@ async def test_a_namespace_that_may_not_hand_off_to_the_historian_says_it_cant(
     assert cell["status"] == "done"
     assert events[-1]["answer"] == (
         "I can't answer that here: questions like it go to the historian namespace,"
-        " and this namespace's spawn list leaves it out. Adding historian to that spawn"
-        " list would let me."
+        " and trips's spawn list leaves it out. Adding historian to that spawn list"
+        " would let me."
     )
 
 

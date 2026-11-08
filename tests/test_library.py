@@ -312,7 +312,9 @@ def field(row, label):
     return found[0] if found else None
 
 
-CANT = "historian namespace, and this namespace's spawn list leaves it out"
+# Named for the namespace that sets the spawn list, inherited or not, so one under trips
+# is shown the same and inherits trips's examples as they are.
+CANT = "historian namespace, and trips's spawn list leaves it out"
 # What such an answer tells the user they can do.
 ADD_HISTORIAN = "Adding historian to that spawn list would let me."
 
@@ -342,7 +344,7 @@ def test_a_namespace_that_may_not_spawn_into_the_historian_says_it_cant_in_place
     assert rows["trips"]["decompositions"] == []
     assert field(rows["trips"], "Hand-offs") == [
         {
-            "value": "none to librarian: this namespace's spawn list leaves it out. For"
+            "value": "none to librarian: trips's spawn list leaves it out. For"
             f" the questions {len(LIBRARY_HAND_OFFS)} worked examples would hand there,"
             " its agents answer them themselves if they can, and say so if they can't."
             " Adding librarian to the spawn list lets them hand work there.",
@@ -350,7 +352,7 @@ def test_a_namespace_that_may_not_spawn_into_the_historian_says_it_cant_in_place
             "here": True,
         },
         {
-            "value": "none to historian: this namespace's spawn list leaves it out. For"
+            "value": "none to historian: trips's spawn list leaves it out. For"
             f" the questions {len(HAND_OFFS)} worked examples would hand there, its"
             " agents say they can't answer them. Adding historian to the spawn list lets"
             " them hand work there.",
@@ -383,7 +385,7 @@ def test_a_historian_with_no_examples_of_its_own_reads_the_record_in_place_of_ha
         assert "I answer it here and never hand it on" in turns[each.name]
     _, item = field(panel_rows(library)[HISTORIAN], "Hand-offs")
     assert item["value"] == (
-        "none to historian: this namespace's spawn list leaves it out. For the questions"
+        "none to historian: historian's spawn list leaves it out. For the questions"
         f" {len(HAND_OFFS)} worked examples would hand there, its agents answer them"
         " themselves."
     )
@@ -588,7 +590,7 @@ def test_a_spawn_list_naming_only_namespaces_that_are_gone_reads_as_a_leaf(
         (
             lambda connection: add_namespace(connection, "trips", "spawn: [trips]\n"),
             "trips",
-            "but this namespace's spawn list leaves it out",
+            "but trips's spawn list leaves it out",
         ),
         (
             lambda connection: delete_namespace(connection, LIBRARIAN, len(LIBRARIANS)),
@@ -698,16 +700,17 @@ def test_a_run_config_holds_an_example_only_where_what_a_namespace_inherits_diff
     to_librarian = [each.name for each in LIBRARY_HAND_OFFS]
     # root holds its own; the historian the replacements of those to the librarian;
     # trips the replacements of all, which trips.hotels inherits as they are;
-    # trips.with_history, which can hand off to the historian, the originals back.
+    # trips.with_history, whose own spawn list they name, those to the librarian, and,
+    # as it can hand off to the historian, the originals back.
     assert held == {
         ROOT: roots,
         HISTORIAN: [*(each.name for each in HISTORIANS), *to_librarian],
         LIBRARIAN: [each.name for each in LIBRARIANS],
         "trips": roots,
         "trips.hotels": [],
-        "trips.with_history": hand_offs,
+        "trips.with_history": [*to_librarian, *hand_offs],
     }
-    assert namespaces["trips.with_history"]["decompositions"] == [
+    assert namespaces["trips.with_history"]["decompositions"][len(to_librarian) :] == [
         each.model_dump() for each in HAND_OFFS
     ]
 
@@ -801,7 +804,7 @@ def test_a_worked_example_handing_a_step_where_its_namespace_cant_is_noted_not_c
     ]
     assert to_report(library, "analyst") == [
         {
-            "value": "none to report: this namespace's spawn list leaves it out. 1 worked"
+            "value": "none to report: analyst's spawn list leaves it out. 1 worked"
             " example hands it part of the work, so agents copying it fail at that call."
             " Adding report to the spawn list lets them hand work there.",
             "source": "set here",
@@ -838,7 +841,7 @@ def test_a_namespace_under_one_shows_the_steps_it_cant_hand_on_from_what_it_inhe
     # The note is the stored one's, where analyst can hand both steps on.
     assert notes_of(library, "analyst") == {"crunch computes, report writes it up": []}
     [item] = to_report(library, "analyst.brief")
-    assert item["value"].startswith("none to report: this namespace's spawn list")
+    assert item["value"].startswith("none to report: analyst.brief's spawn list")
     assert "1 worked example hands it part of the work" in item["value"]
 
 
@@ -880,8 +883,8 @@ def test_a_namespace_under_one_shows_the_steps_it_cant_hand_on_from_what_it_inhe
     ],
 )
 def test_every_namespace_a_worked_example_hands_a_step_to_is_found(cells, parts):
-    _, steps, _ = example_calls(parsed(worked("steps", *cells)))
-    assert steps == parts
+    _, earlier, final = example_calls(parsed(worked("steps", *cells)), "analyst")
+    assert earlier[0] | final[0] == parts
 
 
 def test_a_worked_example_calling_a_tool_its_namespace_isnt_granted_is_noted_not_crossed(
@@ -950,6 +953,121 @@ def test_deleting_a_namespace_says_what_becomes_of_the_worked_examples_handing_i
         (
             "It hands part of the work to report, but there is no report namespace now, so"
             " agents in root copying it fail at that call."
+        )
+    ]
+
+
+# Cells that bind csv_stats themselves, each read after: no call of the tool's.
+@pytest.mark.parametrize(
+    "cell",
+    [
+        "def flag(csv_stats):\n    return csv_stats\nprint(flag(1))",
+        "def flag(*csv_stats):\n    return csv_stats\nprint(flag(1))",
+        "def flag(**csv_stats):\n    return csv_stats\nprint(flag())",
+        "flag = lambda csv_stats: csv_stats\nprint(flag(1))",
+        "try:\n    1 / 0\nexcept ZeroDivisionError as csv_stats:\n    print(csv_stats)",
+        "print([csv_stats for csv_stats in range(3)])",
+        "for csv_stats in range(3):\n    print(csv_stats)",
+        "with open('orders.csv') as csv_stats:\n    print(csv_stats.read())",
+        "import csv as csv_stats\nprint(csv_stats)",
+        "match 3:\n    case csv_stats:\n        print(csv_stats)",
+        "(csv_stats := 3)\nprint(csv_stats)",
+    ],
+)
+def test_a_name_a_worked_example_binds_itself_is_no_call_of_a_tool(library, cell):
+    block = dump({"factory": "build", "factory_from": "csv_tool.py"})
+    with closing(open_library(library)) as connection:
+        connection.execute(UPSERT_TOOL, ("csv_stats", block, CSV_TOOL))
+        add_namespace(connection, "crunch", "tools: [csv_stats]\n")
+        add_namespace(connection, "analyst", "")
+        add_decomposition(
+            connection, "analyst", worked("binds", cell, "FinalAnswer(1)")
+        )
+    assert notes_of(library, "analyst") == {"binds": []}
+
+
+def test_a_note_names_the_namespace_whose_spawn_list_leaves_the_target_out(library):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "report", "")
+        add_namespace(connection, "trips", "spawn: [trips]\n")
+        add_namespace(connection, "trips.hotels", "")
+        add_decomposition(connection, "trips.hotels", worked("write up", *WRITE_UP))
+    assert notes_of(library, "trips.hotels")["write up"] == [
+        (
+            "It hands part of the work to report, but trips's spawn list leaves it out,"
+            " so agents in trips.hotels copying it fail at that call."
+        )
+    ]
+
+
+def test_cells_after_a_hand_off_run_in_its_target_and_are_noted_only_there(library):
+    # The historian's own example, which goes on as the historian once root's hand-off
+    # handed it the question, stored where the historian may be reached: what follows
+    # the hand-off is the historian's to run.
+    [explain] = [
+        text
+        for text in HISTORIANS_EXAMPLES
+        if parsed(text).name == "explain an earlier answer"
+    ]
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "trips", "spawn: [historian]\n")
+        add_decomposition(connection, "trips", explain)
+        # In the historian it is its own, so a history it no longer has is noted.
+        change_namespace(connection, HISTORIAN, "tools: [page]\nspawn: []\n")
+    assert notes_of(library, "trips") == {"explain an earlier answer": []}
+    assert notes_of(library, HISTORIAN)["explain an earlier answer"] == [
+        (
+            "It calls history, which agents in historian aren't granted, so those"
+            " copying it fail at that call."
+        )
+    ]
+
+
+def test_a_last_cell_shown_rewritten_is_noted_only_for_its_hand_off(library):
+    # A run where the question can't go to the librarian is shown this cell rewritten,
+    # so the step it hands report and the tool it calls are never seen.
+    last = (
+        "draft = subagent('Draft it.', namespace='report')\n"
+        "stats = csv_stats('orders.csv')\n"
+        "FinalAnswer(subagent(ctx.task, namespace='librarian'))"
+    )
+    block = dump({"factory": "build", "factory_from": "csv_tool.py"})
+    with closing(open_library(library)) as connection:
+        connection.execute(UPSERT_TOOL, ("csv_stats", block, CSV_TOOL))
+        add_namespace(connection, "report", "")
+        add_namespace(connection, "trips", "spawn: [trips]\n")
+        add_decomposition(connection, "trips", ending_in("drafted", last))
+        add_decomposition(
+            connection,
+            ROOT,
+            ending_in("to a ghost", last.replace("librarian", "ghost")),
+        )
+    [note] = notes_of(library, "trips")["drafted"]
+    assert note.startswith("It hands the question to librarian, but trips's spawn list")
+    assert notes_of(library, ROOT)["to a ghost"][0].startswith(
+        "It hands the question to ghost, but there is no ghost namespace now"
+    )
+    rows = panel_rows(library)
+    assert to_report(library, "trips") == []
+    # root's agents never see the step either, so report's Delete leaves none stranded.
+    assert rows["report"]["deleting"] == []
+
+
+def test_a_namespaces_delete_counts_the_chats_on_it_from_their_namespace_column(
+    library,
+):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "trips", "")
+        connection.executemany(
+            "INSERT INTO chats (id, title, created, namespace) VALUES (?, '', 0, ?)",
+            [("a", "trips"), ("b", "trips"), ("c", None), ("d", 7), ("e", b"trips")],
+        )
+        rows = {row["name"]: row for row in panel(connection)["namespaces"]}
+    # Only text names a namespace, as a shared file's column may hold anything.
+    assert rows["trips"]["deleting"] == [
+        (
+            "2 chats are on it: their next message is refused until they pick another"
+            " namespace."
         )
     ]
 

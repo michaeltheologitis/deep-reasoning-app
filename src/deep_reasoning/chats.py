@@ -8,7 +8,6 @@ import os
 import re
 import sqlite3
 import time
-from collections import Counter
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
@@ -73,12 +72,6 @@ def chats_in(connection: sqlite3.Connection) -> list[Chat]:
         f"SELECT {COLUMNS} FROM chats ORDER BY created DESC, rowid DESC"
     )
     return [dict(row) for row in rows if well_formed(row)]
-
-
-def chats_on(connection: sqlite3.Connection) -> Counter:
-    """How many of the chats chats_in() lists run their next message in each namespace
-    they picked; one that hasn't picked follows where new chats start, and isn't counted."""
-    return Counter(chat["namespace"] for chat in chats_in(connection))
 
 
 def latest_runs(connection: sqlite3.Connection, chat: str | None = None) -> dict:
