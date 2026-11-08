@@ -23,7 +23,9 @@ can't, and never a key. It guards the tool, not the file: a cell can open the fi
 A tool it writes, or a custom tool a namespace it writes grants afresh, is built first as
 another chat's run would build it: in a process of its own (tool_check.py), from an empty
 folder. Each change is logged as library.change, which the worker records as a run event,
-and changes() reads this chat's back, so the agent can write a before back.
+and changes() reads this chat's back, so the agent can write a before back. A write and its
+log, a change's or a page's, run on a thread a Stop can't reach (done_whole), so a stopped
+cell leaves nothing written but unlogged.
 """
 
 import copy
@@ -31,8 +33,11 @@ import json
 import os
 import re
 import sqlite3
+import threading
 from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import Future, wait
 from contextlib import closing, contextmanager
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from functools import cached_property, partial
 from pathlib import Path
@@ -467,6 +472,33 @@ def app_file(library: str, mode: str) -> Iterator[sqlite3.Connection]:
         ) from error
 
 
+def done_whole[T](work: Callable[[], T]) -> T:
+    """What *work* returns, worked out on a thread of its own, in this thread's context.
+    The engine stops a cell by raising StopRequested in the cell's thread, once, at its
+    next bytecode: one that arrives during a commit, in C, is raised as the commit
+    returns. Here it is raised before the other thread takes *work* up, which it then
+    never does, or once *work* is done; so a Stop never falls between a write and the
+    event that logs it."""
+    future = Future()
+
+    def take_up() -> None:
+        if future.set_running_or_notify_cancel():
+            try:
+                future.set_result(work())
+            # Handed on whole, as result() raises it in the caller's thread.
+            except BaseException as error:  # noqa: BLE001
+                future.set_exception(error)
+
+    try:
+        threading.Thread(target=copy_context().run, args=(take_up,)).start()
+        wait([future])
+    except BaseException:
+        if not future.cancel():
+            wait([future])
+        raise
+    return future.result()
+
+
 def earlier_runs(library: str, chat: str, run: str) -> list[list[Event]]:
     """The events of each of *chat*'s runs but *run*, oldest first, as the page reads
     them: a run that didn't start is left out, and one with no turn.end ends failed."""
@@ -816,9 +848,14 @@ class Page:
                 f'Saved the page "{title}" again, as it stands now; the chat still'
                 " links it."
             )
-        self._page = self._add_page(title, blocks)
-        log.info("page.open", page=self._page, title=title)
+        self._page = done_whole(partial(self._opened, title, blocks))
         return f'Opened the page "{title}"; the chat links it under your answer.'
+
+    def _opened(self, title: str, blocks: str) -> str:
+        """Save the page anew and log page.open; its id."""
+        page = self._add_page(title, blocks)
+        log.info("page.open", page=page, title=title)
+        return page
 
     def _add(self, block: dict[str, Any]) -> None:
         if len(self._blocks) == MAX_BLOCKS:
@@ -1324,19 +1361,24 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         if "<repl>" not in text:
             text = text.replace("[repl]", "<repl>").replace("[/repl]", "</repl>")
         check_writable(namespace, text, key_names)
-        with app_file(library, "rw") as connection:
-            stored, before = add_decomposition(
-                connection, namespace, text, replace=True, allowed=may_write
+
+        def write() -> tuple[dict[str, Any], Event]:
+            with app_file(library, "rw") as connection:
+                stored, before = add_decomposition(
+                    connection, namespace, text, replace=True, allowed=may_write
+                )
+            done = "added" if before is None else "replaced"
+            change = logged(
+                done,
+                before,
+                text,
+                what="decomposition",
+                namespace=namespace,
+                name=stored["name"],
             )
-        done = "added" if before is None else "replaced"
-        change = logged(
-            done,
-            before,
-            text,
-            what="decomposition",
-            namespace=namespace,
-            name=stored["name"],
-        )
+            return stored, change
+
+        stored, change = done_whole(write)
         broken = code_problems(text)
         return {**change, "problems": stored["problems"]} | (
             {"code_problems": broken} if broken else {}
@@ -1347,13 +1389,17 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         text = yaml_text(yaml)
         check_writable(name, text, key_names)
         built = built_grants(name, text, adding=True)
-        with app_file(library, "rw") as connection:
-            stored = add_namespace(
-                connection, name, text, allowed=partial(may_grant, built)
+
+        def write() -> Event:
+            with app_file(library, "rw") as connection:
+                stored = add_namespace(
+                    connection, name, text, allowed=partial(may_grant, built)
+                )
+            return logged(
+                "added", None, stored, what="namespace", namespace=name, name=name
             )
-        return logged(
-            "added", None, stored, what="namespace", namespace=name, name=name
-        )
+
+        return done_whole(write)
 
     def change(name: str, yaml: Any, replace: bool = False) -> dict[str, Any]:
         """Give namespace *name* the fields *yaml* sets, keeping the others, or with
@@ -1362,20 +1408,24 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         check_writable(name, text, key_names)
         merge = not replace
         built = built_grants(name, text, adding=False, merge=merge)
-        with app_file(library, "rw") as connection:
-            before, stored = change_namespace(
-                connection,
-                name,
-                text,
-                allowed=partial(may_grant, built),
-                merge=merge,
-            )
         at = {"what": "namespace", "namespace": name, "name": name}
-        if stored == before:
-            return {"done": "unchanged", **at}
-        changed, kept = field_changes(before, stored)
-        done = logged("changed", before, stored, **at)
-        return done | {"changed": cut(changed), "kept": kept}
+
+        def write() -> Event:
+            with app_file(library, "rw") as connection:
+                before, stored = change_namespace(
+                    connection,
+                    name,
+                    text,
+                    allowed=partial(may_grant, built),
+                    merge=merge,
+                )
+            if stored == before:
+                return {"done": "unchanged", **at}
+            changed, kept = field_changes(before, stored)
+            done = logged("changed", before, stored, **at)
+            return done | {"changed": cut(changed), "kept": kept}
+
+        return done_whole(write)
 
     def write_tool(
         name: str, source: str, factory: str, settings: dict[str, Any] | None = None
@@ -1393,18 +1443,22 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             **(settings or {}),
         }
         check_builds({name: (block, source)}, tools_dir, WRITTEN)
-        with app_file(library, "rw") as connection:
-            found = store_tool(
-                connection,
-                name,
-                block,
-                source,
-                allowed=lambda locked: may_write_tool(locked, name),
-            )
-        before = None if found is None else tool_text(name, *found)
-        after = tool_text(name, dump(block), source)
-        done = "added" if found is None else "replaced"
-        return logged(done, before, after, what="tool", name=name)
+
+        def write() -> Event:
+            with app_file(library, "rw") as connection:
+                found = store_tool(
+                    connection,
+                    name,
+                    block,
+                    source,
+                    allowed=lambda locked: may_write_tool(locked, name),
+                )
+            before = None if found is None else tool_text(name, *found)
+            after = tool_text(name, dump(block), source)
+            done = "added" if found is None else "replaced"
+            return logged(done, before, after, what="tool", name=name)
+
+        return done_whole(write)
 
     tool = SimpleNamespace(
         show=show,

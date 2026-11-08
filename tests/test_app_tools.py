@@ -1,15 +1,20 @@
 import json
 import re
 import sqlite3
+import threading
+import time
 from contextlib import closing
 from itertools import count
 from pathlib import Path
 
 import pytest
 import yaml
+from deep_reasoner.core import capture_debug_logs
+from deep_reasoner.stopping import DriveTable, StopRequested
 from fake_model import RESEARCH_CHANGED, SPLIT_COUNT, WORD_COUNT
 from structlog.testing import capture_logs
 
+from deep_reasoning import app_tools
 from deep_reasoning.app_tools import (
     BRIEF_CHARS,
     CHANGED_MEANWHILE,
@@ -73,6 +78,10 @@ ANOTHER_CHAT = "another-chat"
 CURRENT = "20261027-235959-000000"
 RUN_NUMBERS = count()
 EXHAUSTED = "Agent failed to produce a final answer within 3 iterations."
+STOPPED_NODE = 1
+COMMIT_WITHIN_S = 30
+# Long past the few bytecodes between a write's COMMIT being traced and its wait in C.
+WAITING_IN_C_S = 0.2
 
 
 def recorded(name):
@@ -909,6 +918,81 @@ def test_a_moved_app_file_is_never_made_afresh(fresh, tmp_path):
         with pytest.raises(LibraryError, match="can't be used now"):
             call()
     assert not fresh.exists()
+
+
+def stopped_while_committing(library, monkeypatch, write):
+    """What *write* logs, run as a cell that a Stop reaches as its write commits, as one
+    the user presses then does: a reader holds the commit up, in C, until the engine has
+    raised StopRequested in the cell's thread, which it does at the next bytecode."""
+    committing = threading.Event()
+
+    def note_commit(sql):
+        if sql == "COMMIT":
+            committing.set()
+
+    def traced(path, mode="ro"):
+        connection = open_existing(path, mode)
+        if mode == "rw":
+            connection.set_trace_callback(note_commit)
+        return connection
+
+    monkeypatch.setattr(app_tools, "open_existing", traced)
+    drives, stopped = DriveTable(), []
+
+    def cell():
+        try:
+            with drives.cell((STOPPED_NODE,)):
+                write()
+        except StopRequested:
+            stopped.append(STOPPED_NODE)
+
+    reader = sqlite3.connect(library, isolation_level=None)
+    with closing(reader), capture_debug_logs() as logs:
+        reader.execute("BEGIN")
+        reader.execute("SELECT count(*) FROM namespaces").fetchone()
+        thread = threading.Thread(target=cell)
+        thread.start()
+        assert committing.wait(COMMIT_WITHIN_S)
+        time.sleep(WAITING_IN_C_S)
+        assert thread.is_alive(), "the commit didn't wait on the reader"
+        drives.stop(STOPPED_NODE)
+        reader.rollback()
+        thread.join()
+    assert stopped == [STOPPED_NODE]
+    return [log for log in logs if log["event"] in ("library.change", "page.open")]
+
+
+def library_dump(library):
+    with closing(open_library(library)) as connection:
+        return list(connection.iterdump())
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        lambda tool: tool.add_namespace("research", "system_suffix: Be brief.\n"),
+        lambda tool: tool.change_namespace("drafts", "system_suffix: Be brief.\n"),
+        lambda tool: tool.write_decomposition("drafts", EXAMPLE),
+        lambda tool: tool.write_tool("counter", WORD_COUNT, "build"),
+    ],
+    ids=["add_namespace", "change_namespace", "write_decomposition", "write_tool"],
+)
+def test_a_stop_as_a_write_commits_leaves_it_written_and_logged(
+    fresh, monkeypatch, write
+):
+    before = library_dump(fresh)
+    tool = library_tool(fresh)
+    logs = stopped_while_committing(fresh, monkeypatch, lambda: write(tool))
+    assert [log["event"] for log in logs] == ["library.change"]
+    assert library_dump(fresh) != before
+
+
+def test_a_stop_as_a_page_is_saved_leaves_it_saved_and_logged(fresh, monkeypatch):
+    p = page_of(fresh).new("Notes")
+    p.text("Saved whole.")
+    logs = stopped_while_committing(fresh, monkeypatch, p.open)
+    [(page, *_)] = stored_pages(fresh)
+    assert [(log["event"], log["page"]) for log in logs] == [("page.open", page)]
 
 
 def stored_namespaces(library):
