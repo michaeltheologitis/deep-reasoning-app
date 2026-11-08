@@ -3,6 +3,7 @@ plain words what would break the app, and say what it changed and what it left o
 
 import difflib
 import tempfile
+from functools import partial
 from pathlib import Path
 
 import structlog
@@ -38,6 +39,7 @@ from deep_reasoning.library import (
     parsed_python,
     problem,
     shown,
+    suffix_problem,
     taken,
     template_names,
     texts_in,
@@ -246,6 +248,16 @@ def check_imports_no_key(settings, namespaces, tools, secrets):
             raise holds_a_key(place)
 
 
+def check_suffixes(connection, namespaces):
+    """Raise unless the engine renders each of *namespaces*' system_suffix, as the panel
+    refuses one."""
+    problems = [
+        each for each in map(partial(suffix_problem, connection), namespaces) if each
+    ]
+    if problems:
+        raise LibraryError("\n".join(problems))
+
+
 def check_builds(tools, environment):
     """Raise unless each of *tools*, (name, block, source), builds as a run builds it, in
     a process of its own with *environment*: each that doesn't, in words."""
@@ -435,6 +447,7 @@ def import_config(connection, path, secrets=(), environment=None):
         store_changes(connection, changes)
         stored, registry = accepted(connection)
         check_backbones(registry, registry.names)
+        check_suffixes(connection, namespaces)
         built = to_build(before, imported, changes)
         check_builds(built, environment or {})
     decompositions = {
