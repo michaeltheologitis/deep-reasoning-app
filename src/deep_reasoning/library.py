@@ -271,11 +271,12 @@ HAND_OFF_TURNS = 2
 LIBRARIAN_HAND_OFFS = read_examples(
     "read_library_hand_off.yaml", "change_library_hand_off.yaml"
 )
-# Why a namespace's agents can't hand a question to *target*, as the panel and the worked
-# example shown in place of the hand-off say.
+# Why a namespace's agents can't hand work to *target*, as the panel and the worked
+# example shown in place of the hand-off say; the panel's note on an example names it.
 CANT_REACH = jinja2.Template(
     "{% if gone %}there is no {{ target }} namespace now"
-    "{% else %}this namespace's spawn list leaves it out{% endif %}",
+    "{% else %}{{ where | default('this namespace') }}'s spawn list leaves it out"
+    "{% endif %}",
     undefined=jinja2.StrictUndefined,
 )
 # The system prompt's fan-out names no namespace, and runs where a spawn list may refuse it.
@@ -332,17 +333,25 @@ print(ctx.task)
 {% endif %}""",
     undefined=jinja2.StrictUndefined,
 )
+# Said to the user, who can let the questions through when a spawn list is the reason.
 CANT_ANSWER = jinja2.Template(
     "I can't answer that here: questions like it go to the {{ target }} namespace, and "
-    "{{ why }}.",
+    "{{ why }}.{% if listed %} Adding {{ target }} to that spawn list would let me."
+    "{% endif %}",
     undefined=jinja2.StrictUndefined,
 )
-# What the panel says such a namespace's agents do with those questions, by kind.
+# What the panel says such a namespace's agents, asked those questions, do with them, by
+# kind, in the words of what they are shown instead (CANT_HAND_OFF).
 INSTEAD = {
-    "here": "answer themselves",
-    "record": "say they can't answer",
-    "other": "try themselves",
+    "here": "answer them themselves",
+    "record": "say they can't answer them",
+    "other": "answer them themselves if they can, and say so if they can't",
 }
+# What agents copying a worked example do at a call it makes that they can't: no run
+# rewrites a step handed on, or a tool called, as it rewrites a whole question's hand-off.
+FAIL_THERE = "fail at that call"
+# example_calls() of a worked example whose code hands nothing on and reads nothing.
+NO_CALLS = (None, frozenset(), frozenset())
 UNTOUCHED_ROOT = (
     "name = :root AND yaml = :empty"
     " AND NOT EXISTS (SELECT 1 FROM decompositions WHERE namespace = :root)"
@@ -1264,17 +1273,17 @@ def handed_to(decomposition):
     if last.role != "assistant":
         return None
     try:
-        body = parsed_python(running_code(last.content)).body
+        return closing_hand_off(parsed_python(running_code(last.content)).body)
     except LibraryError:
         return None
-    target = (
-        hand_off_target(body[-1].value)
-        if body and isinstance(body[-1], ast.Expr)
-        else None
-    )
-    return (
-        target if isinstance(target, str) and NAMESPACE_NAME.fullmatch(target) else None
-    )
+
+
+def closing_hand_off(body):
+    """The namespace a cell of the statements *body* hands the question to with its last
+    one, as handed_to() reads it; None when it hands none off."""
+    if body and isinstance(body[-1], ast.Expr):
+        return hand_off_target(body[-1].value)
+    return None
 
 
 def calls(node, name):
@@ -1282,19 +1291,63 @@ def calls(node, name):
 
 
 def hand_off_target(call):
-    """The literal namespace *call*, a cell's last expression, hands the question to: as
+    """The namespace *call*, a cell's last expression, hands the question to: as
     FinalAnswer(subagent(..., namespace=X)) or switch_namespace(X, ...)."""
-    if calls(call, "FinalAnswer") and call.args and calls(call.args[0], "subagent"):
-        named = keyword_value(call.args[0], "namespace")
-    elif calls(call, "switch_namespace"):
-        named = call.args[0] if call.args else keyword_value(call, "namespace")
+    if calls(call, "FinalAnswer") and call.args:
+        call = call.args[0]
+        return named_namespace(call) if calls(call, "subagent") else None
+    return named_namespace(call) if calls(call, "switch_namespace") else None
+
+
+def named_namespace(node):
+    """The namespace *node* hands work to, when it is a subagent(..., namespace=X) or
+    switch_namespace(X, ...) call naming one a name could be, as the engine takes them:
+    subagent's namespace by keyword only."""
+    if calls(node, "subagent"):
+        named = keyword_value(node, "namespace")
+    elif calls(node, "switch_namespace"):
+        named = node.args[0] if node.args else keyword_value(node, "namespace")
     else:
         return None
-    return getattr(named, "value", None)
+    name = getattr(named, "value", None)
+    return name if isinstance(name, str) and NAMESPACE_NAME.fullmatch(name) else None
 
 
 def keyword_value(call, name):
     return next((each.value for each in call.keywords if each.arg == name), None)
+
+
+def example_calls(decomposition):
+    """What worked example *decomposition*'s code hands on and reads, each cell parsed
+    once: the namespace its last cell hands the question to (as handed_to() reads it);
+    those it hands a step to, each other one it hands work to but in an earlier cell's
+    closing hand-off, which the example goes on from as the target, as the historian's
+    own go on from root's; and the names it reads but doesn't bind itself. A cell that
+    doesn't parse, as a template's may not, is left out."""
+    whole, steps, read, bound = None, set(), set(), set()
+    last = len(decomposition.messages) - 1
+    for at, message in enumerate(decomposition.messages):
+        if message.role != "assistant":
+            continue
+        try:
+            module = parsed_python(running_code(message.content))
+        except LibraryError:
+            continue
+        handed = closing_hand_off(module.body)
+        whole = handed if at == last else whole
+        body = module.body[:-1] if handed else module.body
+        nodes = (node for statement in body for node in ast.walk(statement))
+        steps |= {target for node in nodes if (target := named_namespace(node))}
+        for node in ast.walk(module):
+            if isinstance(node, ast.Name):
+                (read if isinstance(node.ctx, ast.Load) else bound).add(node.id)
+            elif isinstance(node, ast.alias):
+                bound.add((node.asname or node.name).split(".")[0])
+            elif isinstance(
+                node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+            ):
+                bound.add(node.name)
+    return whole, steps, read - bound
 
 
 def hand_off_targets(config):
@@ -1307,13 +1360,13 @@ def hand_off_targets(config):
     }
 
 
-def unreachable(registry, namespace, target):
-    """Why *namespace*'s agents can't hand a question to namespace *target*; None when
-    they can."""
+def unreachable(registry, namespace, target, **words):
+    """Why *namespace*'s agents can't hand a question to namespace *target*, in CANT_REACH
+    with *words*; None when they can."""
     if target not in registry.names:
-        return CANT_REACH.render(gone=True, target=target)
+        return CANT_REACH.render(gone=True, target=target, **words)
     if not spawnable(registry, namespace, target):
-        return CANT_REACH.render(gone=False, target=target)
+        return CANT_REACH.render(gone=False, target=target, **words)
     return None
 
 
@@ -1428,11 +1481,27 @@ def impossible_hand_offs(registry, namespace, targets):
     return found
 
 
+def impossible_parts(registry, namespace, parts):
+    """(target, why) for each namespace a worked example *namespace* is shown hands a step
+    to where its agents can't, once per example; *parts* the steps of each stored one, by
+    its namespace and name (example_calls())."""
+    resolved = registry.resolve(namespace)
+    return [
+        (target, why)
+        for example in resolved.decompositions
+        for target in parts.get(
+            (resolved.sources.decompositions[example.name], example.name), ()
+        )
+        if (why := unreachable(registry, namespace, target))
+    ]
+
+
 def saying_so(registry, namespace, example, target, why):
     """*example* with its hand-off, which *namespace* can't make, replaced by what its
     agents do instead."""
     kind = hand_off_kind(registry, namespace, target)
-    answer = repr(CANT_ANSWER.render(target=target, why=why))
+    listed = target in registry.names
+    answer = repr(CANT_ANSWER.render(target=target, why=why, listed=listed))
     record = reads_record(registry, target)
     reply = CANT_HAND_OFF.render(
         kind=kind, target=target, why=why, answer=answer, record=record
@@ -2932,9 +3001,10 @@ def backbone(resolved, run):
     return {"value": "chat", "source": "the run's default"}
 
 
-def namespace_fields(registry, name, run, targets, lines):
+def namespace_fields(registry, name, run, targets, parts, lines):
     """Each field of namespace *name* as the engine resolves it, with where it comes from;
-    *lines* as run_lines() gives them."""
+    *targets* and *lines* as hand_off_targets() and run_lines() give them, *parts* as
+    impossible_parts() takes them."""
     resolved = registry.resolve(name)
     sources = resolved.sources
     repl = repl_text(resolved.repl)
@@ -2979,27 +3049,46 @@ def namespace_fields(registry, name, run, targets, lines):
         {"label": "System suffix", "items": suffixes},
     ]
     found = impossible_hand_offs(registry, name, targets)
-    cant = Counter((to, why) for _, to, why in found)
-    if cant:
+    whole = Counter((to, why) for _, to, why in found)
+    steps = Counter(impossible_parts(registry, name, parts))
+    if whole or steps:
         items = [
-            cant_hand_off(registry, name, to, why, how_many)
-            for (to, why), how_many in cant.items()
+            cant_hand_off(registry, name, to, why, whole[to, why], steps[to, why])
+            for to, why in dict.fromkeys([*whole, *steps])
         ]
         fields.append({"label": "Hand-offs", "items": items})
     return fields
 
 
-def cant_hand_off(registry, name, target, why, how_many):
-    """What the panel says of the *how_many* worked examples namespace *name* is shown
-    that hand off to *target*, where its agents can't."""
-    instead = INSTEAD[hand_off_kind(registry, name, target)]
-    value = (
-        f"none to {target}: {why}. Its agents {instead} what"
-        f" {count(how_many, 'worked example')} would hand there."
-    )
+def cant_hand_off(registry, name, target, why, whole, steps):
+    """What the panel says of the worked examples namespace *name* is shown that hand
+    work to *target*, where its agents can't: the *whole* that hand it the question, which
+    they are shown doing what they can instead, and the *steps* that hand it a step."""
+    kind = hand_off_kind(registry, name, target)
+    value = f"none to {target}: {why}."
+    if whole:
+        value += (
+            f" For the questions {count(whole, 'worked example')} would hand there, its"
+            f" agents {INSTEAD[kind]}."
+        )
+    if steps:
+        value += (
+            f" {count(steps, 'worked example')} {hands(steps)} it part of the work, so"
+            f" agents copying {them(steps)} {FAIL_THERE}."
+        )
     if target not in registry.names:
         return {"value": value, "source": "not in the Library"}
+    if kind != "here":
+        value += f" Adding {target} to the spawn list lets them hand work there."
     return located(value, registry.resolve(name).sources.spawn, name)
+
+
+def hands(number):
+    return "hands" if number == 1 else "hand"
+
+
+def them(number):
+    return "it" if number == 1 else "them"
 
 
 def run_settings(read):
@@ -3268,9 +3357,17 @@ def namespace_rows(read, config, registry):
     for row in read["decompositions"]:
         decompositions[row["namespace"]].append(row)
     left = read["namespaces_left"]
-    targets = hand_off_targets(config)
-    handed = Counter(hand_offs_made(registry, targets))
+    calls = {
+        (name, example.name): example_calls(example)
+        for name, namespace in config.namespaces.items()
+        for example in namespace.decompositions
+    }
+    targets = {at: whole for at, (whole, _, _) in calls.items()}
+    parts = {at: steps for at, (_, steps, _) in calls.items()}
+    whole = hand_offs_made(registry, {at: [to] for at, to in targets.items() if to})
+    steps = hand_offs_made(registry, parts)
     readable = set(registry.names)
+    tools = set(declared_tool_names(config))
     spawns = own_spawns(registry, left)
     lines = run_lines(registry)
     return [
@@ -3278,13 +3375,18 @@ def namespace_rows(read, config, registry):
             "name": name,
             "depth": len(chain_of(name)) - 1,
             "fields": (
-                namespace_fields(registry, name, config, targets, lines)
+                namespace_fields(registry, name, config, targets, parts, lines)
                 if name in readable
                 else []
             ),
-            "decompositions": checked(decompositions[name]),
+            "decompositions": checked(
+                decompositions[name],
+                registry if name in readable else None,
+                calls,
+                tools,
+            ),
             "yaml": own_yaml(read["namespace_yaml"].get(name, "")),
-            "handed_to": handed[name],
+            "deleting": deleting_lines(name, whole[name], steps[name]),
             "usable": usable(name, left),
             "problems": left[name].splitlines() if name in left else [],
             "refusal": namespace_refusal(spawns, name),
@@ -3294,29 +3396,98 @@ def namespace_rows(read, config, registry):
 
 
 def hand_offs_made(registry, targets):
-    """Where each stored worked example whose namespace can make its hand-off hands off,
-    unless it is stored in the target or under it, which go with the target: what a
-    Delete of the target warns of. *targets* as hand_off_targets() gives them."""
-    for (namespace, _), target in targets.items():
-        if target is None or namespace == target or namespace.startswith(f"{target}."):
-            continue
-        if unreachable(registry, namespace, target) is None:
-            yield target
+    """For each namespace, where each stored worked example handing it work is stored,
+    when that one's agents can make the hand-off and it isn't the namespace or under it,
+    which go with it: what a Delete of it warns of. *targets* are where each stored one
+    hands work, by its namespace and name."""
+    made = defaultdict(list)
+    for (namespace, _), each in targets.items():
+        for target in each:
+            if namespace == target or namespace.startswith(f"{target}."):
+                continue
+            if unreachable(registry, namespace, target) is None:
+                made[target].append(namespace)
+    return made
 
 
-def checked(rows):
+def deleting_lines(name, whole, steps):
+    """What deleting namespace *name* does to the worked examples whose agents can hand
+    it work now, in words; *whole* and *steps* are where those handing it the question,
+    and a step, are stored (hand_offs_made())."""
+    # As hand_off_kind() reads a namespace that is gone.
+    instead = INSTEAD["record" if name == HISTORIAN else "other"]
+    lines = []
+    if whole:
+        lines.append(
+            f"{count(len(whole), 'worked example')} {hands(len(whole))} questions to it"
+            f" ({', '.join(dict.fromkeys(whole))}); without it, agents asked those"
+            f" {instead}."
+        )
+    if steps:
+        lines.append(
+            f"{count(len(steps), 'worked example')} {hands(len(steps))} it part of the"
+            f" work ({', '.join(dict.fromkeys(steps))}); without it, agents copying"
+            f" {them(len(steps))} {FAIL_THERE}."
+        )
+    return lines
+
+
+def checked(rows, registry, calls, tools):
     """A namespace's stored decompositions, *rows* as read_decompositions() reads them,
-    each with its problems as a worked example; or, for one left out, which agents aren't
-    shown (read: false), why: its templates were checked as it was read."""
+    each with its problems as a worked example and its notes (example_notes(), from
+    *calls*, each stored one's example_calls() by its namespace and name, and *tools*;
+    none in a namespace the engine can't read, *registry* None); or, for one left out,
+    which agents aren't shown (read: false), why: its templates were checked as it was
+    read."""
     return [
         {
             "name": row["name"],
             "yaml": row["yaml"],
             "problems": problems_of(row),
+            "notes": (
+                example_notes(
+                    registry,
+                    row["namespace"],
+                    calls.get((row["namespace"], row["decomposition"].name), NO_CALLS),
+                    tools,
+                )
+                if registry is not None and row["decomposition"] is not None
+                else []
+            ),
             "read": row["decomposition"] is not None,
         }
         for row in rows
     ]
+
+
+def example_notes(registry, namespace, calls, tools):
+    """What the panel notes of a worked example stored in *namespace*, whose example_calls()
+    are *calls*: each call in its code that agents there can't make, as a hand-off to a
+    namespace they can't reach, or a call of one of the Library's *tools* they aren't
+    granted. Not problems: agents are shown it all the same, a whole question's hand-off
+    as they would answer it instead (without_impossible_hand_offs()), and those copying it
+    fail there."""
+    whole, steps, read = calls
+    notes = []
+    if whole and (why := unreachable(registry, namespace, whole, where=namespace)):
+        instead = INSTEAD[hand_off_kind(registry, namespace, whole)]
+        notes.append(
+            f"It hands the question to {whole}, but {why}, so agents in {namespace}"
+            f" asked such questions {instead}."
+        )
+    for target in sorted(steps):
+        if why := unreachable(registry, namespace, target, where=namespace):
+            notes.append(
+                f"It hands part of the work to {target}, but {why}, so agents in"
+                f" {namespace} copying it {FAIL_THERE}."
+            )
+    lacking = sorted((read & tools) - set(registry.resolve(namespace).tools))
+    if lacking:
+        notes.append(
+            f"It calls {', '.join(lacking)}, which agents in {namespace} aren't granted,"
+            f" so those copying it {FAIL_THERE}."
+        )
+    return notes
 
 
 def problems_of(row):

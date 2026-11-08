@@ -86,6 +86,7 @@ from deep_reasoning.library import (
     dump,
     edit_decomposition,
     engine_config,
+    example_calls,
     fitting,
     hand_off,
     handed_to,
@@ -312,6 +313,8 @@ def field(row, label):
 
 
 CANT = "historian namespace, and this namespace's spawn list leaves it out"
+# What such an answer tells the user they can do.
+ADD_HISTORIAN = "Adding historian to that spawn list would let me."
 
 
 def test_a_namespace_that_may_not_spawn_into_the_historian_says_it_cant_in_place_of_handing_off(
@@ -331,6 +334,7 @@ def test_a_namespace_that_may_not_spawn_into_the_historian_says_it_cant_in_place
         for each in HAND_OFFS:
             assert "subagent" not in shown[name][each.name]
             assert CANT in shown[name][each.name]
+            assert ADD_HISTORIAN in shown[name][each.name]
     # spawn: null sets nothing, so trips.anywhere inherits trips's spawn list.
     assert shown["trips.anywhere"] == shown["trips"]
     # What is stored is left as it is, and the panel says what trips can't hand off.
@@ -338,16 +342,18 @@ def test_a_namespace_that_may_not_spawn_into_the_historian_says_it_cant_in_place
     assert rows["trips"]["decompositions"] == []
     assert field(rows["trips"], "Hand-offs") == [
         {
-            "value": "none to librarian: this namespace's spawn list leaves it out. Its"
-            f" agents try themselves what {len(LIBRARY_HAND_OFFS)} worked examples would"
-            " hand there.",
+            "value": "none to librarian: this namespace's spawn list leaves it out. For"
+            f" the questions {len(LIBRARY_HAND_OFFS)} worked examples would hand there,"
+            " its agents answer them themselves if they can, and say so if they can't."
+            " Adding librarian to the spawn list lets them hand work there.",
             "source": "set here",
             "here": True,
         },
         {
-            "value": "none to historian: this namespace's spawn list leaves it out. Its"
-            f" agents say they can't answer what {len(HAND_OFFS)} worked examples would"
-            " hand there.",
+            "value": "none to historian: this namespace's spawn list leaves it out. For"
+            f" the questions {len(HAND_OFFS)} worked examples would hand there, its"
+            " agents say they can't answer them. Adding historian to the spawn list lets"
+            " them hand work there.",
             "source": "set here",
             "here": True,
         },
@@ -376,8 +382,11 @@ def test_a_historian_with_no_examples_of_its_own_reads_the_record_in_place_of_ha
         assert running_code(turns[each.name]) == "print(history.turns())"
         assert "I answer it here and never hand it on" in turns[each.name]
     _, item = field(panel_rows(library)[HISTORIAN], "Hand-offs")
-    instead = f"Its agents answer themselves what {len(HAND_OFFS)} worked examples"
-    assert instead in item["value"]
+    assert item["value"] == (
+        "none to historian: this namespace's spawn list leaves it out. For the questions"
+        f" {len(HAND_OFFS)} worked examples would hand there, its agents answer them"
+        " themselves."
+    )
 
 
 def test_with_the_historian_deleted_no_namespace_hands_off_to_it(library, tmp_path):
@@ -394,9 +403,12 @@ def test_with_the_historian_deleted_no_namespace_hands_off_to_it(library, tmp_pa
         for code in hand_offs.values():
             assert "subagent" not in code
             assert "there is no historian namespace" in code
+            assert "spawn list" not in code
     [item] = field(panel_rows(library)[ROOT], "Hand-offs")
-    assert item["value"].startswith(
-        "none to historian: there is no historian namespace"
+    assert item["value"] == (
+        "none to historian: there is no historian namespace now. For the questions"
+        f" {len(HAND_OFFS)} worked examples would hand there, its agents say they can't"
+        " answer them."
     )
     assert item["source"] == "not in the Library"
 
@@ -600,18 +612,23 @@ def test_a_namespace_that_cant_reach_the_librarian_answers_library_questions_its
         )
 
 
+def worked(name, *cells):
+    """A worked example whose replies run *cells* in turn, each but the last answered
+    by what it printed."""
+    messages = [{"role": "user", "content": "Do it."}]
+    for code in cells:
+        if len(messages) > 1:
+            messages.append(
+                {"role": "user", "content": "<observation>\nok\n</observation>\n"}
+            )
+        reply = f"<think>Hand it on.</think>\n<repl>\n{code}\n</repl>\n"
+        messages.append({"role": "assistant", "content": reply})
+    return dump({"name": name, "messages": messages})
+
+
 def ending_in(name, code):
     """A worked example whose one reply runs *code*."""
-    reply = f"<think>Hand it on.</think>\n<repl>\n{code}\n</repl>\n"
-    return dump(
-        {
-            "name": name,
-            "messages": [
-                {"role": "user", "content": "Do it."},
-                {"role": "assistant", "content": reply},
-            ],
-        }
-    )
+    return worked(name, code)
 
 
 SWITCHING = 'switch_namespace("law", ctx.task)'
@@ -703,7 +720,238 @@ def test_deleting_a_namespace_warns_of_the_hand_offs_to_it_that_could_be_made(li
             text = ending_in(f"from {namespace}", HAND_OFF)
             add_decomposition(connection, namespace, text)
     # root's, and the librarian's own; not trips's, which can't, or one under historian.
-    assert panel_rows(library)[HISTORIAN]["handed_to"] == len(HAND_OFFS) + 1
+    assert panel_rows(library)[HISTORIAN]["deleting"] == [
+        (
+            f"{len(HAND_OFFS) + 1} worked examples hand questions to it (root, librarian);"
+            " without it, agents asked those say they can't answer them."
+        )
+    ]
+
+
+# A team as a workshop builds one: a lead handing one step to crunch, then the write-up
+# to report, whose answer it passes on, the multi-step shape no run rewrites.
+CREW = {"crunch": "spawn: []\n", "report": "spawn: []\n"}
+TEAMWORK_CELLS = (
+    'numbers = subagent("Compute the spread.", namespace="crunch")\nprint(numbers)',
+    (
+        'summary = subagent(f"Write up {numbers}.", namespace="report")\n'
+        "FinalAnswer(summary)"
+    ),
+)
+TEAMWORK = worked("crunch computes, report writes it up", *TEAMWORK_CELLS)
+WRITE_UP = TEAMWORK_CELLS[1:]
+# A custom tool, granted where a workshop grants it, and worked examples calling it.
+CSV_TOOL = (
+    "from deep_reasoner.primitives import Func\n\n\n"
+    "def build(client, params):\n"
+    "    def csv_stats(path):\n"
+    '        """Summary statistics of a CSV file."""\n'
+    "        return {}\n\n"
+    "    return Func(csv_stats)\n"
+)
+CALLS_IT = worked(
+    "flag outliers",
+    'stats = csv_stats("orders.csv")\nprint(stats)',
+    "FinalAnswer(stats)",
+)
+# One holding a name of its own that is the tool's.
+NAMES_ITS_OWN = worked(
+    "count rows", "csv_stats = {'rows': 3}\nprint(csv_stats)", "FinalAnswer(csv_stats)"
+)
+
+
+def to_report(library, namespace):
+    """What *namespace*'s Hand-offs field says of report: its spawn list leaves out the
+    historian and librarian too, which root's worked examples hand questions to."""
+    items = field(panel_rows(library)[namespace], "Hand-offs") or []
+    return [each for each in items if each["value"].startswith("none to report")]
+
+
+def notes_of(library, namespace):
+    """The notes on each of *namespace*'s own decompositions in the panel, by name."""
+    rows = panel_rows(library)[namespace]["decompositions"]
+    return {row["name"]: row["notes"] for row in rows}
+
+
+def test_a_fresh_library_marks_no_worked_example_with_a_note(library):
+    rows = panel_rows(library)
+    notes = [each["notes"] for row in rows.values() for each in row["decompositions"]]
+    assert notes == [[]] * len(notes)
+
+
+def test_a_worked_example_handing_a_step_where_its_namespace_cant_is_noted_not_crossed(
+    library,
+):
+    with closing(open_library(library)) as connection:
+        for name, text in CREW.items():
+            add_namespace(connection, name, text)
+        add_namespace(connection, "analyst", "spawn: [crunch, report]\n")
+        add_decomposition(connection, "analyst", TEAMWORK)
+    assert notes_of(library, "analyst") == {"crunch computes, report writes it up": []}
+    assert to_report(library, "analyst") == []
+    with closing(open_library(library)) as connection:
+        change_namespace(connection, "analyst", "spawn: [crunch]\n")
+    [row] = panel_rows(library)["analyst"]["decompositions"]
+    assert row["problems"] == []
+    assert row["notes"] == [
+        (
+            "It hands part of the work to report, but analyst's spawn list leaves it out,"
+            " so agents in analyst copying it fail at that call."
+        )
+    ]
+    assert to_report(library, "analyst") == [
+        {
+            "value": "none to report: this namespace's spawn list leaves it out. 1 worked"
+            " example hands it part of the work, so agents copying it fail at that call."
+            " Adding report to the spawn list lets them hand work there.",
+            "source": "set here",
+            "here": True,
+        }
+    ]
+    with closing(open_library(library)) as connection:
+        delete_namespace(connection, "report", 0)
+    [row] = panel_rows(library)["analyst"]["decompositions"]
+    assert row["notes"] == [
+        (
+            "It hands part of the work to report, but there is no report namespace now,"
+            " so agents in analyst copying it fail at that call."
+        )
+    ]
+    assert to_report(library, "analyst") == [
+        {
+            "value": "none to report: there is no report namespace now. 1 worked example"
+            " hands it part of the work, so agents copying it fail at that call.",
+            "source": "not in the Library",
+        }
+    ]
+
+
+def test_a_namespace_under_one_shows_the_steps_it_cant_hand_on_from_what_it_inherits(
+    library,
+):
+    with closing(open_library(library)) as connection:
+        for name, text in CREW.items():
+            add_namespace(connection, name, text)
+        add_namespace(connection, "analyst", "spawn: [crunch, report]\n")
+        add_namespace(connection, "analyst.brief", "spawn: [crunch]\n")
+        add_decomposition(connection, "analyst", TEAMWORK)
+    # The note is the stored one's, where analyst can hand both steps on.
+    assert notes_of(library, "analyst") == {"crunch computes, report writes it up": []}
+    [item] = to_report(library, "analyst.brief")
+    assert item["value"].startswith("none to report: this namespace's spawn list")
+    assert "1 worked example hands it part of the work" in item["value"]
+
+
+@pytest.mark.parametrize(
+    ("cells", "parts"),
+    [
+        (['x = subagent("a", namespace="crunch")\nFinalAnswer(x)'], {"crunch"}),
+        # The whole question, which a run rewrites, is no part.
+        (['FinalAnswer(subagent(ctx.task, namespace="law"))'], set()),
+        (["switch_namespace('law', ctx.task)"], set()),
+        (["print(1)\nswitch_namespace(namespace='law')"], set()),
+        (
+            [
+                'r = subagent("a", namespace="law")\nprint(r)',
+                'FinalAnswer(subagent(ctx.task, namespace="law"))',
+            ],
+            {"law"},
+        ),
+        (
+            [
+                (
+                    "print(run_all({k: anext(subagent(namespace='crunch').send(t))"
+                    " for k, t in tasks.items()}))"
+                ),
+                "FinalAnswer(1)",
+            ],
+            {"crunch"},
+        ),
+        # An earlier cell's closing hand-off, which the example goes on from as the
+        # target, as the historian's own do from root's.
+        (["switch_namespace('law', ctx.task)", "FinalAnswer(1)"], set()),
+        (['x = subagent("a", namespace=where)', "FinalAnswer(x)"], set()),
+        (
+            ['x = subagent("a", namespace="no such {{ place }}")', "FinalAnswer(x)"],
+            set(),
+        ),
+        (["x = subagent('a')", "FinalAnswer(x)"], set()),
+        (["x = (", "FinalAnswer(1)"], set()),
+    ],
+)
+def test_every_namespace_a_worked_example_hands_a_step_to_is_found(cells, parts):
+    _, steps, _ = example_calls(parsed(worked("steps", *cells)))
+    assert steps == parts
+
+
+def test_a_worked_example_calling_a_tool_its_namespace_isnt_granted_is_noted_not_crossed(
+    library,
+):
+    block = dump({"factory": "build", "factory_from": "csv_tool.py"})
+    with closing(open_library(library)) as connection:
+        connection.execute(UPSERT_TOOL, ("csv_stats", block, CSV_TOOL))
+        add_namespace(connection, "analyst", "tools: [csv_stats]\n")
+        add_namespace(connection, "crunch", "")
+        add_decomposition(connection, "analyst", CALLS_IT)
+        add_decomposition(connection, "crunch", NAMES_ITS_OWN)
+    assert notes_of(library, "analyst") == {"flag outliers": []}
+    with closing(open_library(library)) as connection:
+        # The grant moves from analyst to crunch.
+        change_namespace(connection, "analyst", "")
+        change_namespace(connection, "crunch", "tools: [csv_stats]\n")
+    [row] = panel_rows(library)["analyst"]["decompositions"]
+    assert row["problems"] == []
+    assert row["notes"] == [
+        (
+            "It calls csv_stats, which agents in analyst aren't granted, so those copying it"
+            " fail at that call."
+        )
+    ]
+    # crunch's names its own value csv_stats, which is no call of the tool's.
+    assert notes_of(library, "crunch") == {"count rows": []}
+
+
+def test_deleting_a_namespace_says_what_becomes_of_the_worked_examples_handing_it_work(
+    library,
+):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "report", "")
+        whole = 'FinalAnswer(subagent(ctx.task, namespace="report"))'
+        add_decomposition(connection, ROOT, ending_in("whole", whole))
+        add_decomposition(connection, ROOT, worked("part", *WRITE_UP))
+    rows = panel_rows(library)
+    assert rows["report"]["deleting"] == [
+        (
+            "1 worked example hands questions to it (root); without it, agents asked those"
+            " answer them themselves if they can, and say so if they can't."
+        ),
+        (
+            "1 worked example hands it part of the work (root); without it, agents copying"
+            " it fail at that call."
+        ),
+    ]
+    assert rows[LIBRARIAN]["deleting"] == [
+        (
+            f"{len(LIBRARY_HAND_OFFS)} worked examples hand questions to it (root); without"
+            " it, agents asked those answer them themselves if they can, and say so if they"
+            " can't."
+        )
+    ]
+    with closing(open_library(library)) as connection:
+        delete_namespace(connection, "report", 0)
+    assert notes_of(library, ROOT)["whole"] == [
+        (
+            "It hands the question to report, but there is no report namespace now, so"
+            " agents in root asked such questions answer them themselves if they can, and"
+            " say so if they can't."
+        )
+    ]
+    assert notes_of(library, ROOT)["part"] == [
+        (
+            "It hands part of the work to report, but there is no report namespace now, so"
+            " agents in root copying it fail at that call."
+        )
+    ]
 
 
 def test_root_is_told_to_pass_the_message_as_written_only_in_its_examples(
@@ -1652,6 +1900,7 @@ def test_a_decomposition_is_edited_in_its_place_and_may_take_a_new_name(imported
         "name": "route it",
         "yaml": renamed,
         "problems": ["Turn 2 (assistant) has no <think>…</think>."],
+        "notes": [],
         "read": True,
     }
 
