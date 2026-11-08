@@ -371,6 +371,7 @@ async def test_a_stop_amid_library_writes_ends_the_run_with_each_written_change_
     assert time.monotonic() - stopped_at < runs_module.STOP_GRACE_S
     assert [event["status"] for event in of_kind(events, "agent.end")] == ["stopped"]
     assert events[-1]["outcome"] == "stopped" and saved(library, run) == events
+    assert events[-1]["unfinished_calls"] == 0
     logged = {event["name"] for event in of_kind(events, "library.change")}
     assert namespaces_in(library) - before == logged
 
