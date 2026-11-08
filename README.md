@@ -22,7 +22,13 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 **Chats**
 - Chats on the left: new, rename, delete. Saved in the Library file (below) with every message's run, they come back
   after a restart. Deleting a chat wipes its messages from the file.
-- Each message is a run, shown live as a tree of sub-agents you open level by level. Esc stops it.
+- The chat used last is listed first, and a reload opens it. **+ New chat** goes to an empty chat if there is one,
+  so empty chats don't pile up. A title is cut past 200 characters. An unsent message stays with its chat.
+- Several tabs on one app keep in step: coming back to a tab, or opening a chat, shows the chats, messages, runs,
+  names and picks another tab changed, and follows a run another tab started. A chat deleted in another tab leaves
+  the list with a note naming it.
+- Each message is a run, shown live as a tree of sub-agents you open level by level. Esc stops it. One run goes at a
+  time in a tab: a message sent meanwhile is kept, and the hint says which chat's run is going.
 - Each run shows its time, sub-agent count, cost (N/A when the model's price isn't known) and model.
 - An answer that holds Markdown (headings, lists, tables, code, links, bold) shows as Markdown; any other shows
   exactly as written, so `List<String>`, `__init__` or `2*3*4` stay as they are. Raw HTML always shows as text, an
@@ -62,7 +68,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   there is nothing to show, so asking to be shown how an answer was reached goes there too.
 - Each chat has its own model, namespace and working folder, picked under the message box; a change applies from
   the next message.
-- Light and dark themes; works at phone width, and with no internet: the page loads nothing but the app.
+- Light and dark themes; works at phone width, where the chats are a drawer (☰; Esc shuts it), and with no internet:
+  the page loads nothing but the app.
 
 **Models and keys**, in **settings** (bottom left)
 - Vendors and their key variables: OpenAI `OPENAI_API_KEY`, OpenRouter `OPENROUTER_API_KEY`, Anthropic
@@ -81,7 +88,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 - The agent's Python runs in the chat's folder, so files it writes are there for the next message.
 - A scratch folder by default, in `~/.deep-reasoning` (hover the folder's name for its path), deleted with the chat.
   A folder you pick is never deleted.
-- Settings has a default folder for new chats; one that isn't on this computer gives them a scratch folder.
+- Settings has a default folder for new chats; one that isn't on this computer is marked missing and gives them a
+  scratch folder.
 
 **The Library**
 - One SQLite file of namespaces, decompositions, custom tools and run settings, and your chats, with their past
