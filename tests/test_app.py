@@ -2935,11 +2935,12 @@ async def test_the_history_tool_reads_a_run_without_the_steps_holding_a_lone_sur
 
 
 @pytest.mark.anyio
-async def test_a_cell_printing_a_name_that_isnt_utf_8_is_saved_escaped_as_streamed(
+async def test_a_cell_printing_a_name_that_isnt_utf_8_is_saved_and_sent_escaped(
     library_on, connect
 ):
     # A file name that isn't UTF-8 decodes with a lone surrogate standing for each byte.
-    plan = {"List it.": [repl("import os", "print(os.fsdecode(b'caf\\xe9'))")]}
+    listing = repl("import os", "print(os.fsdecode(b'caf\\xe9'))")
+    plan = {"List it.": [listing, repl("FinalAnswer('listed')")]}
     with FakeOpenAI(scripted(plan)) as fake:
         async with connect(library_on(fake)) as api:
             chat = await new_chat(api)
@@ -2949,6 +2950,9 @@ async def test_a_cell_printing_a_name_that_isnt_utf_8_is_saved_escaped_as_stream
     [turn] = read.json()["turns"]
     assert turn["events"] == streamed
     assert kinds(streamed, "cell.end")[0]["output"] == "caf\\udce9"
+    # The model is shown the output as saved, and the run goes on to answer.
+    assert "caf\\udce9" in fake.calls[-1].messages[-1]["content"]
+    assert (streamed[-1]["outcome"], streamed[-1]["answer"]) == ("answered", "listed")
 
 
 TEXT_ONLY = [{"type": "text", "text": "It **counted**."}]

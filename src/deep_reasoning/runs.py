@@ -39,6 +39,7 @@ from deep_reasoning.library import (
     RUN_ID_FORMAT,
     SURROGATE,
     open_library,
+    texts_in,
     writing,
 )
 
@@ -445,15 +446,20 @@ def secrets_of(env: dict[str, str], names: Sequence[str]) -> list[str]:
 def escaped(value: Any) -> Any:
     """*value* with each half of a character in its text, keys included, written as its
     escape, such as \\udce9: a cell may print one, as a file name that isn't UTF-8 decodes
-    with, and no response or run's spec can carry it."""
+    with, and no response, run's spec or model call can carry it. *value* itself, not a
+    copy, when it holds none, as nearly every value does."""
+    if any(map(SURROGATE.search, texts_in(value))):
+        return escaping(value)
+    return value
+
+
+def escaping(value: Any) -> Any:
     if isinstance(value, str):
-        if SURROGATE.search(value):
-            return value.encode("utf-8", "backslashreplace").decode()
-        return value
+        return value.encode("utf-8", "backslashreplace").decode()
     if isinstance(value, dict):
-        return {escaped(name): escaped(each) for name, each in value.items()}
+        return {escaping(name): escaping(each) for name, each in value.items()}
     if isinstance(value, list):
-        return [escaped(each) for each in value]
+        return [escaping(each) for each in value]
     return value
 
 
