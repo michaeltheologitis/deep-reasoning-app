@@ -29,6 +29,7 @@ from deep_reasoning.library import (
     APP_TOOLS_FILE,
     BEFORE_EVENTS,
     BEFORE_PAGES,
+    FIELDS_MAPPING,
     FILLED_IN,
     HAND_OFF_TURNS,
     HISTORIAN,
@@ -40,7 +41,9 @@ from deep_reasoning.library import (
     LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
+    MAX_YAML_CHARS,
     PAGE_DESCRIPTION,
+    SHAPES,
     UNREAD_SETTING,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
@@ -61,7 +64,9 @@ from deep_reasoning.library import (
     engine_config,
     hand_off,
     handed_to,
+    has_namespace,
     import_config,
+    library_tools,
     open_library,
     panel,
     parsed,
@@ -762,7 +767,11 @@ def test_a_shared_librarys_tool_cannot_be_written_outside_the_tools_folder(
     with closing(open_library(library)) as connection:
         connection.execute(
             "INSERT INTO tools VALUES (?, ?, ?)",
-            ("../escaped", "factory: build\n", "def build(client, cfg): ...\n"),
+            (
+                "../escaped",
+                "factory: build\nfactory_from: escaped.py\n",
+                "def build(client, cfg): ...\n",
+            ),
         )
         connection.execute(UPSERT_NAMESPACE, (ROOT, dump({"tools": ["../escaped"]})))
     with pytest.raises(LibraryError, match="needs a Python name"):
@@ -1168,6 +1177,47 @@ def test_a_shared_files_decompositions_under_a_root_it_lacks_are_still_checked(l
         *SEEDED_ROWS,
         ("no think", ["Turn 2 (assistant) has no <think>…</think>."]),
     ]
+
+
+def test_a_namespace_under_one_left_out_goes_too_and_roots_stay_under_a_bare_root(
+    library, tmp_path
+):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, (ROOT, "- not a mapping\n"))
+        connection.execute(UPSERT_NAMESPACE, ("research", "tools: 5\n"))
+        connection.execute(UPSERT_NAMESPACE, ("research.papers", ""))
+    with closing(open_library(library)) as connection:
+        shown = {
+            row["name"]: row["problems"] for row in panel(connection)["namespaces"]
+        }
+    assert shown == {
+        ROOT: [FIELDS_MAPPING],
+        HISTORIAN: [],
+        LIBRARIAN: [],
+        "research": [SHAPES["tools"]],
+        "research.papers": ['The namespace it goes under, "research", is left out.'],
+    }
+    config = run_config(library, tmp_path, HISTORIAN)
+    assert set(config.namespaces) == {HISTORIAN, LIBRARIAN}
+
+
+def test_a_namespace_saved_under_one_left_out_is_refused_saying_why(library):
+    with closing(open_library(library)) as connection:
+        connection.execute(UPSERT_NAMESPACE, ("research", "tools: 5\n"))
+        with pytest.raises(LibraryError) as refused:
+            add_namespace(connection, "research.papers", "")
+        assert not has_namespace(connection, "research.papers")
+    assert str(refused.value) == 'The namespace it goes under, "research", is left out.'
+
+
+def test_a_tools_source_is_read_up_to_the_length_a_save_holds_it_to(library):
+    block = dump({"factory": "build", "factory_from": "tally.py"})
+    at_the_limit = "#" * MAX_YAML_CHARS
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_TOOL, ("at", block, at_the_limit))
+        connection.execute(UPSERT_TOOL, ("past", block, f"{at_the_limit}#"))
+    with closing(open_library(library)) as connection:
+        assert [name for name, _, _ in library_tools(connection)] == ["at"]
 
 
 def names_in(library, namespace):

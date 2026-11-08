@@ -54,9 +54,9 @@ from deep_reasoning.library import (
     delete_tool,
     edit_decomposition,
     engine_config,
-    has_namespace,
     open_library,
     panel,
+    read_namespaces,
 )
 from deep_reasoning.pages import page_exists, page_text
 from deep_reasoning.runs import (
@@ -243,11 +243,12 @@ def create_app(library, home):
             edit_decomposition(connection, namespace, name, was, yaml)
             return library_panel(connection)
 
+    # Shown no YAML (was null), as one too long to show, it is deleted while it is so.
     @app.delete("/api/decompositions")
     def remove_decomposition(
         namespace: Annotated[str, Body()],
         name: Annotated[str, Body()],
-        was: Annotated[str, Body()],
+        was: Annotated[str | None, Body()],
     ):
         with closing(open_library(library)) as connection:
             delete_decomposition(connection, namespace, name, was)
@@ -453,9 +454,15 @@ def create_app(library, home):
         chosen = shown(chat, starting_points())
         namespace, model = chosen["namespace"], chosen["model"]
         with closing(open_library(library)) as connection:
-            if not has_namespace(connection, namespace):
+            readable, left_out = read_namespaces(connection)
+            if namespace not in readable:
+                gone = (
+                    "is one the engine can't read (the Library panel says why)"
+                    if namespace in left_out
+                    else "no longer exists"
+                )
                 raise LibraryError(
-                    f"This chat's namespace {namespace} no longer exists — pick another."
+                    f"This chat's namespace {namespace} {gone} — pick another."
                 )
             turns = [
                 read_turn(connection, run) for run in chat_runs(connection, chat["id"])

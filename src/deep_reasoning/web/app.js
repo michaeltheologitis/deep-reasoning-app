@@ -875,9 +875,9 @@ function wire() {
   }, SPIN_MS);
 }
 
-// The namespaces a chat can pick, and the default one new chats start in, as the Library panel reads them.
+// The namespaces a chat can pick, and the default one new chats start in, as the Library panel reads them: not one the engine can't read.
 function useLibrary(found) {
-  library.namespaces = found.namespaces.map(({ name }) => name);
+  library.namespaces = found.namespaces.filter(({ problems }) => !problems.length).map(({ name }) => name);
   library.defaultNamespace = found.default_namespace;
 }
 

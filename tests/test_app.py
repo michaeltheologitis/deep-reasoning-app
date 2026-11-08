@@ -38,6 +38,7 @@ from fake_model import (
     write,
 )
 from fastapi.testclient import TestClient
+from structlog.testing import capture_logs
 
 from deep_reasoning import settings as settings_module
 from deep_reasoning.app import WEB, create_app
@@ -50,7 +51,10 @@ from deep_reasoning.library import (
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
     LIBRARIANS_EXAMPLES,
+    MAX_YAML_CHARS,
     PAGE_DESCRIPTION,
+    ROOT,
+    UNREAD_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
     UPSERT_TOOL,
@@ -464,6 +468,29 @@ async def test_a_chat_whose_namespace_was_deleted_is_refused_on_its_next_run(
         "detail": "This chat's namespace drafts no longer exists — pick another."
     }
     assert (read["namespace"], read["turns"]) == ("drafts", [])
+    assert fake.calls == []
+
+
+@pytest.mark.anyio
+async def test_a_chat_in_a_namespace_the_engine_cant_read_is_refused_saying_so(
+    library_on, connect
+):
+    with FakeOpenAI(scripted(PLAN)) as fake:
+        library = library_on(fake)
+        plant_row(library, "namespaces", ("coder", "reasoner: claude_code\n"))
+        async with connect(library) as api:
+            chat = await new_chat(api)
+            await api.patch(f"/api/chats/{chat}", json={"namespace": "coder"})
+            refused = await api.post(
+                f"/api/chats/{chat}/runs", json={"prompt": "Count to two."}
+            )
+    assert (refused.status_code, refused.json()) == (
+        400,
+        {
+            "detail": "This chat's namespace coder is one the engine can't read (the"
+            " Library panel says why) — pick another."
+        },
+    )
     assert fake.calls == []
 
 
@@ -2378,6 +2405,21 @@ def test_an_event_row_the_app_could_not_have_written_is_left_out(client):
     assert [event for _, event in server_sent(streamed.text)] == events
 
 
+def test_an_event_numbered_below_one_is_left_out_so_its_run_still_reads(client):
+    chat = client.post("/api/chats").json()["id"]
+    before_its_start = [row(-5, "think", node=0, text="first"), row(0, "think", node=0)]
+    plant(
+        client.app.state.runs.library,
+        chat,
+        GOOD,
+        [*before_its_start, STARTED, row(2, "turn.end", outcome="answered")],
+    )
+    turns = client.get(f"/api/chats/{chat}").json()["turns"]
+    assert [
+        (turn["run"], [event["seq"] for event in turn["events"]]) for turn in turns
+    ] == [(GOOD, [1, 2])]
+
+
 def answered(seq, answer):
     return row(seq, "turn.end", outcome="answered", answer=answer, detail=None)
 
@@ -3254,6 +3296,170 @@ def test_the_default_folder_is_kept_when_it_is_in_a_deleted_chats_scratch_folder
     deleted = client.delete(f"/api/chats/{chat}")
     assert deleted.status_code == 204
     assert (inside / "keep.txt").read_text() == "mine"
+
+
+def plant_row(library, table, row):
+    """*row* in the app file's *table*, as it is, as a file from someone else might hold."""
+    marks = ", ".join("?" * len(row))
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(f"INSERT OR REPLACE INTO {table} VALUES ({marks})", row)
+
+
+def past_the_limit(start):
+    """YAML starting *start*, a character longer than a Library row may be."""
+    return start + "A" * (MAX_YAML_CHARS + 1 - len(start))
+
+
+TOO_LONG = "It is 1,000,001 characters long, past the 1,000,000 the Library holds."
+NOT_AN_INTEGER = "max_iter: Input should be a valid integer"
+# Rows a shared file may hold that no version of the app writes, as (table, row, why the
+# panel says it is left out).
+UNREADABLE_ROWS = {
+    "a-decomposition-not-yaml": (
+        "decompositions",
+        (ROOT, "bad", "name: bad\nmessages: [unclosed"),
+        "The YAML doesn't parse",
+    ),
+    "a-decomposition-not-a-mapping": (
+        "decompositions",
+        (ROOT, "list", "- just\n- a\n- list\n"),
+        "The YAML should be a mapping: a name: line",
+    ),
+    "a-decomposition-not-the-engines": (
+        "decompositions",
+        (ROOT, "empty", "name: empty\nmessages: []\n"),
+        "messages should be a list of at least one turn",
+    ),
+    "a-decomposition-too-long": (
+        "decompositions",
+        (ROOT, "huge", past_the_limit("name: huge\nmessages: [{role: user, content: ")),
+        TOO_LONG,
+    ),
+    "a-namespace-the-engine-refuses": (
+        "namespaces",
+        ("coder", "reasoner: claude_code\n"),
+        "reasoner should be a mapping",
+    ),
+    "a-namespace-under-none-there": (
+        "namespaces",
+        ("gone.child", ""),
+        "is not in the Library.",
+    ),
+    "a-namespace-too-long": (
+        "namespaces",
+        ("long", past_the_limit("system_suffix: ")),
+        TOO_LONG,
+    ),
+    "a-run-setting-the-engine-refuses": (
+        "settings",
+        ("max_iter", "not-a-number\n"),
+        NOT_AN_INTEGER,
+    ),
+    "a-run-setting-the-app-never-holds": (
+        "settings",
+        ("reasoner", "{type: claude_code}\n"),
+        "The Library never holds it",
+    ),
+    "a-run-setting-nested-too-deep": (
+        "settings",
+        ("note", "[" * 5000 + "]" * 5000),
+        "The YAML is nested too deeply to read.",
+    ),
+    "a-tool-not-a-mapping": (
+        "tools",
+        ("tally", "- factory: build\n", None),
+        "tools.tally: Input should be a valid dictionary",
+    ),
+    "a-tool-whose-description-isnt-text": (
+        "tools",
+        ("tally", "factory: llm\ndescription: !!binary /w==\n", None),
+        "Its description should be text.",
+    ),
+    "a-tool-whose-source-is-too-long": (
+        "tools",
+        ("tally", "factory: build\nfactory_from: tally.py\n", past_the_limit("#")),
+        TOO_LONG,
+    ),
+}
+
+
+def deleting(table, row):
+    """The request the panel makes to delete *row* of *table*: a decomposition by the
+    YAML it was shown, null for one too long to show."""
+    match table, row:
+        case "decompositions", (namespace, name, text):
+            was = text if len(text) <= MAX_YAML_CHARS else None
+            body = {"namespace": namespace, "name": name, "was": was}
+            return "DELETE", "/api/decompositions", {"json": body}
+        case "namespaces", (name, _):
+            return (
+                "DELETE",
+                f"/api/namespaces/{name}",
+                {"params": {"decompositions": 0}},
+            )
+    return "DELETE", f"/api/{table.replace('settings', 'run-settings')}/{row[0]}", {}
+
+
+def rows_keyed(library, table, row):
+    """How many rows of *table* hold *row*'s key."""
+    key = {"decompositions": "namespace = ? AND name = ?", "settings": "key = ?"}
+    where = key.get(table, "name = ?")
+    width = where.count("?")
+    with closing(open_library(library)) as connection:
+        query = f"SELECT count(*) FROM {table} WHERE {where}"
+        return connection.execute(query, row[:width]).fetchone()[0]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("table", "row", "why"), UNREADABLE_ROWS.values(), ids=UNREADABLE_ROWS.keys()
+)
+async def test_a_shared_files_row_the_engine_cant_read_is_left_out_saying_why(
+    library_on, connect, table, row, why
+):
+    plan = {"Hi.": [repl("FinalAnswer('hello')")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        library = library_on(fake)
+        plant_row(library, table, row)
+        with capture_logs() as logs:
+            async with connect(library) as api:
+                shown = await api.get("/api/library")
+                chat = await new_chat(api)
+                events = await run_events(api, await send(api, chat, "Hi."))
+                method, url, body = deleting(table, row)
+                deleted = await api.request(method, url, **body)
+    key = row[:2] if table == "decompositions" else row[0]
+    left_out = {
+        (entry["table"], entry["row"])
+        for entry in logs
+        if entry["event"] == "library.row_left_out"
+    }
+    assert shown.status_code == 200 and why in shown.text
+    # A row past the limit is never loaded, so never sent.
+    assert len(shown.text) < MAX_YAML_CHARS
+    assert left_out == {(table, repr(key))}
+    assert events[-1]["outcome"] == "answered"
+    assert deleted.status_code == 200, deleted.text
+    assert rows_keyed(library, table, row) == 0
+
+
+def test_a_decomposition_the_engine_cant_read_is_marked_and_kept_apart_from_the_rest(
+    client, library
+):
+    plant_row(library, "decompositions", (ROOT, "list", "- a\n"))
+    shown = client.get("/api/library").json()
+    [root] = [each for each in shown["namespaces"] if each["name"] == ROOT]
+    assert by_name(root["decompositions"])["list"] == {
+        "name": "list",
+        "yaml": "- a\n",
+        "problems": [
+            UNREAD_DECOMPOSITION,
+            (
+                "The YAML should be a mapping: a name: line, then messages:, as in the"
+                " template."
+            ),
+        ],
+    }
 
 
 def test_malformed_settings_read_as_unset_and_the_page_can_set_them_again(

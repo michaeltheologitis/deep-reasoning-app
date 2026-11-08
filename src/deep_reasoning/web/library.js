@@ -94,6 +94,10 @@ let applied = 0;
 
 const dot = () => element("span", { class: "lib-dot", "aria-hidden": "true" }, "·");
 const namespaceNamed = (name) => library.namespaces.find((namespace) => namespace.name === name);
+// one the engine reads: a shared file's may hold one it can't, listed with why (problems) to fix or delete
+const readable = (namespace) => !namespace.problems.length;
+const usable = (name) => Boolean(namespaceNamed(name) && readable(namespaceNamed(name)));
+const problemList = (problems) => problems.length > 0 && element("div", { class: "lib-problems lib-warning" }, problems.map((text) => element("p", {}, text)));
 const decompositionKey = (namespace, name) => `d:${namespace}:${name}`;
 const namespaceKey = (name) => `n:${name}`;
 const toolKey = (name) => `t:${name}`;
@@ -469,10 +473,12 @@ function namespaceActions(namespace) {
   const { name } = namespace;
   const form = editForm(name);
   const children = library.namespaces.filter((each) => each.name.startsWith(`${name}.`)).map((each) => each.name);
+  // one too long to show has no YAML to edit
+  const edit = namespace.yaml == null ? [] : form.toggle;
   const actions =
     name === ROOT
-      ? element("div", { class: "lib-actions" }, form.toggle)
-      : deletable(namespaceKey(name), form.toggle, {
+      ? element("div", { class: "lib-actions" }, edit)
+      : deletable(namespaceKey(name), edit, {
           question: deleteQuestion(namespace),
           refusal: () => (children.length ? `Delete its namespaces first: ${children.join(", ")}.` : null),
           remove: () => deleteNamespace(name),
@@ -619,6 +625,7 @@ function decompositionRow(namespace, decomposition) {
   const { name, yaml, problems } = decomposition;
   const key = decompositionKey(namespace, name);
   const head = [element("span", { class: "lib-name" }, name), checkMark(problems)];
+  // one too long to show is shown no YAML, and deleted as that (null)
   const remove = async () => {
     await changeLibrary("DELETE", ADD_URL, { namespace, name, was: yaml });
     opened.delete(key);
@@ -629,9 +636,9 @@ function decompositionRow(namespace, decomposition) {
     const form = decompositionEdit(namespace, decomposition);
     const question = `Delete "${name}" from ${namespace}? Agents in ${reach(namespace)} stop seeing it from the next message.`;
     return [
-      problems.length > 0 && element("div", { class: "lib-problems lib-warning" }, problems.map((text) => element("p", {}, text))),
-      element("pre", { class: "code lib-pre" }, yaml),
-      deletable(key, form.toggle, { question, remove }),
+      problemList(problems),
+      yaml != null && element("pre", { class: "code lib-pre" }, yaml),
+      deletable(key, yaml == null ? [] : form.toggle, { question, remove }),
       form.el,
       form.confirmation,
     ];
@@ -660,7 +667,7 @@ function chain(name) {
 function decompositionsField(name) {
   const levels = new Map();
   for (const level of chain(name)) {
-    for (const each of namespaceNamed(level).decompositions) levels.set(each.name, level);
+    for (const each of namespaceNamed(level)?.decompositions ?? []) levels.set(each.name, level);
   }
   const items = [...levels].map(([value, level]) => ({ value, source: level === name ? "attached here" : `inherited from ${level}`, here: level === name }));
   return { label: "Decompositions", items };
@@ -669,8 +676,8 @@ function decompositionsField(name) {
 function renderNamespaces() {
   const tree = library.namespaces.map((namespace) => {
     const star = namespace.name === library.default_namespace && element("span", { class: "lib-star" }, "★ new chats start here");
-    const head = [element("span", { class: "lib-name" }, namespace.name), star];
-    const content = () => [namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
+    const head = [element("span", { class: "lib-name" }, namespace.name), star, !readable(namespace) && checkMark(namespace.problems)];
+    const content = () => [problemList(namespace.problems), namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
     return element("div", { style: `--depth: ${namespace.depth}` }, disclosure(namespaceKey(namespace.name), head, content));
   });
   const run = disclosure("run-settings", element("span", { class: "lib-name" }, "Run settings"), runSettings);
@@ -698,13 +705,12 @@ function renderTool(tool) {
     opened.delete(toolKey(tool.name));
     return { where: toolsSaid, text: `Deleted tool "${tool.name}"` };
   };
+  const granted = ["Granted in", tool.granted_in.join(", ") || "no namespace"];
+  const made = [["Factory", tool.factory], ["File", tool.file], ["Defined in", tool.defined_in ?? "the deep_reasoner package"]];
   return [
-    fields([
-      ["Factory", tool.factory],
-      ["File", tool.file],
-      ["Defined in", tool.defined_in ?? "the deep_reasoner package"],
-      ["Granted in", tool.granted_in.join(", ") || "no namespace"],
-    ]),
+    // one the engine can't read, as a shared file may hold, says why instead
+    problemList(tool.problems),
+    fields(tool.problems.length ? [granted] : [...made, granted]),
     tool.config && element("pre", { class: "code lib-pre" }, tool.config),
     // A tool whose value is a function tells the agent its docstring, which only a build shows; it wraps, as one may run long.
     tool.description && element("pre", { class: "code lib-doc" }, tool.description),
@@ -716,7 +722,7 @@ function renderTool(tool) {
 function renderTools() {
   const rows = library.tools.map((tool) => {
     const granted = tool.granted_in.length ? `granted in ${tool.granted_in.join(", ")}` : "not granted";
-    return disclosure(toolKey(tool.name), rowHead(tool.name, granted, tool.badge), () => renderTool(tool));
+    return disclosure(toolKey(tool.name), rowHead(tool.name, granted, tool.problems.length ? checkMark(tool.problems) : tool.badge), () => renderTool(tool));
   });
   return [element("div", { class: "lib-rows" }, toolsSaid, rows)];
 }
@@ -793,15 +799,15 @@ function setOpen(open) {
 
 // where the chat on screen runs, else where new chats start, else root
 function startingNamespace() {
-  return [chatNamespace(), library.default_namespace].find((name) => name && namespaceNamed(name)) ?? ROOT;
+  return [chatNamespace(), library.default_namespace].find((name) => name && usable(name)) ?? ROOT;
 }
 
 // The decomposition form's picker keeps its pick while that namespace is there.
 function useLibrary(found) {
   library = found;
   fileName.textContent = ` · ${library.file}`;
-  const picked = namespaceNamed(picker.value) ? picker.value : startingNamespace();
-  picker.replaceChildren(...library.namespaces.map(({ name }) => element("option", { value: name }, name)));
+  const picked = usable(picker.value) ? picker.value : startingNamespace();
+  picker.replaceChildren(...library.namespaces.filter(readable).map(({ name }) => element("option", { value: name }, name)));
   picker.value = picked;
   pruneForms();
 }

@@ -12,6 +12,7 @@ from structlog.testing import capture_logs
 
 from deep_reasoning.app_tools import (
     BRIEF_CHARS,
+    BUILT_IN_FACTORY,
     CHANGED_MEANWHILE,
     CUT_SHORT,
     EMPTY,
@@ -1238,6 +1239,10 @@ HOLDS_ITSELF.append(HOLDS_ITSELF)
             ("counter", f"x = {'1+' * 300_000}1\n", "build"),
             "The source is nested too deeply to parse.",
         ),
+        (
+            ("counter", RAISING.replace("build", "claude_code"), "claude_code"),
+            BUILT_IN_FACTORY,
+        ),
     ],
     ids=[
         "name-not-plain-text",
@@ -1252,6 +1257,7 @@ HOLDS_ITSELF.append(HOLDS_ITSELF)
         "a-key-in-the-settings",
         "a-key-in-a-bytes-literal",
         "a-source-too-deep-to-parse",
+        "a-factory-named-as-the-engines-claude-code",
     ],
 )
 def test_a_tool_the_tool_refuses_says_why_and_stores_nothing(

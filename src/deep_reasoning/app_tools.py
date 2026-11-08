@@ -157,6 +157,12 @@ MAX_NESTING = 20
 # A run hands the factory every key of the tool's block but these.
 OWN_KEYS = ("factory", "factory_from")
 SETS_OWN_KEYS = "settings may not hold factory or factory_from: write_tool sets them."
+# The source's own function builds the tool, but a block naming one of these would read as
+# the engine's: claude_code as Claude Code, which runs on the user's subscription.
+BUILT_IN_FACTORY = (
+    "factory may not be the name of one of the engine's own factories"
+    f" ({', '.join(BUILDERS)}): name your source's function otherwise."
+)
 TAKEN_NAMES = (*BUILDERS, *APP_TOOLS, *sorted(RESERVED_NAMES))
 TOOL_TOO_LONG = (
     f"The source, and the settings as YAML, may each be at most {MAX_YAML_CHARS:,}"
@@ -983,6 +989,8 @@ def check_tool(
             f'"{name}" is taken: it is a Python keyword, a built-in or app tool, or a name'
             f" the REPL binds itself ({', '.join(TAKEN_NAMES)}). Pick another."
         )
+    if factory in BUILDERS:
+        raise LibraryError(BUILT_IN_FACTORY)
     if max(len(source), len(dump(settings))) > MAX_YAML_CHARS:
         raise LibraryError(TOOL_TOO_LONG)
     check_whole([source, *texts_in(settings)])
@@ -1256,7 +1264,12 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         """Every namespace in brief, or namespace *name* as the Library panel shows it."""
         with app_file(library, "ro") as connection, reading(connection):
             config, registry = config_and_registry(connection)
-            rows = namespace_rows(connection, config, registry)
+            # Not those the engine can't read, as a shared file may hold: no agent runs there.
+            rows = [
+                row
+                for row in namespace_rows(connection, config, registry)
+                if row["name"] in registry.names
+            ]
         if name is None:
             return [in_brief(row, registry) for row in rows]
         return named(rows, name, "namespace", "show()")

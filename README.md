@@ -107,6 +107,10 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   a keyword or one of Python's built-ins (`max`, `type`, …), or has the name of a tool its namespace sees. A
   template is checked, never run, so whether `vars.x` holds what it reads isn't. A stored decomposition that fails
   the check, as a shared Library may hold, is marked ✗ with why.
+- A shared Library file may hold a decomposition, namespace, tool or run setting the engine can't read (YAML that
+  doesn't parse or has the wrong shape, or over 1,000,000 characters). It is left out, so it reads as unset and the
+  rest works. The panel marks it ✗ with why and can delete it; a decomposition or namespace short enough to show can
+  be fixed with Edit. A namespace under one left out is left out too, and chats can't pick either until it is fixed.
 - A save or delete in the panel is refused if what you opened was changed meanwhile (by the librarian, another tab
   or an import): your draft stays, beside what is stored now, and saving again replaces it. The panel reads the
   Library again whenever you open it or come back to its window.
