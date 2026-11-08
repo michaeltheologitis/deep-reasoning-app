@@ -1008,8 +1008,9 @@ def own_fields(name, text):
 def read_namespaces(connection):
     """The namespaces that load, as {name: own fields}; those left out, as {name: why};
     and each one's own YAML as the panel shows it, None for one too long or not text.
-    One under a namespace left out or not there goes too, as the engine can't resolve
-    it; root's stay, as the engine supplies a bare root for a file without one."""
+    One named as no save names one goes, so none passes for root in the menu. One under
+    a namespace left out or not there goes too, as the engine can't resolve it; root's
+    stay, as the engine supplies a bare root for a file without one."""
     query = f"SELECT name, {fitting('yaml')} FROM namespaces ORDER BY rowid"
     namespaces, left, shown = {}, {}, {}
     for name, text, size in connection.execute(query):
@@ -1019,6 +1020,7 @@ def read_namespaces(connection):
         shown[name] = None
         try:
             shown[name] = row_text(text, size)
+            check_stored_name(name)
             namespaces[name] = own_fields(name, shown[name])
         except LibraryError as error:
             left[name] = warn_left_out("namespaces", name, str(error))
@@ -2087,6 +2089,19 @@ def check_name(name):
             f'"{name}" reads as root, which every namespace goes under already: name it'
             ' something else, like "research".'
         )
+
+
+def check_stored_name(name):
+    """Raise unless a stored namespace's *name* is root or one check_name() passes,
+    written out, so one such as r\u043eot (a Cyrillic o) shows what it holds."""
+    if name == ROOT:
+        return
+    try:
+        check_name(name)
+    except LibraryError as error:
+        raise LibraryError(
+            f"Its name, {name!a}, would be refused on save: {error}"
+        ) from error
 
 
 def check_place(connection, name):
