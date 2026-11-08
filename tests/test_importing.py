@@ -5,6 +5,7 @@ import math
 import re
 import shutil
 import tempfile
+import time
 from contextlib import closing
 from datetime import date
 from pathlib import Path
@@ -20,15 +21,14 @@ from structlog.testing import capture_logs
 from deep_reasoning.importing import NOT_CARRIED, import_config
 from deep_reasoning.library import (
     HISTORIAN,
-    HISTORIANS_EXAMPLES,
     LIBRARIAN,
-    LIBRARIAN_HAND_OFFS,
+    MAX_YAML_CHARS,
+    ROOTS_EXAMPLES,
     UPSERT_NAMESPACE,
     LibraryError,
     add_namespace,
     default_namespace,
     engine_config,
-    hand_off,
     open_library,
     parsed,
     stored_config,
@@ -78,6 +78,10 @@ namespaces:
 """
 
 
+# Far longer than the guard takes, far shorter than writing a bomb out.
+BOMB_SECONDS = 5
+
+
 RAISES_ON_BUILD = "def build(client, params):\n    raise RuntimeError('offline')\n"
 
 
@@ -85,10 +89,7 @@ CONFIGS = Path(__file__).parent / "configs"
 
 
 # A fresh root's worked examples: its hand-offs to the librarian, then to the historian.
-ROOTS = [
-    *(parsed(text) for text in LIBRARIAN_HAND_OFFS),
-    *(parsed(hand_off(text)) for text in HISTORIANS_EXAMPLES),
-]
+ROOTS = [parsed(text) for text in ROOTS_EXAMPLES]
 
 
 # What the app puts in for a chat on OpenAI's gpt-6-luna.
@@ -148,7 +149,7 @@ def change(library, act, *args):
             "{decompositions: [{name: hi, messages: [{role: user, content: hi}]}]}",
             ["llm"],
             {},
-            "  root: 1 decomposition added",
+            '  root: decompositions added: "hi"',
         ),
     ],
 )
@@ -275,7 +276,7 @@ def test_import_replaces_same_named_items_and_keeps_the_rest(imported, tmp_path)
         "Namespaces:",
         (
             "  router: spawn [course_advisor, health_advisor] → [course_advisor];"
-            " 1 decomposition replaced"
+            ' decompositions replaced: "decline anything else"'
         ),
         "The panel will mark these decompositions ✗, stored all the same:",
         (
@@ -348,24 +349,23 @@ def test_an_import_may_not_give_a_tool_an_app_tools_name(library, tmp_path, tool
 
 def test_import_says_each_setting_namespace_and_tool_it_changed(library, waitlist):
     said = import_into(library, waitlist)
-    assert said[:2] == [
+    assert said == [
         "Run settings, for every chat:",
         (
-            '  system_prompt: "You solve a request by writing Python in a REPL and observ… →'
-            ' "You manage course waitlists by writing Python in a REPL an…'
+            '  system_prompt: "You solve a request by writing Python in a REPL and observin"…'
+            ' → "You manage course waitlists by writing Python in a REPL and "…'
         ),
-    ]
-    assert said[2:] == [
         "  max_iter: 30 (the engine's default) → 6",
         "Namespaces:",
         "  root: tools [llm] → [waitlist]; the rest of root kept",
         "Tools:",
-        "  waitlist: added",
+        "  waitlist: added; every namespace has it, as root grants it",
+        "What this changes in the app:",
         (
-            "Every namespace that sets none of its own gets root's tools, historian and"
-            " librarian too."
+            "  Every namespace, historian and librarian included, gets root's tools"
+            " beside its own."
         ),
-        "No namespace grants llm now: grant it again in the panel if chats need it.",
+        "  No namespace grants llm now: grant it again in the panel if chats need it.",
     ]
 
 
@@ -373,12 +373,15 @@ def test_import_says_where_new_chats_start_and_which_namespaces_it_added(
     library, advisors
 ):
     said = import_into(library, advisors)
-    assert ('  entry_namespace: "root" (the engine\'s default) → "router"') in said
     assert said[said.index("Namespaces:") + 1 :][:3] == [
-        "  course_advisor: added, with 1 decomposition",
-        "  health_advisor: added, with 1 decomposition",
-        "  router: added, with 3 decompositions",
+        '  course_advisor: added, with decompositions "catalog lookup"',
+        '  health_advisor: added, with decompositions "answer then sanitize"',
+        (
+            '  router: added, with decompositions "route a course question", "route a'
+            ' wellbeing question", "decline anything else"'
+        ),
     ]
+    assert "  New chats start in router, not root." in said
 
 
 @pytest.mark.parametrize(
@@ -588,7 +591,7 @@ def test_import_refuses_a_tool_that_does_not_build_and_says_why(
     with pytest.raises(LibraryError) as refused:
         import_into(library, config)
     said = str(refused.value)
-    assert said.startswith(f"Tool mine doesn't build: {problem}")
+    assert said.startswith(f"Tool mine (mine.py) doesn't build: {problem}")
     assert said.endswith(NOT_CARRIED)
     assert tempfile.gettempdir() not in said
     assert dumped(library) == before
@@ -701,33 +704,43 @@ def test_an_import_of_what_the_library_holds_changes_nothing_and_keeps_its_text(
     ("root", "said"),
     [
         (
-            "{system_suffix: Be brief., spawn: [helper]}",
+            "{system_suffix: Be brief., spawn: [helper, historian, librarian]}",
             [
                 (
-                    "Every namespace that sets none of its own gets root's system_suffix"
-                    " and spawn, historian and librarian too."
-                )
+                    "  Every namespace, historian and librarian included, gets root's"
+                    " system_suffix beside its own."
+                ),
+                "  Root's spawn reaches only the namespaces that set none: helper.",
+            ],
+        ),
+        (
+            "{spawn: [helper]}",
+            [
+                "  Root's spawn reaches only the namespaces that set none: helper.",
+                (
+                    "  Agents in root (where new chats start) and helper can't hand"
+                    " questions about earlier messages or the Library to the historian and"
+                    " librarian now: their spawn leaves them out."
+                ),
             ],
         ),
         (
             "{reasoner: {type: claude_code}}",
             [
                 (
-                    "Every namespace that sets none of its own gets root's reasoner,"
-                    " historian and librarian too."
+                    "  Root's reasoner reaches only the namespaces that set none: helper,"
+                    " historian and librarian."
                 ),
                 (
-                    "Root's reasoner is claude_code, which runs each of them on Claude Code,"
+                    "  Agents in root, helper, historian and librarian now run Claude Code,"
                     " billed to your subscription."
                 ),
             ],
         ),
     ],
-    ids=["fields", "a reasoner that bills"],
+    ids=["fields", "a spawn without the app's own", "a reasoner that bills"],
 )
-def test_import_says_what_of_root_reaches_the_apps_own_namespaces_too(
-    library, tmp_path, root, said
-):
+def test_import_says_which_namespaces_roots_fields_reach(library, tmp_path, root, said):
     config = config_file(tmp_path, f"namespaces:\n  root: {root}\n  helper: {{}}\n")
     assert import_into(library, config)[-len(said) :] == said
 
@@ -750,7 +763,7 @@ def test_import_gives_a_built_in_its_settings_under_its_own_name(library, tmp_pa
         "tools:\n  safe_url: {call_in: [helper]}\n"
         "namespaces:\n  helper: {tools: [safe_url]}\n",
     )
-    assert "  safe_url: added" in import_into(library, config)
+    assert "  safe_url: added; granted in helper" in import_into(library, config)
     assert run_config(library, tmp_path).tools["safe_url"] == {"call_in": ["helper"]}
 
 
@@ -792,3 +805,569 @@ def test_an_import_with_a_reasoner_the_engine_doesnt_know_is_refused(library, tm
     with pytest.raises(LibraryError, match="namespace 'odd': unknown reasoner type"):
         import_into(library, config)
     assert dumped(library) == before
+
+
+# A worked example's last turn, as the panel saves one.
+ANSWERS = (
+    '{role: assistant, content: "<think>x</think>\\n<repl>\\nFinalAnswer(1)\\n</repl>"}'
+)
+
+
+def refused_unchanged(library, config, said):
+    """Import *config*, which must be refused saying *said*, leaving *library* as it was."""
+    open_library(library).close()
+    before = dumped(library)
+    with pytest.raises(LibraryError) as refused:
+        import_into(library, config)
+    assert said in str(refused.value)
+    assert dumped(library) == before
+
+
+@pytest.mark.parametrize(
+    ("asked", "problem"),
+    [
+        ("Do {{ nothere }}", 'this one names "nothere"; a template may name only task'),
+        ("Do {{ task ", "this one doesn't parse (unexpected end of template"),
+    ],
+    ids=["a name the engine doesn't fill in", "one that doesn't parse"],
+)
+def test_import_refuses_a_worked_example_whose_template_fails(
+    library, tmp_path, asked, problem
+):
+    config = config_file(
+        tmp_path,
+        "namespaces:\n  helper:\n    decompositions:\n      - name: a\n        messages:\n"
+        f"          - {{role: user, content: '{asked}'}}\n          - {ANSWERS}\n",
+    )
+    said = (
+        'Namespace helper, decomposition "a": Turn 1 (user), line 1: the engine reads'
+        f" text holding {{{{ or {{% as a Jinja template, and {problem}"
+    )
+    refused_unchanged(library, config, said)
+
+
+@pytest.mark.parametrize(
+    ("variables", "problem"),
+    [
+        ("{max: 1}", 'Var "max" would hide Python\'s own max'),
+        ("{class: 1}", 'Var "class" is a Python keyword'),
+        ("{'my var': 1}", 'Var "my var" needs a Python name'),
+        ("{_x: 1}", 'Var "_x" starts with _, which templates may not read'),
+    ],
+)
+def test_import_refuses_a_var_the_panel_refuses(library, tmp_path, variables, problem):
+    config = config_file(tmp_path, f"namespaces:\n  helper: {{vars: {variables}}}\n")
+    refused_unchanged(library, config, f"Namespace helper: {problem}")
+
+
+def test_import_refuses_a_var_a_tool_it_sees_takes_the_place_of(library, tmp_path):
+    config = config_file(tmp_path, "namespaces:\n  helper: {vars: {llm: 1}}\n")
+    said = 'In helper, var "llm" (set in helper) has the name of the tool llm (granted in root)'
+    refused_unchanged(library, config, said)
+
+
+SHAPE = (
+    "A namespace name is words of letters, digits, _ and -, each starting with a letter"
+)
+READS_AS_ROOT = "reads as root, which every namespace goes under already"
+
+
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ("''", 'Namespace "": Name the namespace'),
+        ('"a\\nb"', f'Namespace "a⏎b": {SHAPE}'),
+        ('"a\\u200bb"', f'Namespace "a\\u200bb": {SHAPE}'),
+        ("a/b", f'Namespace "a/b": {SHAPE}'),
+        ('"a\\U0001F600"', f'Namespace "a\U0001f600": {SHAPE}'),
+        ("Root", f'Namespace Root: "Root" {READS_AS_ROOT}'),
+        ("root.child", f'Namespace root.child: "root.child" {READS_AS_ROOT}'),
+        ("-dash", f'Namespace "-dash": {SHAPE}'),
+        ("1abc", f'Namespace "1abc": {SHAPE}'),
+    ],
+    ids=[
+        "empty",
+        "newline",
+        "zero width space",
+        "slash",
+        "emoji",
+        "Root",
+        "under root",
+        "dash first",
+        "digit first",
+    ],
+)
+def test_import_refuses_a_namespace_name_the_panel_refuses(
+    library, tmp_path, name, said
+):
+    config = config_file(tmp_path, f"namespaces:\n  {name}: {{vars: {{year: 1}}}}\n")
+    refused_unchanged(library, config, said)
+
+
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ("' a '", 'decomposition " a ": The name " a " starts or ends with a space'),
+        ('"a\\u200b"', "The name holds a character you can't see (U+200B)"),
+    ],
+)
+def test_import_refuses_a_decomposition_name_that_doesnt_read_as_it_looks(
+    library, tmp_path, name, said
+):
+    config = config_file(
+        tmp_path,
+        "namespaces:\n  helper:\n    decompositions:\n"
+        f"      - {{name: {name}, messages: [{{role: user, content: hi}}]}}\n",
+    )
+    refused_unchanged(library, config, said)
+
+
+def test_import_refuses_two_decompositions_of_one_name_in_a_namespace(
+    library, tmp_path
+):
+    config = config_file(
+        tmp_path,
+        "namespaces:\n  helper:\n    decompositions:\n"
+        "      - {name: same, messages: [{role: user, content: hi}]}\n"
+        "      - {name: same, messages: [{role: user, content: ho}]}\n",
+    )
+    said = 'Namespace helper holds more than one decomposition named "same": give each its own name.'
+    refused_unchanged(library, config, said)
+
+
+# Past MAX_YAML_CHARS in characters, as the Library's readers count them.
+WIDE = "x" * MAX_YAML_CHARS
+TOO_BIG = "may be at most 1,000,000 characters"
+
+
+@pytest.mark.parametrize(
+    ("config", "where"),
+    [
+        (
+            f"namespaces:\n  helper: {{system_suffix: '{WIDE}'}}\n",
+            "Namespace helper: Its YAML",
+        ),
+        (
+            (
+                "namespaces:\n  helper:\n    decompositions:\n"
+                f"      - {{name: a, messages: [{{role: user, content: '{WIDE}'}}]}}\n"
+            ),
+            'Namespace helper, decomposition "a": Its YAML',
+        ),
+        (
+            f"prompt_template_variables: {{dept: '{WIDE}'}}\n",
+            "Setting prompt_template_variables: Its YAML",
+        ),
+        (f"system_prompt: '{WIDE}'\n", "Setting system_prompt: Its YAML"),
+        (
+            f"tools:\n  mine: {{factory: build, factory_from: mine.py, note: '{WIDE}'}}\n",
+            "Tool mine: Its YAML",
+        ),
+        (
+            "tools:\n  mine: {factory: build, factory_from: wide.py}\n",
+            "Tool mine: Its source",
+        ),
+    ],
+    ids=[
+        "a namespace",
+        "a decomposition",
+        "a setting",
+        "the system prompt",
+        "a tool's block",
+        "a tool's source",
+    ],
+)
+def test_import_refuses_what_passes_the_librarys_size_limit(
+    library, tmp_path, config, where
+):
+    (tmp_path / "mine.py").write_text("def build(client, params): ...\n")
+    (tmp_path / "wide.py").write_text(f"def build(client, params): ...\n# {WIDE}\n")
+    refused_unchanged(library, config_file(tmp_path, config), f"{where} {TOO_BIG}")
+
+
+# What conflit says of a _compose entry it can't read.
+ENTRIES = "_compose entries must be a file path string or a {namespace: path} mapping"
+
+
+# Nine aliases deep, each a list of ten of the one before: 10**9 strings, written out.
+ALIAS_BOMB = (
+    "a: &a [x, x, x, x, x, x, x, x, x, x]\n"
+    + "".join(
+        f"{name}: &{name} [{', '.join([f'*{before}'] * 10)}]\n"
+        for before, name in zip("abcdefgh", "bcdefghi")
+    )
+    + "max_iter: 3\n"
+)
+
+
+# Where a config's alias bomb may be: the config itself, a file it composes from a
+# folder beside it (named through that folder), or its namespaces_dir.
+BOMB_PLACES = {
+    "itself": ("bomb.yaml", {}),
+    "in a file it composes": (
+        "config.yaml",
+        {"config.yaml": "_compose: [sub/../parts/bomb.yaml]\n"},
+    ),
+    "in its namespaces_dir": (
+        "config.yaml",
+        {"config.yaml": "namespaces_dir: parts\n", "parts/research.yaml": ALIAS_BOMB},
+    ),
+}
+
+
+@pytest.mark.parametrize("place", BOMB_PLACES)
+def test_import_refuses_an_alias_bomb_without_writing_it_out(library, tmp_path, place):
+    (tmp_path / "bomb.yaml").write_text(ALIAS_BOMB)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "parts").mkdir()
+    (tmp_path / "parts" / "bomb.yaml").write_text(ALIAS_BOMB)
+    config, files = BOMB_PLACES[place]
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
+    said = "is too big to import: with each alias written out, as the engine reads it"
+    started = time.monotonic()
+    refused_unchanged(library, tmp_path / config, said)
+    assert time.monotonic() - started < BOMB_SECONDS
+
+
+def test_import_refuses_a_config_that_composes_itself_in_words(library, tmp_path):
+    (tmp_path / "sub").mkdir()
+    config = config_file(tmp_path, "_compose: [sub/../config.yaml]\n")
+    refused_unchanged(library, config, "YAML compose cycle detected")
+
+
+@pytest.mark.parametrize(
+    "setting",
+    ["max_iter: 0", "max_iter: -3", "max_depth: 0"],
+)
+def test_import_refuses_a_run_setting_no_run_takes_a_step_with(
+    library, tmp_path, setting
+):
+    key, value = setting.split(": ")
+    said = f"{key} is {value}, but a run needs at least 1 to take a step: make it 1 or more"
+    refused_unchanged(library, config_file(tmp_path, f"{setting}\n"), said)
+
+
+@pytest.mark.parametrize(
+    ("composed", "problem"),
+    [
+        ("5", "_compose must be a list."),
+        ("{a: b}", "_compose must be a list."),
+        ("[5]", f"{ENTRIES}, got 'int'."),
+        ("[null]", f"{ENTRIES}, got 'NoneType'."),
+        ("[[a]]", f"{ENTRIES}, got 'list'."),
+    ],
+)
+def test_import_words_a_compose_the_engine_cant_read(
+    library, tmp_path, composed, problem
+):
+    config = config_file(tmp_path, f"_compose: {composed}\n")
+    said = f"{config} is not a config the engine can read: {problem}"
+    refused_unchanged(library, config, said)
+
+
+def test_import_blames_a_file_it_composes_that_is_not_a_config(library, tmp_path):
+    (tmp_path / "list.yaml").write_text("- a\n- b\n")
+    config = config_file(tmp_path, "_compose: [list.yaml]\n")
+    said = f"{tmp_path / 'list.yaml'} {NOT_A_MAPPING}"
+    refused_unchanged(library, config, said)
+
+
+def test_import_refuses_yaml_nested_too_deeply_in_words(library, tmp_path):
+    config = config_file(tmp_path, "max_iter: " + "[" * 5000 + "]" * 5000 + "\n")
+    refused_unchanged(library, config, f"{config} is nested too deeply to read.")
+
+
+def test_a_tool_that_doesnt_build_is_named_with_the_configs_own_file(library, tmp_path):
+    (tmp_path / "helpers").mkdir()
+    (tmp_path / "helpers" / "scraping.py").write_text(RAISES_ON_BUILD)
+    config = config_file(
+        tmp_path,
+        "tools:\n  scrape: {factory: build, factory_from: helpers/scraping.py}\n"
+        "namespaces:\n  helper: {tools: [scrape]}\n",
+    )
+    said = (
+        "Tool scrape (helpers/scraping.py) doesn't build: build in scrape.py raised"
+        " RuntimeError"
+    )
+    refused_unchanged(library, config, said)
+
+
+def test_import_refuses_a_spawn_naming_a_namespace_it_doesnt_bring(library, tmp_path):
+    config = config_file(tmp_path, "namespaces:\n  helper: {spawn: [nowhere]}\n")
+    said = 'Namespace helper: spawn names "nowhere", which is not a namespace in the Library'
+    refused_unchanged(library, config, said)
+
+
+def test_a_mappings_change_is_said_key_by_key_and_cut_after_a_few(library, tmp_path):
+    def root(year, credits):
+        courses = ", ".join(f"C{number}: {credits}" for number in range(6))
+        text = f"namespaces:\n  root:\n    vars: {{year: {year}, courses: {{{courses}}}}}\n"
+        return config_file(tmp_path, text)
+
+    import_into(library, root(2025, 3))
+    assert import_into(library, root(2026, 4))[1] == (
+        "  root: vars.year 2025 → 2026; vars.courses.C0 3 → 4; vars.courses.C1 3 → 4;"
+        " and 4 more in vars; the rest of root kept"
+    )
+
+
+def test_a_settings_change_cut_after_a_few_keys_stays_under_its_section(
+    library, tmp_path
+):
+    variables = ", ".join(f"v{number}: {number}" for number in range(5))
+    config = config_file(tmp_path, f"prompt_template_variables: {{{variables}}}\n")
+    assert import_into(library, config) == [
+        "Run settings, for every chat:",
+        "  prompt_template_variables.v0: (unset) → 0",
+        "  prompt_template_variables.v1: (unset) → 1",
+        "  prompt_template_variables.v2: (unset) → 2",
+        "  and 2 more in prompt_template_variables",
+    ]
+
+
+def test_a_control_character_in_a_config_is_shown_escaped(library, tmp_path):
+    config = config_file(tmp_path, 'system_prompt: "Solve it.\\e[2J\\rDone."\n')
+    said = import_into(library, config)[1]
+    assert said.endswith('→ "Solve it.\\x1b[2J\\rDone."')
+    assert "\x1b" not in said and "\r" not in said
+
+
+def test_a_long_text_is_shown_from_just_before_where_it_changed(library, tmp_path):
+    opening = "You answer questions about a course catalog by writing Python. "
+    import_into(
+        library, config_file(tmp_path, f"system_prompt: '{opening}Be brief.'\n")
+    )
+    config = config_file(tmp_path, f"system_prompt: '{opening}Be thorough.'\n")
+    assert import_into(library, config)[1] == (
+        '  system_prompt: …"writing Python. Be brief." → …"writing Python. Be thorough."'
+    )
+
+
+def test_a_repl_of_another_type_is_said_whole(library, tmp_path):
+    config = config_file(
+        tmp_path, "repl: {type: restricted, allowed_modules: [math]}\n"
+    )
+    assert import_into(library, config)[1] == (
+        "  repl: {type: local} (the engine's default) → {type: restricted,"
+        " allowed_modules: [math]}"
+    )
+
+
+def test_import_names_the_decompositions_it_added_and_replaced(imported, tmp_path):
+    config = config_file(
+        tmp_path,
+        "namespaces:\n  router:\n    decompositions:\n"
+        "      - {name: decline anything else, messages: [{role: user, content: No.}]}\n"
+        "      - {name: say hello, messages: [{role: user, content: Hi.}]}\n",
+    )
+    router = next(line for line in import_into(imported, config) if "router:" in line)
+    assert router.endswith(
+        'decompositions added: "say hello"; replaced: "decline anything else"'
+    )
+
+
+@pytest.mark.parametrize(
+    ("example", "said"),
+    [
+        (ROOTS[-1], "earlier messages to the historian"),
+        (ROOTS[0], "the Library to the librarian"),
+    ],
+    ids=["historian", "librarian"],
+)
+def test_replacing_one_of_the_apps_own_examples_in_root_says_what_it_changes(
+    library, tmp_path, example, said
+):
+    config = config_file(
+        tmp_path,
+        "namespaces:\n  root:\n    decompositions:\n"
+        f"      - {{name: {example.name}, messages: [{{role: user, content: Hi.}}]}}\n",
+    )
+    assert app_says(library, config) == [
+        (
+            f"  Root's \"{example.name}\" replaces the app's own example of handing"
+            f" questions about {said}, so agents learn it from yours."
+        )
+    ]
+
+
+def test_an_llm_tools_model_left_out_is_said_with_why(library, tmp_path):
+    config = config_file(
+        tmp_path,
+        "tools:\n  reviewer: {factory: llm, model: coder, system_prompt: Review it.}\n",
+    )
+    with closing(open_library(library)) as connection:
+        left = import_config(connection, config)["left_out"]
+    assert left == [
+        "Left out: tool reviewer's model coder, as an llm tool runs on each chat's model."
+    ]
+
+
+def test_a_changed_llm_prompt_says_every_namespace_has_it(library, tmp_path):
+    import_into(
+        library, config_file(tmp_path, "tools:\n  llm: {system_prompt: Be terse.}\n")
+    )
+    config = config_file(tmp_path, "tools:\n  llm: {system_prompt: Be thorough.}\n")
+    assert import_into(library, config) == [
+        "Tools:",
+        (
+            '  llm: replaced system_prompt "Be terse." → "Be thorough."; every namespace'
+            " has it, as root grants it"
+        ),
+    ]
+
+
+def app_says(library, config, environment=None):
+    """What an import of *config* says it changes in the app, run with *environment*."""
+    with closing(open_library(library)) as connection:
+        said = import_config(connection, config, environment=environment)["changes"]
+    title = "What this changes in the app:"
+    return said[said.index(title) + 1 :] if title in said else []
+
+
+DAYTONA = (
+    "namespaces:\n  sandboxed:\n"
+    "    repl: {type: daytona_sandbox, snapshot_name: dr, api_key_env: DAYTONA_API_KEY}\n"
+)
+SPAWNS_ALL = (
+    "namespaces:\n  root: {spawn: [helper, historian, librarian]}\n  helper: {}\n"
+)
+# Each: a config imported first, if any; the config; what runs get of the environment;
+# and what the import says it changes in the app.
+APP_CHANGES = {
+    "a repl but the local one": (
+        None,
+        "repl: {type: restricted, allowed_modules: [math]}\n",
+        {},
+        [
+            (
+                "The librarian now runs code in the restricted REPL, so it can't write tools:"
+                " that needs the local REPL."
+            )
+        ],
+    ),
+    "a repl changed off it already": (
+        "repl: {type: restricted, allowed_modules: [math]}\n",
+        "repl: {type: restricted, allowed_modules: [math, json]}\n",
+        {},
+        [],
+    ),
+    "where new chats start": (
+        None,
+        "entry_namespace: helper\nnamespaces:\n  helper: {vars: {a: 1}}\n",
+        {},
+        ["New chats start in helper, not root."],
+    ),
+    "a spawn leaving out one": (
+        None,
+        "namespaces:\n  helper: {spawn: [librarian]}\n  other: {spawn: [historian, librarian]}\n",
+        {},
+        [
+            (
+                "Agents in helper can't hand questions about earlier messages to the"
+                " historian now: their spawn leaves it out."
+            )
+        ],
+    ),
+    "a spawn inherited": (
+        None,
+        "namespaces:\n  team: {spawn: [team]}\n  team.sub: {vars: {a: 1}}\n",
+        {},
+        [
+            (
+                "Agents in team and team.sub can't hand questions about earlier messages or"
+                " the Library to the historian and librarian now: their spawn leaves them out."
+            )
+        ],
+    ),
+    "root's spawn cleared": (
+        SPAWNS_ALL,
+        "namespaces:\n  root: {spawn: null}\n",
+        {},
+        ["Root sets no spawn now, so root and helper may spawn into any namespace."],
+    ),
+    "a key not set": (
+        None,
+        DAYTONA,
+        {},
+        [
+            (
+                "sandboxed needs DAYTONA_API_KEY to run code, and it isn't set here: set it in"
+                " the shell you start the app from, or runs there fail."
+            )
+        ],
+    ),
+    "a key set": (None, DAYTONA, {"DAYTONA_API_KEY": "dtn-not-a-real-key"}, []),
+    "a namespace on Claude Code": (
+        None,
+        "namespaces:\n  coder: {reasoner: {type: claude_code}}\n",
+        {},
+        ["Agents in coder now run Claude Code, billed to your subscription."],
+    ),
+    "a tool that runs Claude Code": (
+        None,
+        "tools:\n  coding: {factory: claude_code}\nnamespaces:\n  helper: {tools: [coding]}\n",
+        {},
+        ["Agents in helper now run Claude Code, billed to your subscription."],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", APP_CHANGES)
+def test_import_says_what_it_changes_in_the_app_only_where_it_applies(
+    library, tmp_path, case
+):
+    first, config, environment, said = APP_CHANGES[case]
+    if first:
+        import_into(library, config_file(tmp_path, first))
+    written = config_file(tmp_path, config)
+    assert app_says(library, written, environment) == [f"  {line}" for line in said]
+
+
+def test_replacing_a_seeded_example_says_so_only_while_it_is_as_seeded(
+    library, tmp_path
+):
+    seeded = ROOTS[0].name
+
+    def replacing(content):
+        return config_file(
+            tmp_path,
+            "namespaces:\n  root:\n    decompositions:\n"
+            f"      - {{name: {seeded}, messages: [{{role: user, content: {content}}}]}}\n",
+        )
+
+    assert app_says(library, replacing("Hi.")) == [
+        (
+            f"  Root's \"{seeded}\" replaces the app's own example of handing questions about"
+            " the Library to the librarian, so agents learn it from yours."
+        )
+    ]
+    assert app_says(library, replacing("Hello.")) == []
+
+
+def test_a_kept_suffix_or_example_naming_a_tool_no_longer_granted_says_so(
+    library, tmp_path
+):
+    (tmp_path / "mine.py").write_text(
+        "from deep_reasoner.primitives import Func\n\n"
+        "def build(client, params):\n    return Func(lambda: 1)\n"
+    )
+    first = config_file(
+        tmp_path,
+        "tools:\n  scrape: {factory: build, factory_from: mine.py}\n"
+        "namespaces:\n  helper:\n    tools: [scrape]\n"
+        "    system_suffix: Use scrape for pages.\n"
+        "    decompositions:\n      - name: fetch\n        messages:\n"
+        "          - {role: user, content: Fetch it.}\n"
+        '          - {role: assistant, content: "<think>x</think>\\n<repl>\\nFinalAnswer(scrape())\\n</repl>"}\n',
+    )
+    import_into(library, first)
+    config = config_file(
+        tmp_path,
+        "namespaces:\n  helper: {tools: [], system_suffix: Use scrape for pages.}\n",
+    )
+    assert app_says(library, config) == [
+        "  helper's system_suffix names scrape, which it no longer has.",
+        '  helper\'s worked example "fetch" calls scrape, which it no longer has.',
+        "  No namespace grants scrape now: grant it again in the panel if chats need it.",
+    ]

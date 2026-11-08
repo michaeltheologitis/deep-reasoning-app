@@ -31,13 +31,13 @@ from deep_reasoning.library import (
     LibraryError,
     open_library,
     schema_version,
+    unwritable,
 )
-from deep_reasoning.runs import WITHHELD, secrets_of, worker_env
 from deep_reasoning.settings import (
     DEFAULT_FOLDER,
     ENV_FILE,
-    key_names,
-    saved_keys,
+    every_key,
+    keyless_environment,
     settings_in,
 )
 
@@ -70,15 +70,10 @@ LOCK = ".lock"
 LOCK_MODE = 0o644
 # What flock meets on a file system without locks: NFS mounted nolock, some FUSE and SMB.
 NO_LOCKS = {errno.ENOLCK, errno.EOPNOTSUPP, errno.EINVAL}
-NOT_STARTED = (
-    "this one didn't start: two on one Library would end each other's runs. Use the one"
-    " that is running, stop it first, or pass another --library"
-)
-NOT_IMPORTED = "nothing was imported: stop it first, then import"
-NOT_DELETED = "nothing was deleted: stop it first, then reset"
-# Claude Code's: an API key it would bill in place of the subscription, and the
-# subscription's own token.
-CLAUDE_CODES_KEYS = (WITHHELD, "CLAUDE_CODE_OAUTH_TOKEN")
+NOT_STARTED = "this one didn't start, as two on one Library would end each other's runs"
+NOT_IMPORTED = "nothing was imported"
+NOT_DELETED = "nothing was deleted"
+STOPPED = "Stopped; the Library is unchanged."
 
 log = structlog.get_logger()
 
@@ -157,7 +152,10 @@ def take(lock, library, refused):
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        sys.exit(f"Deep Reasoning is already using {library}, so {refused}.")
+        sys.exit(
+            f"Deep Reasoning is already using {library} (serving, importing or resetting"
+            f" it), so {refused}: stop it, or wait for it to finish."
+        )
     except OSError as error:
         if error.errno not in NO_LOCKS:
             raise
@@ -169,36 +167,58 @@ def take(lock, library, refused):
         )
 
 
-def provider_keys(library, home):
-    """Each key variable, a provider's or Claude Code's, and each key, saved in settings
-    or set in the shell: none may be imported, nor reach a tool built to check it."""
-    names = [*key_names(library), *CLAUDE_CODES_KEYS]
-    return names, [*secrets_of(os.environ, names), *secrets_of(saved_keys(home), names)]
-
-
-def keyless(names, secrets):
-    """What a run's worker gets of this environment, but any key: what the tools an
-    import builds to check them get."""
-    return {
-        name: value
-        for name, value in worker_env({}).items()
-        if name not in names and value not in secrets
-    }
-
-
 def import_or_exit(library, config, home):
+    """Import *config* into *library*, saying what it changed or why it didn't; a Library
+    that wasn't there when the lock was taken is kept only when the import writes it."""
     folder_or_exit(library, home)
-    with owning(library, NOT_IMPORTED) as connection, contextlib.closing(connection):
+    with owning(library, NOT_IMPORTED, read=is_new) as new:
+        said = None
         try:
-            names, secrets = provider_keys(library, home)
-            said = import_config(connection, config, secrets, keyless(names, secrets))
+            said = imported(library, config, home)
         except (OSError, ValueError, yaml.YAMLError, sqlite3.Error) as error:
-            sys.exit(f"Could not import {config}; the Library is unchanged.\n{error}")
+            sys.exit(f"Could not import {config}; {unchanged(error)}")
+        except KeyboardInterrupt:
+            sys.exit(STOPPED)
+        finally:
+            if new and not (said and said["changes"]):
+                forget(library)
     if said["changes"]:
         header = f"Imported {config} into the Library at {library}."
+    elif new:
+        header = (
+            f"Nothing to import: a new Library already holds all of {config}, so none"
+            f" was made at {library}."
+        )
     else:
-        header = f"Imported {config}: the Library at {library} already held all of it."
+        header = (
+            f"Nothing to import: the Library at {library} already holds all of"
+            f" {config}."
+        )
     print("\n".join([header, *said["changes"], *said["left_out"]]))
+
+
+def is_new(library):
+    return not os.path.lexists(library)
+
+
+def imported(library, config, home):
+    """What importing *config* into the Library at *library* changed and left out."""
+    with contextlib.closing(open_or_exit(library)) as connection:
+        _, secrets = every_key(library, home)
+        environment = keyless_environment(library, home)
+        return import_config(connection, config, secrets, environment)
+
+
+def unchanged(error):
+    """That the Library is unchanged, and why, *error* being what stopped the import."""
+    return f"the Library is unchanged.\n{unwritable(error) or error}"
+
+
+def forget(library):
+    """Delete the Library an import made at *library*, and its side files, as it wrote
+    nothing to keep; the lock stays, as one starting may hold it."""
+    for path in [library, *(library.with_name(library.name + side) for side in SIDES)]:
+        path.unlink(missing_ok=True)
 
 
 def file_or_exit(library):

@@ -6,11 +6,13 @@ import os
 import queue
 import re
 import shutil
+import signal
 import socket
 import sqlite3
 import stat
 import subprocess
 import sys
+import time
 import urllib.parse
 import webbrowser
 from contextlib import closing
@@ -25,7 +27,7 @@ from deep_reasoning import cli
 from deep_reasoning.chats import create_chat
 from deep_reasoning.folders import data_folder
 from deep_reasoning.library import ADDED_IN, open_library
-from deep_reasoning.settings import VENDORS
+from deep_reasoning.settings import NOT_A_KEY, VENDORS
 
 WAIT_SECONDS = 0.5
 KEY_IN_A_FRAME = "sk-held-in-a-frame"
@@ -181,10 +183,164 @@ def test_library_opens_the_given_file_and_import_fills_it(
     assert library["default_namespace"] == "router"
 
 
-def test_a_failed_import_exits_with_a_plain_error(tmp_path):
-    missing = tmp_path / "missing.yaml"
-    with pytest.raises(SystemExit, match="Could not import .*the Library is unchanged"):
-        cli.main(["import", str(missing), "--library", str(tmp_path / "lib.sqlite")])
+@pytest.mark.parametrize(
+    ("config", "said"),
+    [
+        (None, "Could not import .*; the Library is unchanged"),
+        (
+            "max_iter: 0\n",
+            "Could not import .*; the Library is unchanged.\nmax_iter is 0",
+        ),
+    ],
+    ids=["a config that isn't there", "one it refuses"],
+)
+def test_a_failed_import_into_a_new_path_says_so_and_leaves_no_library_or_lock(
+    tmp_path, config, said
+):
+    given = tmp_path / "config.yaml"
+    if config:
+        given.write_text(config)
+    library = tmp_path / "lib.sqlite"
+    with pytest.raises(SystemExit, match=said):
+        cli.main(["import", str(given), "--library", str(library)])
+    assert not library.exists()
+
+
+def test_an_import_that_fails_in_any_way_leaves_no_new_library(tmp_path, monkeypatch):
+    def broken(*args):
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr(cli, "import_config", broken)
+    config = tmp_path / "steps.yaml"
+    config.write_text("max_iter: 4\n")
+    library = tmp_path / "lib.sqlite"
+    with pytest.raises(RuntimeError, match="a bug"):
+        cli.main(["import", str(config), "--library", str(library)])
+    assert not library.exists()
+
+
+def test_a_library_made_before_the_import_took_the_lock_is_kept_when_it_fails(
+    tmp_path, monkeypatch
+):
+    library = tmp_path / "lib.sqlite"
+    flock = fcntl.flock
+
+    def served_meanwhile(lock, operation):
+        # An app served the path, and a chat was made there, as this import started.
+        if not library.exists():
+            create_chat(library)
+        flock(lock, operation)
+
+    monkeypatch.setattr(fcntl, "flock", served_meanwhile)
+    config = tmp_path / "steps.yaml"
+    config.write_text("max_iter: 0\n")
+    with pytest.raises(SystemExit, match="max_iter is 0"):
+        cli.main(["import", str(config), "--library", str(library)])
+    with closing(open_library(library)) as connection:
+        assert connection.execute("SELECT count(*) FROM chats").fetchone() == (1,)
+
+
+def test_an_import_that_changes_nothing_in_a_new_library_makes_none(tmp_path, capsys):
+    config = tmp_path / "nothing.yaml"
+    config.write_text("namespaces: {}\n")
+    library = tmp_path / "lib.sqlite"
+    cli.main(["import", str(config), "--library", str(library)])
+    said = (
+        f"Nothing to import: a new Library already holds all of {config}, so none was"
+        f" made at {library}."
+    )
+    assert capsys.readouterr().out.splitlines() == [said]
+    assert not library.exists()
+
+
+@pytest.fixture
+def read_only():
+    """Make a file read only, even to root (by chattr +i, skipping where it isn't
+    permitted), until the test ends."""
+    made = []
+
+    def make(path):
+        path.chmod(0o444)
+        if not os.access(path, os.W_OK):
+            return
+        if shutil.which("chattr") is None:
+            pytest.skip("root writes a read-only file, and there is no chattr")
+        immutable = subprocess.run(
+            ["chattr", "+i", path], check=False, capture_output=True
+        )
+        if immutable.returncode != 0:
+            pytest.skip("root writes a read-only file, and chattr +i isn't permitted")
+        made.append(path)
+
+    yield make
+    for path in made:
+        subprocess.run(["chattr", "-i", path], check=True)
+
+
+def test_an_import_into_a_read_only_library_says_so_in_plain_words(tmp_path, read_only):
+    library = tmp_path / "lib.sqlite"
+    open_library(library).close()
+    read_only(library)
+    config = tmp_path / "steps.yaml"
+    config.write_text("max_iter: 4\n")
+    said = (
+        f"Could not import {config}; the Library is unchanged.\nThe Library file can't"
+        " be written: attempt to write a readonly database."
+    )
+    with pytest.raises(SystemExit) as refused:
+        cli.main(["import", str(config), "--library", str(library)])
+    assert refused.value.code == said
+
+
+# The command, as its script runs it.
+COMMAND = "import sys; from deep_reasoning.cli import main; main(sys.argv[1:])"
+# Builds slowly, saying first that it has begun.
+SLOW_TO_BUILD = """\
+import os, time
+from pathlib import Path
+
+def build(client, params):
+    Path(params["started"]).write_text(str(os.getpid()))
+    time.sleep(60)
+"""
+
+
+def test_ctrl_c_during_an_import_stops_it_saying_so_and_leaves_nothing(tmp_path):
+    (tmp_path / "slow.py").write_text(SLOW_TO_BUILD)
+    started = tmp_path / "started"
+    config = tmp_path / "slow.yaml"
+    config.write_text(
+        f"tools:\n  slow: {{factory: build, factory_from: slow.py, started: {started}}}\n"
+        "namespaces:\n  helper: {tools: [slow]}\n"
+    )
+    library = tmp_path / "lib.sqlite"
+    importing = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            COMMAND,
+            "import",
+            str(config),
+            "--library",
+            str(library),
+        ],
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        while not started.exists():
+            assert importing.poll() is None
+            time.sleep(WAIT_SECONDS)
+        importing.send_signal(signal.SIGINT)
+        _, said = importing.communicate(timeout=30)
+    finally:
+        importing.kill()
+        importing.wait()
+    assert said.strip().splitlines()[-1] == cli.STOPPED
+    assert "Traceback" not in said
+    assert not library.exists()
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(started.read_text()), 0)
 
 
 def test_import_says_what_it_changed(tmp_path, capsys, waitlist):
@@ -202,33 +358,37 @@ def test_importing_a_config_again_says_it_changed_nothing(tmp_path, capsys):
     for _ in range(2):
         cli.main(["import", str(config), "--library", str(library)])
     assert capsys.readouterr().out.splitlines()[-1] == (
-        f"Imported {config}: the Library at {library} already held all of it."
+        f"Nothing to import: the Library at {library} already holds all of {config}."
     )
 
 
+# Reads a proxy and a provider's key as it is built, as a tool may in every run.
 READS_THE_ENVIRONMENT = """\
 import json, os
 from pathlib import Path
 from deep_reasoner.primitives import Func
 
 PROXY = os.environ["HTTPS_PROXY"]
+KEY = os.environ["OPENAI_API_KEY"]
 
 def build(client, params):
-    Path(params["out"]).write_text(json.dumps(sorted(os.environ)))
+    Path(params["out"]).write_text(json.dumps(dict(os.environ)))
     return Func(lambda: PROXY)
 """
 
 
-def test_import_builds_its_tools_with_the_runs_environment_but_no_key(
-    tmp_path, monkeypatch
+def test_import_builds_its_tools_with_the_runs_environment_and_no_key_in_it(
+    tmp_path, monkeypatch, app_home
 ):
-    keys = [
-        *(vendor.key_env for vendor in VENDORS),
-        "ANTHROPIC_API_KEY",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-    ]
-    for name in keys:
+    vendors = [vendor.key_env for vendor in VENDORS]
+    claude_codes = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+    for name in [*vendors, *claude_codes]:
         monkeypatch.setenv(name, KEY_IN_A_FRAME)
+    # Another Library's custom server's key, in the shell and saved.
+    monkeypatch.setenv("DEEP_REASONING_ELSEWHERE_KEY", "sk-elsewhere-in-the-shell")
+    app_home.mkdir()
+    (app_home / ".env").write_text("DEEP_REASONING_SAVED_KEY=sk-saved-for-elsewhere\n")
+    monkeypatch.setenv("COPY_OF_A_KEY", KEY_IN_A_FRAME)
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
     monkeypatch.setenv("CATALOG_DB", "catalog.sqlite")
     (tmp_path / "tools.py").write_text(READS_THE_ENVIRONMENT)
@@ -239,23 +399,32 @@ def test_import_builds_its_tools_with_the_runs_environment_but_no_key(
         "namespaces:\n  helper: {tools: [fetch]}\n"
     )
     cli.main(["import", str(config), "--library", str(tmp_path / "lib.sqlite")])
-    seen = set(json.loads(out.read_text()))
-    assert {"HTTPS_PROXY", "CATALOG_DB", "PATH"} <= seen
-    assert not seen & set(keys)
+    seen = json.loads(out.read_text())
+    assert {"HTTPS_PROXY", "CATALOG_DB", "PATH"} <= seen.keys()
+    assert {seen[name] for name in vendors} == {NOT_A_KEY}
+    gone = {*claude_codes, "DEEP_REASONING_ELSEWHERE_KEY", "COPY_OF_A_KEY"}
+    assert not seen.keys() & gone
 
 
 @pytest.mark.parametrize(
-    "where",
-    ["settings", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+    ("where", "name"),
+    [
+        ("saved", "OPENROUTER_API_KEY"),
+        ("saved", "DEEP_REASONING_ELSEWHERE_KEY"),
+        ("shell", "GEMINI_API_KEY"),
+        ("shell", "DEEP_REASONING_ELSEWHERE_KEY"),
+        ("shell", "ANTHROPIC_API_KEY"),
+        ("shell", "CLAUDE_CODE_OAUTH_TOKEN"),
+    ],
 )
 def test_import_refuses_a_key_saved_in_settings_or_set_in_the_shell(
-    tmp_path, app_home, monkeypatch, where
+    tmp_path, app_home, monkeypatch, where, name
 ):
-    if where == "settings":
+    if where == "saved":
         app_home.mkdir()
-        (app_home / ".env").write_text(f"OPENROUTER_API_KEY={KEY_IN_A_FRAME}\n")
+        (app_home / ".env").write_text(f"{name}={KEY_IN_A_FRAME}\n")
     else:
-        monkeypatch.setenv(where, KEY_IN_A_FRAME)
+        monkeypatch.setenv(name, KEY_IN_A_FRAME)
     config = tmp_path / "keyed.yaml"
     config.write_text(f"namespaces:\n  helper: {{vars: {{key: {KEY_IN_A_FRAME}}}}}\n")
     with pytest.raises(SystemExit, match="Namespace helper holds a key"):
@@ -289,7 +458,9 @@ def events_of(library):
         return connection.execute("SELECT seq, data FROM events").fetchall()
 
 
-STARTED_NOT = "so this one didn't start: two on one Library would end each other's runs"
+STARTED_NOT = (
+    "so this one didn't start, as two on one Library would end each other's runs"
+)
 
 
 @pytest.mark.parametrize(
@@ -298,8 +469,8 @@ STARTED_NOT = "so this one didn't start: two on one Library would end each other
         ("lib.sqlite", [], STARTED_NOT),
         ("link.sqlite", [], STARTED_NOT),
         ("relative", [], STARTED_NOT),
-        ("lib.sqlite", ["import", "CONFIG"], "so nothing was imported: stop it first"),
-        ("lib.sqlite", ["reset", "--yes"], "so nothing was deleted: stop it first"),
+        ("lib.sqlite", ["import", "CONFIG"], "so nothing was imported"),
+        ("lib.sqlite", ["reset", "--yes"], "so nothing was deleted"),
     ],
     ids=[
         "serve",
@@ -323,10 +494,12 @@ def test_a_library_an_app_serves_is_refused_to_a_second_app_import_and_reset(
     def serve(server, sockets):
         unfinished_run(library)
         before = events_of(library)
-        with pytest.raises(
-            SystemExit, match=f"already using {re.escape(given)}, {refused}"
-        ):
+        with pytest.raises(SystemExit) as told:
             cli.main(second)
+        assert told.value.code == (
+            f"Deep Reasoning is already using {given} (serving, importing or resetting"
+            f" it), {refused}: stop it, or wait for it to finish."
+        )
         seen.append(events_of(library) == before and library.is_file())
 
     monkeypatch.setattr(uvicorn.Server, "run", serve)
@@ -343,7 +516,8 @@ def test_an_app_started_while_a_reset_deletes_is_refused_and_makes_no_library(
 
     def deleting(paths):
         delete_all(paths)
-        with pytest.raises(SystemExit, match=STARTED_NOT):
+        refused = "already using .*, so this one didn't start.*wait for it to finish"
+        with pytest.raises(SystemExit, match=refused):
             cli.main(["--port", str(free_port), "--no-browser"])
 
     monkeypatch.setattr(cli, "delete_all", deleting)
@@ -472,7 +646,7 @@ def test_reset_yes_deletes_the_app_file_its_folders_and_old_leftovers(
     other.mkdir(parents=True)
     cli.main(["reset", "--yes"])
     assert [path for path in doomed if os.path.lexists(path)] == []
-    assert lock.read_bytes() == b""
+    assert lock.is_file()
     assert keys.read_text() == KEYS
     assert project.is_dir()
     assert other.is_dir()

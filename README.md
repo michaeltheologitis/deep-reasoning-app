@@ -131,7 +131,10 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   one over 1,000,000 characters, or one whose name starts or ends with a space or holds a character you can't see;
   in a namespace or one under it, a `reasoner` type the engine doesn't know; a `system_suffix` whose template fails
   as a decomposition's would; and a var that isn't a Python name, starts with `_`, is a keyword or one of Python's
-  built-ins (`max`, `type`, …), or has the name of a tool its namespace sees. A
+  built-ins (`max`, `type`, …), or has the name of a tool its namespace sees; a namespace named oddly (a word
+  of letters, digits, `_` and `-` starting with a letter, words joined by dots, and none `root`); and a namespace
+  that grants a tool of yours no namespace granted yet, if that tool doesn't build: it is built first, as an import
+  builds one, which can take up to a minute, and the form says so while it builds. A
   template is checked, never run, so whether `vars.x` holds what it reads isn't. A stored decomposition that fails
   the check, as a shared Library may hold, is marked ✗ with why. Runs render templates sandboxed, so a shared
   Library's templates reach no Python internals: a worked example that tries fails the run, naming it, and a system prompt or
@@ -190,17 +193,26 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   namespace menu under the message box show the change at once.
 - `uv run deep-reasoning import CONFIG.yaml` brings a `deep_reasoner` config's namespaces, decompositions, tools and
   run settings into the Library (each chat keeps its own model), replacing items of the same name and the root fields
-  it sets, and prints what it changed and what it left out. It refuses, changing nothing, a file that isn't a config,
+  it sets, and prints what it changed (each decomposition by name, a changed mapping key by key, a long text from
+  where it changed) and what it left out, then, only where it applies, what that changes in the app: such as where
+  new chats start, a REPL that keeps the librarian from writing tools, a key a REPL needs that isn't set, or a worked
+  example calling a tool its namespace no longer has. It refuses, changing nothing, a file that isn't a config,
   the app's `historian` and `librarian` namespaces or one under them, a tool named as a built-in, a key anywhere in
-  it, a `system_suffix` the panel would refuse, and a tool a namespace grants that doesn't build: it builds each such tool once to check it, from its own file
-  alone and without your keys, so a file or module beside the config isn't carried in. Import only configs you trust.
+  it (any saved in settings or set in your shell for any provider or server), whatever the panel's save would refuse
+  (a namespace, var or decomposition name, a template, a `system_suffix`, two decompositions of one name in a
+  namespace, anything over 1,000,000 characters), `max_iter` or `max_depth` below 1, a file whose aliases written out
+  would pass 4,000,000 values and characters, and a tool a namespace grants that doesn't build: it builds each such
+  tool once to check it, from its own file alone and with no key (each provider's key variable holds `not-a-key`),
+  so a file or module beside the config isn't carried in. An import into a new path that changes nothing, or fails,
+  or is stopped with Ctrl+C, leaves no Library there. Import only configs you trust.
 - `uv run deep-reasoning reset` starts afresh: it deletes the Library file (`--library PATH` for another), with its
   chats and settings, and its run and scratch folders, after listing them and asking you to type `delete`
   (`--yes` skips the question). Your keys in `.env` and the folders you picked stay. It deletes only a Library file:
   a folder, a symlink or any other file is refused and left as it is.
 - One app at a time serves a Library: a second `deep-reasoning` on the same file (by any path) refuses to start, and
-  `import` and `reset` refuse while it runs, so stop it first. The lock is the empty `library.sqlite.lock` beside the
-  file, let go when the app stops, even in a crash; on a file system without locks it says so and runs without. A
+  `import` and `reset` refuse while it runs, so stop it first; while an import or a reset runs, the others refuse
+  until it ends. The lock is the empty `library.sqlite.lock` beside the file, let go when the app stops, even in a
+  crash; on a file system without locks it says so and runs without. A
   `--library` in a folder that isn't there is refused rather than made.
 - The Tools tab lists the app's own tools beside the built-in ones, and every tool in the Library; a tool of yours can't
   be named `history`, `library` or `page`, nor as a built-in.
