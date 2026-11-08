@@ -322,6 +322,18 @@ test("an image inside a link is the link's text, so no link holds another", () =
   assert.match(html, /href="https:\/\/target\.example">badge<\/a>/);
 });
 
+test("a link or image to an address DOMPurify would drop shows as its text and the address, not as a link", () => {
+  const html = markdownHtml("See [the chart](sandbox:/mnt/data/chart.svg), ![plot](sandbox:/x.png), ![](sandbox:/y.png) and [run](javascript:alert(1)).");
+  assert.equal(anchors(html).length, 0);
+  assert.match(html, /the chart \(sandbox:\/mnt\/data\/chart\.svg\), plot \(sandbox:\/x\.png\), sandbox:\/y\.png and run \(javascript:alert\(1\)\)\./);
+});
+
+test("a link to an address DOMPurify keeps stays a link, its address shown only by the link", () => {
+  const html = markdownHtml("[home](https://a.example) and [mail](mailto:me@a.example) and [page](/pages/x)");
+  assert.equal(anchors(html).length, 3);
+  assert.doesNotMatch(html, /\(https:|\(mailto:|\(\/pages/);
+});
+
 test("an answer's links may be web, mail or relative addresses only", () => {
   for (const href of ["https://a.example", "http://a.example/x?y", "mailto:me@a.example", "/pages/x", "#part", "notes.html"]) {
     assert.match(href, SANITIZE.ALLOWED_URI_REGEXP, href);

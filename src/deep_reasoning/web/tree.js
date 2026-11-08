@@ -26,6 +26,8 @@ const SANITIZE = {
   ALLOWED_ATTR: ["align", "checked", "class", "disabled", "href", "rel", "start", "target", "title", "type"],
   ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 };
+// what DOMPurify strips from an attribute before checking it against ALLOWED_URI_REGEXP
+const URI_WHITESPACE = /[\u0000-\u0020\u00A0\u1680\u180E\u2000-\u2029\u205F\u3000]/g;
 const LINE_CHARS = 100;
 // a prompt or answer past about `past` lines shows its first `shown` until shown whole
 const CLAMPS = { prompt: { past: 12, shown: 8, whole: new WeakSet() }, answer: { past: 200, shown: 40, whole: new WeakSet() } };
@@ -426,6 +428,8 @@ function renderAgent(agent) {
 }
 
 const escapeHtml = (text) => text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
+// as DOMPurify checks an address: with the characters it strips taken out first
+const followable = (href) => SANITIZE.ALLOWED_URI_REGEXP.test(href.replace(URI_WHITESPACE, ""));
 const isPlain = (tokens) => tokens.every((token) => PLAIN_TOKENS.has(token.type) && isPlain(token.tokens ?? []));
 
 // Markdown as answers show it, so code (__init__, 2*3*4, ~/a~b) and raw HTML show as written, and nothing loads.
@@ -459,9 +463,12 @@ function newMarkdown({ Marked, Renderer, Tokenizer }) {
       image(href, title, alt) {
         return this.link(href, title, alt || escapeHtml(href));
       },
-      // an image in a link is already a link, so its text alone goes in
+      // an image in a link is already a link, so its text alone goes in; an address DOMPurify would drop, such as sandbox:,
+      // shows as text after it, never as a link that does nothing
       link(href, title, text) {
-        return Renderer.prototype.link.call(this, href, title, text.replace(ANCHOR_TAG, "")).replace(/^<a /, NEW_TAB_LINK);
+        const inner = text.replace(ANCHOR_TAG, "");
+        if (!followable(href)) return inner === escapeHtml(href) ? inner : `${inner} (${escapeHtml(href)})`;
+        return Renderer.prototype.link.call(this, href, title, inner).replace(/^<a /, NEW_TAB_LINK);
       },
     },
   });
