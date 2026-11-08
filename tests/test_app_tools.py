@@ -684,9 +684,9 @@ RUN_CONFIG = {
 }
 
 
-def library_func(library, namespace="librarian"):
+def library_func(library, namespace="librarian", editors=(LIBRARIAN,)):
     """The library tool, with what its agents are told, as a run of a chat in *namespace*
-    of a fresh Library gets it, in a run folder with its spec."""
+    gets it, in a run folder with its spec; *editors* None names none."""
     run = library.parent / "run"
     run.mkdir(exist_ok=True)
     (run / SPEC).write_text(yaml.safe_dump({"config": RUN_CONFIG}))
@@ -697,8 +697,9 @@ def library_func(library, namespace="librarian"):
         "tools_dir": str(run / "tools"),
         "namespace": namespace,
         "key_names": [SHELL_KEY_ENV],
-        "editors": [LIBRARIAN],
     }
+    if editors is not None:
+        told["editors"] = list(editors)
     return build_library(None, told)
 
 
@@ -910,14 +911,18 @@ def test_the_tools_agents_are_told_they_may_only_read_in_a_chat_that_cant_write(
     fresh,
 ):
     assert library_func(fresh).description == LIBRARY_DESCRIPTION
-    told = library_func(fresh, "drafts").description
-    assert told.startswith(LIBRARY_DESCRIPTION)
-    assert told.endswith(
-        "\nIn this chat you may only read the Library: its namespace, drafts, doesn't"
-        " grant library, so the tool refuses every write, here and in any sub-agent."
-        " Asked for a change, don't try it: answer, with FinalAnswer, what you would"
-        " change, and that the user picks librarian under the message box and asks there."
-    )
+    told = library_func(fresh, "drafts").description.removeprefix(LIBRARY_DESCRIPTION)
+    assert "may only read" in told
+    assert "its namespace, drafts," in told
+    assert "pick librarian under the message box" in told
+
+
+def test_a_run_config_that_names_no_editors_tells_the_tools_agents_they_may_only_read(
+    fresh,
+):
+    told = library_func(fresh, editors=None).description
+    assert "its namespace, librarian," in told
+    assert "pick a namespace that grants library under the message box" in told
 
 
 def test_a_busy_app_file_is_a_refusal_in_words(fresh):

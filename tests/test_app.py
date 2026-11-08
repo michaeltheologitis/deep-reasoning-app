@@ -1783,9 +1783,10 @@ async def test_root_hands_a_question_about_the_library_to_the_librarian_which_ma
             )
     namespaces = [each["namespace"] for each in kinds(events, "agent.start")]
     assert namespaces == ["root", LIBRARIAN]
-    assert (
-        events[-1]["answer"]
-        == f"The historian's system_suffix says:\n\n{HISTORIAN_SUFFIX}"
+    # Each suffix its agents get, root's first, with where it comes from.
+    assert events[-1]["answer"] == (
+        f"The historian's agents are told:\n\n{ROOT_SUFFIX.strip()}\n(inherited from"
+        f" root)\n\n{HISTORIAN_SUFFIX.strip()}\n(set here)"
     )
     librarians_prompt = system_prompts(fake.calls[-1:])[0]
     assert "In this chat you may only read the Library: its namespace, root," in (

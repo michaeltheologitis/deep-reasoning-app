@@ -209,14 +209,17 @@ def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_mess
 ):
     registry = registry_of(library, tmp_path)
     shown = {name: registry.resolve(name).decompositions for name in registry.names}
+    to_librarian = [each.name for each in LIBRARY_HAND_OFFS]
     assert shown[ROOT] == ROOTS
-    assert shown[HISTORIAN][len(LIBRARY_HAND_OFFS) :] == HISTORIANS
+    assert [
+        each for each in shown[HISTORIAN] if each.name not in to_librarian
+    ] == HISTORIANS
     # The librarian's own in place of root's hand-offs to it, and its others after.
-    replaced = len(LIBRARY_HAND_OFFS)
+    own = {each.name: each for each in LIBRARIANS}
     assert shown[LIBRARIAN] == [
-        *LIBRARIANS[:replaced],
+        *(own[name] for name in to_librarian),
         *HAND_OFFS,
-        *LIBRARIANS[replaced:],
+        *(each for each in LIBRARIANS if each.name not in to_librarian),
     ]
     assert [each.name for each in HAND_OFFS] == [
         "explain an earlier answer",
@@ -350,50 +353,70 @@ def test_with_the_historian_deleted_no_namespace_hands_off_to_it(library, tmp_pa
     assert item["source"] == "not in the Library"
 
 
+def test_each_of_roots_hand_offs_to_the_librarian_is_named_as_one_of_its_own_examples():
+    assert [each.name for each in LIBRARY_HAND_OFFS] == [
+        "read the Library",
+        "add a namespace with a worked example",
+    ]
+    own = [each.name for each in LIBRARIANS]
+    for example in LIBRARY_HAND_OFFS:
+        assert example.name in own
+        assert running_code(example.messages[-1].content) == TO_LIBRARIAN
+        assert "as written (ctx.task, never reworded)" in example.messages[-1].content
+
+
+# A librarian whose spawn list names itself still answers them itself.
+@pytest.mark.parametrize("spawn", ["[historian]", "[historian, librarian]"])
 def test_root_hands_questions_about_the_library_to_the_librarian_which_answers_them_itself(
-    library, tmp_path
+    library, tmp_path, spawn
 ):
+    with closing(open_library(library)) as connection:
+        change_namespace(connection, LIBRARIAN, f"tools: [library]\nspawn: {spawn}\n")
+    shown = shown_hand_offs(library, tmp_path)
     own = {each.name: running_code(each.messages[-1].content) for each in LIBRARIANS}
-    for spawn in ("[historian]", "[historian, librarian]"):
-        # A librarian whose spawn list names itself still answers them itself.
-        with closing(open_library(library)) as connection:
-            change_namespace(
-                connection, LIBRARIAN, f"tools: [library]\nspawn: {spawn}\n"
-            )
-        shown = shown_hand_offs(library, tmp_path)
-        for example in LIBRARY_HAND_OFFS:
-            assert shown[ROOT][example.name] == TO_LIBRARIAN
-            assert shown[LIBRARIAN][example.name] == own[example.name]
-            assert "subagent" not in shown[HISTORIAN][example.name]
+    for example in LIBRARY_HAND_OFFS:
+        assert shown[ROOT][example.name] == TO_LIBRARIAN
+        assert shown[LIBRARIAN][example.name] == own[example.name]
+        assert "subagent" not in shown[HISTORIAN][example.name]
+
+
+def test_a_spawn_list_the_librarian_restricts_keeps_both_hand_offs(library, tmp_path):
+    # As the librarian is told to restrict one: keeping the historian and itself.
+    assert "keep historian and librarian in it" in LIBRARIAN_SUFFIX
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "scheduler", "spawn: [historian, librarian]\n")
+    shown = shown_hand_offs(library, tmp_path)
+    assert shown["scheduler"] == shown[ROOT]
 
 
 @pytest.mark.parametrize(
-    ("cut_off", "why"),
+    ("cut_off", "name", "why"),
     [
         (
             lambda connection: add_namespace(connection, "trips", "spawn: [trips]\n"),
+            "trips",
             "but this namespace's spawn list leaves it out",
         ),
         (
             lambda connection: delete_namespace(connection, LIBRARIAN, len(LIBRARIANS)),
+            ROOT,
             "but there is no librarian namespace now",
         ),
     ],
     ids=["spawn-list", "deleted"],
 )
 def test_a_namespace_that_cant_reach_the_librarian_answers_library_questions_itself(
-    library, tmp_path, cut_off, why
+    library, tmp_path, cut_off, name, why
 ):
     with closing(open_library(library)) as connection:
         cut_off(connection)
-    turns = last_turns(library, tmp_path)
-    name = "trips" if "trips" in turns else ROOT
+    turns = last_turns(library, tmp_path)[name]
     for example in LIBRARY_HAND_OFFS:
-        turn = turns[name][example.name]
-        assert running_code(turn) == "print(ctx.task)"
-        assert f"Questions like this go to the librarian namespace, {why}" in turn
-    # Root's suffix names no librarian, so it holds with none.
-    assert LIBRARIAN not in ROOT_SUFFIX
+        assert running_code(turns[example.name]) == "print(ctx.task)"
+        assert (
+            f"Questions like this go to the librarian namespace, {why}"
+            in (turns[example.name])
+        )
 
 
 def ending_in(name, code):
@@ -509,8 +532,9 @@ def test_root_is_told_to_pass_the_message_as_written_only_in_its_examples(
     # themselves: root's says only what app its agents are in.
     namespaces = run_config(library, tmp_path).namespaces
     assert namespaces[ROOT].system_suffix == ROOT_SUFFIX
-    assert "Deep Reasoning" in ROOT_SUFFIX
     assert "ctx.task" not in ROOT_SUFFIX and "subagent" not in ROOT_SUFFIX
+    # It names no librarian, so it holds with none.
+    assert LIBRARIAN not in ROOT_SUFFIX
     assert "ctx.task" not in namespaces[HISTORIAN].system_suffix
 
 

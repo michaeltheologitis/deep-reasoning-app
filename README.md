@@ -120,7 +120,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   or one whole), the tools with their Python, and what this chat changed; a change touches only the fields it names,
   and says what changed. Changing a text such as a system suffix, it starts from the one stored and keeps every line
   you didn't ask it to remove, saying what it removed; a new namespace's own suffix holds only what it adds to its
-  parent's; and it leaves `spawn` unset unless you ask, then keeping `historian` in it. A new Library's `librarian`
+  parent's; and it leaves `spawn` unset unless you ask, then keeping `historian` and `librarian` in it. A new Library's `librarian`
   knows what it is for, has worked examples of reading the Library, of writing a worked example and of undoing a
   change, and may hand questions about earlier messages to the historian but not delegate to itself (its `spawn`,
   which you may widen in the panel). A tool it writes, or a tool of yours it grants that no

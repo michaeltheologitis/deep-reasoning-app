@@ -81,6 +81,7 @@ from deep_reasoning.library import (
     parsed_python,
     reading,
     running_code,
+    sees,
     store_tool,
     tool_file,
     tool_rows,
@@ -123,13 +124,20 @@ SECONDS_DIGITS = 1
 LOOKUP_FIELDS = ("node", "parent", "cell")
 ROOT_LOCKED = (
     "root is locked: the library tool never writes it. The user edits it in the Library"
-    " panel: its YAML with Edit YAML in the Namespaces tab (its system_suffix for what"
-    " every chat should do), its worked examples in the Decompositions tab. Or write"
-    " into another namespace."
+    " panel (top right): its YAML with Edit YAML in the Namespaces tab (its system_suffix"
+    " for what every chat should do), its worked examples in the Decompositions tab. Or"
+    " write into another namespace."
 )
-NOT_THIS_CHAT = (
+# Where the user changes the Library: a chat in a namespace that sees the library tool.
+PICK_AN_EDITOR = jinja2.Template(
+    "pick {% if editors %}{{ editors | join(' or ') }}{% else %}a namespace that grants"
+    " library{% endif %} under the message box",
+    undefined=jinja2.StrictUndefined,
+)
+NOT_THIS_CHAT = jinja2.Template(
     "The Library can be changed only in a chat whose namespace grants the library tool;"
-    " pick librarian under the message box."
+    " {{ pick }}.",
+    undefined=jinja2.StrictUndefined,
 )
 NOT_TEXT = (
     "The namespace's name should be text, and the YAML text or a dict of plain values."
@@ -177,14 +185,12 @@ GRANTED = (
 )
 # Any other REPL is a sandbox, and building a tool runs its code outside it.
 LOCAL_REPL = "local"
-# What the library tool's agents are told in a chat whose namespace doesn't grant it, as
-# in a sub-agent a chat in another namespace handed a question to.
+# Told to the library tool's agents in a chat that can't write, such as a sub-agent's.
 READ_ONLY_HERE = jinja2.Template(
     "\nIn this chat you may only read the Library: its namespace, {{ namespace }}, doesn't"
     " grant library, so the tool refuses every write, here and in any sub-agent. Asked"
     " for a change, don't try it: answer, with FinalAnswer, what you would change, and"
-    " that the user picks {{ editors | join(' or ') }} under the message box and asks"
-    " there.",
+    " that the user should {{ pick }} and ask there.",
     undefined=jinja2.StrictUndefined,
 )
 NOT_LOCAL = (
@@ -1265,7 +1271,8 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     the tools it checks in the run's *tools_dir*."""
     library, chat_namespace = params["library"], params["namespace"]
     key_names, tools_dir = params["key_names"], Path(params["tools_dir"])
-    editors = params["editors"]
+    editors = params.get("editors", [])
+    pick = PICK_AN_EDITOR.render(editors=editors)
 
     def show(name: str | None = None) -> Any:
         """Every namespace in brief, or namespace *name* as the Library panel shows it."""
@@ -1292,10 +1299,10 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         """Raise unless this run's chat is in a namespace that grants the library tool, as
         the Library stands under the write lock: a grant taken away meanwhile counts."""
         granted = chat_namespace in registry.names and (
-            LIBRARY_TOOL in registry.resolve(chat_namespace).tools
+            sees(registry, chat_namespace, LIBRARY_TOOL)
         )
         if not granted:
-            raise LibraryError(NOT_THIS_CHAT)
+            raise LibraryError(NOT_THIS_CHAT.render(pick=pick))
 
     def check_local(registry: NamespaceRegistry) -> None:
         """Raise unless this run's chat runs the local REPL: a build runs a tool's code
@@ -1459,6 +1466,6 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         write_tool=write_tool,
     )
     description = LIBRARY_DESCRIPTION
-    if editors and chat_namespace not in editors:
-        description += READ_ONLY_HERE.render(namespace=chat_namespace, editors=editors)
+    if chat_namespace not in editors:
+        description += READ_ONLY_HERE.render(namespace=chat_namespace, pick=pick)
     return Func(tool, description=description)

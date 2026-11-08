@@ -3,9 +3,9 @@ messages:
   - {role: user, content: "What does the historian's suffix say?"}
   - role: assistant
     content: |
-      <think>Read the historian's own YAML as stored, and answer with its system_suffix as the tool returns it, never retyped: the user sees only my answer.</think>
+      <think>Read the historian as the Library resolves it, each suffix its agents get with where it comes from, and answer with them as the tool returns them, never retyped: the user sees only my answer.</think>
       <repl>
-      import yaml
-      suffix = yaml.safe_load(library.show("historian")["yaml"])["system_suffix"]
-      FinalAnswer(f"The historian's system_suffix says:\n\n{suffix}")
+      fields = {field["label"]: field["items"] for field in library.show("historian")["fields"]}
+      told = [f"{each['value']}\n({each['source']})" for each in fields["System suffix"]]
+      FinalAnswer("The historian's agents are told:\n\n" + "\n\n".join(told))
       </repl>
