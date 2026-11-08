@@ -3197,6 +3197,17 @@ def test_a_shared_files_chats_table_that_refuses_new_chats_answers_in_plain_word
     }
 
 
+def test_a_title_that_isnt_utf_8_reads_with_a_replacement_character(client, library):
+    chat = client.post("/api/chats").json()["id"]
+    with closing(open_library(library)) as connection:
+        connection.execute(
+            "UPDATE chats SET title = CAST(X'6361FF' AS TEXT) WHERE id = ?", (chat,)
+        )
+    listed = client.get("/api/chats")
+    assert listed.status_code == 200
+    assert [each["title"] for each in listed.json()] == ["ca�"]
+
+
 def test_a_broken_library_file_is_not_passed_off_as_one_that_cannot_be_written(
     client, library
 ):

@@ -766,9 +766,16 @@ def open_library(path):
 
 
 def distrust(connection):
-    """Never run the file's own triggers and views: a shared file's could keep what is deleted."""
+    """Never run the file's own triggers and views: a shared file's could keep what is
+    deleted. Read text that isn't UTF-8, as a shared file's may be, with U+FFFD for each
+    byte that can't be read, never as an error."""
     connection.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER, False)
     connection.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_VIEW, False)
+    connection.text_factory = readable
+
+
+def readable(data):
+    return data.decode(errors="replace")
 
 
 def lay_out(connection, path):
