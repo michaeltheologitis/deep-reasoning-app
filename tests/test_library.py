@@ -220,10 +220,10 @@ def test_a_fresh_library_grants_llm_at_root_history_and_page_to_the_historian_an
     # Each suffix as stored, then where its agents may hand work, for the run only.
     to_historian = SPAWN_LINE.render(allowed=[HISTORIAN], above=False)
     assert config.namespaces[HISTORIAN].system_suffix == (
-        f"{HISTORIAN_SUFFIX}\n\n{NO_SUB_AGENTS}"
+        HISTORIAN_SUFFIX.rstrip("\n") + f"\n\n{NO_SUB_AGENTS}"
     )
     assert config.namespaces[LIBRARIAN].system_suffix == (
-        f"{LIBRARIAN_SUFFIX}\n\n{to_historian}"
+        LIBRARIAN_SUFFIX.rstrip("\n") + f"\n\n{to_historian}"
     )
 
 
@@ -460,8 +460,6 @@ def test_a_namespace_that_sets_a_spawn_list_ends_its_suffix_with_where_it_can_ha
 
 def test_a_spawn_line_is_inherited_shown_in_the_panel_and_never_stored(team, tmp_path):
     own = run_suffixes(team, tmp_path)
-    # After its own, joined as the engine joins a chain's suffixes.
-    assert own["searcher"] == f"Search.\n\n{NO_SUB_AGENTS}"
     # One that sets none inherits its parent's line, as it does its spawn list.
     assert own["searcher.deep"] is None
     assert own[ROOT] == ROOT_SUFFIX
@@ -473,6 +471,21 @@ def test_a_spawn_line_is_inherited_shown_in_the_panel_and_never_stored(team, tmp
         "source": "added at run time, inherited from searcher",
         "here": False,
     }
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["system_suffix: Search.\n", "system_suffix: |\n  Search.\n"],
+    ids=["plain", "block"],
+)
+def test_a_spawn_line_follows_the_own_suffix_after_one_blank_line(
+    library, tmp_path, text
+):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "searcher", f"spawn: []\n{text}")
+    assert run_suffixes(library, tmp_path)["searcher"] == (
+        f"Search.\n\n{NO_SUB_AGENTS}"
+    )
 
 
 def test_a_spawn_list_naming_only_namespaces_that_are_gone_reads_as_a_leaf(

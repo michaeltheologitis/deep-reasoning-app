@@ -1373,13 +1373,12 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
 
 
 def with_spawn_lines(config, registry):
-    """*config* with each of spawn_lines() after its namespace's own system_suffix, joined
-    as the engine joins a chain's, for its run only: the Library holds none."""
+    """*config* with each of spawn_lines() after its namespace's own system_suffix, a
+    blank line between, for its run only: the Library holds none."""
     for name, line in spawn_lines(registry).items():
         fields = config["namespaces"][name]
-        fields["system_suffix"] = "\n\n".join(
-            filter(None, [fields.get("system_suffix"), line])
-        )
+        own = (fields.get("system_suffix") or "").rstrip("\n")
+        fields["system_suffix"] = "\n\n".join(filter(None, [own, line]))
     return config
 
 
