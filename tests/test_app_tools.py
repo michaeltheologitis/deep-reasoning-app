@@ -774,7 +774,7 @@ class NeverEqual(str):
             EXAMPLE.replace("How many tickets are open?", '"{{ open }} open?"'),
             (
                 "Turn 1 (user), line 1: the engine reads a turn holding {{ or {% as a Jinja"
-                ' template, and fills in no "open"'
+                ' template, and this one names "open"'
             ),
         ),
     ],

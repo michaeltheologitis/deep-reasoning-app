@@ -25,6 +25,10 @@ const UTF8_MAX_BYTES = 4;
 const counted = new Intl.NumberFormat("en");
 // characters that don't show, as the server reads them: controls and formats, such as a zero-width space
 const INVISIBLE = /[\p{Cc}\p{Cf}]/u;
+// a code point as U+ writes it: hex, at least four digits
+const CODE_POINT_DIGITS = 4;
+const HEX = 16;
+const codePoint = (char) => `U+${char.codePointAt(0).toString(HEX).toUpperCase().padStart(CODE_POINT_DIGITS, "0")}`;
 // what heads a decomposition's turn problems in its form: they don't stop it saving, as a draft may have them, but agents are shown it as it is
 const reach = (namespace) => (namespace === ROOT ? "every namespace" : `${namespace} and the namespaces under it`);
 const headed = (action, namespace, problems) =>
@@ -112,10 +116,9 @@ panel.append(
   body,
 );
 
-// A YAML editor its toggle opens, checked as you type; the server's refusal shows where the form's own problems do.
-// An edit's form says what it was opened on (was), and stored() reads what is stored now, so a save over a change made meanwhile is refused and shows it.
-function yamlForm({ id, label, action, text, problems, warnings = () => [], save, stored = null, opening = null, before = [], beside = null, after = [], first = null }) {
-  const form = { problems, warnings, save, stored, opening, first, was: text, saving: false, timer: null };
+// A YAML editor its toggle opens, checked as you type; an edit's form keeps what it opened on (was), and stored() reads what is there now.
+function yamlForm({ id, label, action, text, problems, warnings = () => [], save, stored = null, gone = null, opening = null, before = [], beside = null, after = [], first = null }) {
+  const form = { problems, warnings, save, stored, gone, opening, first, was: text, saving: false, timer: null };
   form.toggle = element("button", { type: "button", class: "lib-action", "aria-expanded": "false", "aria-controls": id, "data-key": id, onclick: () => (form.el.hidden ? openForm(form) : closeForm(form)) }, label);
   form.editor = element(
     "textarea",
@@ -170,6 +173,7 @@ function edited(form) {
 }
 
 function fitEditor(editor) {
+  if (!editor.isConnected) return;
   editor.style.height = "auto";
   editor.style.height = `${editor.scrollHeight + editor.offsetHeight - editor.clientHeight}px`;
 }
@@ -222,7 +226,11 @@ async function submit(form, e) {
 async function showNewer(form) {
   await load();
   const now = form.stored();
-  if (now == null) return;
+  if (now == null) {
+    editForms.delete(form.key);
+    form.gone?.(form);
+    return;
+  }
   form.was = now;
   form.newer.replaceChildren(element("p", { class: "lib-note" }, "Stored now, which Save replaces with yours:"), element("pre", { class: "code lib-pre" }, now || "(blank: it sets nothing)"));
 }
@@ -324,7 +332,7 @@ const saveNamespace = (name) => async (text, form) => {
 
 // A row's edit form, built once; a closed one holds no draft, so it follows what is stored, and an open one keeps what it was opened on.
 function editFormFor(key, stored, build) {
-  if (!editForms.has(key)) editForms.set(key, yamlForm({ id: `lib-edit-${++editFormCount}`, text: stored, ...build() }));
+  if (!editForms.has(key)) editForms.set(key, Object.assign(yamlForm({ id: `lib-edit-${++editFormCount}`, text: stored, ...build() }), { key }));
   const form = editForms.get(key);
   if (form.el.hidden) form.editor.defaultValue = form.was = stored;
   return form;
@@ -364,7 +372,29 @@ const decompositionEdit = (namespace, { name, yaml }) =>
     warnings: turnWarnings("Save", () => namespace),
     save: saveDecomposition(namespace, name),
     stored: () => storedDecomposition(namespace, name)?.yaml,
+    gone: (form) => moveToAdd(form.editor.value, namespace, name),
   }));
+
+// Deleted or renamed meanwhile, its Edit draft moves to the add form, on its namespace, so Add saves it as a new one.
+function moveToAdd(draft, namespace, name) {
+  if (decompositionForm.el.hidden) openForm(decompositionForm);
+  if (namespaceNamed(namespace)) picker.value = namespace;
+  decompositionForm.editor.value = draft;
+  check(decompositionForm);
+  const note = `"${name}" was deleted or renamed in ${namespace} meanwhile, so your draft is here: Add saves it as a new one.`;
+  decompositionForm.newer.replaceChildren(element("p", { class: "lib-note" }, note));
+  // measured once the panel has drawn it
+  requestAnimationFrame(() => fitEditor(decompositionForm.editor));
+}
+
+// Each read: a closed edit form whose row went is dropped, and an open one hands its draft on; one saving is its save's to settle.
+function pruneForms() {
+  for (const [key, form] of editForms) {
+    if (form.saving || form.stored() != null) continue;
+    editForms.delete(key);
+    if (!form.el.hidden) form.gone?.(form);
+  }
+}
 
 // The row whose Delete asks is keyed; a refusal given at once, from what the panel holds, skips the confirm.
 function askDelete(key, refusal = null) {
@@ -469,10 +499,10 @@ function readYaml(text) {
   }
 }
 
-// editing: the name of the one an Edit form holds, which its YAML may keep
 // characters as Python counts them, which a string's length overcounts past the BMP
 const characters = (text) => (text.length > MAX_YAML_CHARS ? [...text].length : text.length);
 
+// editing: the name of the one an Edit form holds, which its YAML may keep
 function decompositionProblems(text, namespace, editing = null) {
   if (!text.trim()) return ["Write the decomposition's YAML above, or choose a .yaml file."];
   const length = characters(text);
@@ -493,7 +523,7 @@ function nameProblem(name, namespace, editing) {
   if (typeof name !== "string" || !name.trim()) return 'The name should be text, like "name: count the open tickets".';
   if (name !== name.trim()) return `The name "${name}" starts or ends with a space; take it out, so it reads as it looks.`;
   const hidden = name.match(INVISIBLE);
-  if (hidden) return `The name holds a character you can't see (U+${hidden[0].codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}); take it out, so it reads as it looks.`;
+  if (hidden) return `The name holds a character you can't see (${codePoint(hidden[0])}); take it out, so it reads as it looks.`;
   if (name !== editing && namespace?.decompositions.some((each) => each.name === name)) return `${namespace.name} already has "${name}"; rename it, pick another namespace, or Edit that one.`;
   return null;
 }
@@ -659,14 +689,13 @@ function runSettings() {
 
 const toolsSaid = element("p", { class: "lib-confirm", role: "status" });
 
-// A tool any namespace grants is built by every run, so it is deleted only once none does.
+// A tool any namespace grants is built by every run, so the server deletes it only once none does.
 function renderTool(tool) {
   const remove = async () => {
     await changeLibrary("DELETE", `${TOOLS_URL}/${encodeURIComponent(tool.name)}`);
     opened.delete(toolKey(tool.name));
     return { where: toolsSaid, text: `Deleted tool "${tool.name}"` };
   };
-  const refusal = () => (tool.granted_in.length ? `${tool.name} is granted in ${tool.granted_in.join(", ")}: take it out of their tools first.` : null);
   return [
     fields([
       ["Factory", tool.factory],
@@ -678,7 +707,7 @@ function renderTool(tool) {
     // A tool whose value is a function tells the agent its docstring, which only a build shows; it wraps, as one may run long.
     tool.description && element("pre", { class: "code lib-doc" }, tool.description),
     tool.source != null && [element("p", { class: "lib-note" }, `Its Python, ${tool.file}:`), element("pre", { class: "code lib-pre" }, tool.source)],
-    tool.stored && deletable(toolKey(tool.name), [], { question: `Delete tool ${tool.name}?`, refusal, remove }),
+    tool.stored && deletable(toolKey(tool.name), [], { question: `Delete tool ${tool.name}?`, remove }),
   ];
 }
 
@@ -772,6 +801,7 @@ function useLibrary(found) {
   const picked = namespaceNamed(picker.value) ? picker.value : startingNamespace();
   picker.replaceChildren(...library.namespaces.map(({ name }) => element("option", { value: name }, name)));
   picker.value = picked;
+  pruneForms();
 }
 
 // At start, and after each change the agent makes in a run; drafts live in their forms, so they survive.
@@ -785,6 +815,8 @@ async function load() {
   }
   if (found && asked > applied) {
     applied = asked;
+    // as it was: nothing to redraw, so focusing the window costs nothing
+    if (!problem && JSON.stringify(found) === JSON.stringify(library)) return;
     problem = null;
     useLibrary(found);
     libraryChanged(library);

@@ -94,12 +94,14 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   saves it, so a draft can be saved; from the next message, agents in its namespace and those under it are shown
   it as it is, so a new one starts in the namespace of the chat on screen, not root. The code isn't run, so an
   observation isn't checked against it.
-- Saving refuses what would make every run there fail: a decomposition holding `{{` or `{%` that the engine can't
-  render as a Jinja template (it fills in `{{ task }}` with the task; write `{{ '{{' }}` for a literal `{{`), one over
-  1,000,000 characters, or one whose name starts or ends with a space or holds a character you can't see; a
-  `reasoner` type the engine doesn't know; and a var that isn't a Python name, is a keyword or one of Python's
-  built-ins (`max`, `type`, …), or has the name of a tool its namespace sees. A stored decomposition the engine
-  can't render, as a shared Library may hold, is marked ✗ with why.
+- Saving refuses what would make every run there fail: a decomposition holding `{{` or `{%` (which the engine reads
+  as a Jinja template) whose template doesn't parse or names anything but what the engine fills in (`task`, `vars`,
+  `funcs`, `coroutines` and the run settings' `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`),
+  one over 1,000,000 characters, or one whose name starts or ends with a space or holds a character you can't see;
+  in a namespace or one under it, a `reasoner` type the engine doesn't know; and a var that isn't a Python name, is
+  a keyword or one of Python's built-ins (`max`, `type`, …), or has the name of a tool its namespace sees. A
+  template is checked, never run, so whether `vars.x` holds what it reads isn't. A stored decomposition that fails
+  the check, as a shared Library may hold, is marked ✗ with why.
 - A save or delete in the panel is refused if what you opened was changed meanwhile (by the librarian, another tab
   or an import): your draft stays, beside what is stored now, and saving again replaces it. The panel reads the
   Library again whenever you open it or come back to its window.

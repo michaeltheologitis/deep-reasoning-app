@@ -231,10 +231,7 @@ def create_app(library, home):
             stored, _ = add_decomposition(connection, namespace, yaml)
             return stored
 
-    # The rest answer with the whole Library: a namespace's fields reach every namespace
-    # under it. An edit or delete carries the YAML it was opened on (was), and is refused
-    # with 409 if that changed meanwhile. A decomposition's namespace and name are in the
-    # body, as either may hold a /.
+    # The rest answer with the whole Library; an edit or delete carries the YAML it opened on (was).
     @app.put("/api/decompositions")
     def put_decomposition(
         namespace: Annotated[str, Body()],

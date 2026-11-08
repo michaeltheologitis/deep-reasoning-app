@@ -578,7 +578,7 @@ def test_a_tool_granted_nowhere_and_a_run_setting_the_engine_doesnt_read_are_del
 @pytest.mark.parametrize(
     ("url", "problem"),
     [
-        ("/api/tools/llm", 'The Library holds no tool "llm" to delete.'),
+        ("/api/tools/nothing", 'The Library holds no tool "nothing" to delete.'),
         ("/api/run-settings/max_iter", "max_iter is a run setting the engine reads"),
     ],
 )

@@ -15,6 +15,7 @@ from deep_reasoner.config import load_cli_config, resolve_api_key
 from deep_reasoner.namespaces import ROOT, build_registry
 from deep_reasoner.tools import load_tool_factory
 from deep_reasoner.v2 import DeepReasoner
+from deep_reasoner.v2.agent import _render_context
 from deep_reasoner.v2.cli import (
     V2Config,
     build_namespace_registry,
@@ -28,6 +29,7 @@ from deep_reasoning.library import (
     APP_TOOLS_FILE,
     BEFORE_EVENTS,
     BEFORE_PAGES,
+    FILLED_IN,
     HAND_OFF_TURNS,
     HISTORIAN,
     HISTORIAN_SUFFIX,
@@ -101,6 +103,7 @@ namespaces:
 ADDED = "name: added\nmessages: [{role: user, content: hi}]\n"
 RESEARCH = "vars: {topic: ml}\nsystem_suffix: |\n  Cite each source.\n"
 WAIT_FOR_THE_LOCK_S = 0.3
+PANEL_READ_S = 5
 CONFIGS = Path(__file__).parent / "configs"
 # Each case's turns and the problems they have, shared with tests/turns.test.mjs.
 TURN_CASES = json.loads(
@@ -1061,15 +1064,18 @@ def test_a_tool_is_deleted_only_once_no_namespace_grants_it(library):
 @pytest.mark.parametrize(
     ("name", "refusal"),
     [
-        ("llm", 'The Library holds no tool "llm" to delete.'),
-        ("history", 'The Library holds no tool "history" to delete.'),
+        ("llm", "llm is granted in root: take it out of their tools first."),
+        ("history", "history is granted in historian: take it out of their tools"),
+        ("rag", 'The Library holds no tool "rag" to delete.'),
     ],
 )
 def test_a_tool_the_library_holds_no_row_for_is_not_deleted(library, name, refusal):
-    [shown] = [each for each in panel_of(library)["tools"] if each["name"] == name]
-    assert (shown["stored"], shown["source"]) == (False, None)
+    shown = {each["name"]: each for each in panel_of(library)["tools"]}
+    assert all(not each["stored"] and each["source"] is None for each in shown.values())
+    before = dumped(library)
     with pytest.raises(LibraryError, match=re.escape(refusal)):
         change(library, delete_tool, name)
+    assert dumped(library) == before
 
 
 def test_a_run_setting_the_engine_doesnt_read_is_deleted_and_one_it_reads_stays(
@@ -1104,6 +1110,13 @@ def answering(name, code):
     )
 
 
+# Templates that would stop the panel if rendered or compiled unguarded.
+NESTED_TOO_DEEP = "{% for a in [1] %}" * 21 + "x" + "{% endfor %}" * 21
+BILLIONS_OF_LOOPS = (
+    "{% for i in range(99999) %}{% for j in range(99999) %}{% endfor %}{% endfor %}"
+)
+
+
 @pytest.mark.parametrize(
     ("code", "problem"),
     [
@@ -1118,8 +1131,9 @@ def answering(name, code):
             'print("{{ total }}")',
             (
                 "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a"
-                ' Jinja template, and fills in no "total", only task, vars, funcs, coroutines'
-                " and the run settings' prompt_template_variables."
+                ' Jinja template, and this one names "total"; a template may name only'
+                " task, vars, funcs, coroutines and the run settings'"
+                " prompt_template_variables, which the engine fills in."
             ),
         ),
         (
@@ -1130,15 +1144,30 @@ def answering(name, code):
             ),
         ),
         (
-            'print("{{ vars.topic.value }}")',
+            NESTED_TOO_DEEP,
             (
                 "Turn 2 (assistant): the engine reads a turn holding {{ or {% as a Jinja"
-                " template, and rendering this one fails ('dict object' has no attribute"
-                " 'topic')."
+                " template, and this one can't be compiled (too many statically nested"
+                " blocks"
             ),
         ),
+        (
+            BILLIONS_OF_LOOPS,
+            'Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a Jinja template, and this one names "range"',
+        ),
+        (
+            "{{ lipsum(n=100000) }}",
+            'Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a Jinja template, and this one names "lipsum"',
+        ),
     ],
-    ids=["an-f-string", "an-unknown-name", "a-comment", "a-var-root-lacks"],
+    ids=[
+        "an-f-string",
+        "an-unknown-name",
+        "a-comment",
+        "nested-too-deep",
+        "billions-of-loops",
+        "a-jinja-global",
+    ],
 )
 def test_a_decomposition_the_engine_cant_render_is_refused_naming_its_turn(
     library, code, problem
@@ -1194,12 +1223,25 @@ def test_a_template_the_check_passes_is_stored_and_the_engine_renders_it(
 def test_a_shared_files_decomposition_the_engine_cant_render_is_marked_with_why(
     library, tmp_path, monkeypatch, no_network
 ):
-    text = answering("braces", 'print(f"{{{total}}}")')
+    stored = {
+        "braces": 'print(f"{{{total}}}")',
+        "nested": NESTED_TOO_DEEP,
+        "loops": BILLIONS_OF_LOOPS,
+    }
     with closing(open_library(library)) as connection, writing(connection):
-        connection.execute(UPSERT_DECOMPOSITION, (ROOT, "braces", text))
+        for name, code in stored.items():
+            connection.execute(
+                UPSERT_DECOMPOSITION, (ROOT, name, answering(name, code))
+            )
+    started = time.monotonic()
     [root, *_] = panel_of(library)["namespaces"]
-    [problem] = root["decompositions"][-1]["problems"]
-    assert problem.startswith("Turn 2 (assistant), line 4: the engine reads a turn")
+    # Read, never rendered: billions of loops cost nothing.
+    assert time.monotonic() - started < PANEL_READ_S
+    marked = {each["name"]: each["problems"] for each in root["decompositions"]}
+    for name in stored:
+        [problem] = marked[name]
+        assert problem.startswith("Turn 2 (assistant)")
+        assert "the engine reads a turn holding {{ or {% as a Jinja template" in problem
     monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
     monkeypatch.chdir(tmp_path)
     reasoner, _alias = build_reasoner(run_config(library, tmp_path), run_dir=tmp_path)
@@ -1303,3 +1345,30 @@ def test_a_namespace_granting_a_tool_root_grants_says_it_grants_it_here(library)
     assert fields["Variables"] == [
         {"value": "draft (None)", "source": "set here", "here": True}
     ]
+
+
+def test_the_names_a_template_may_read_are_those_the_engine_fills_in():
+    assert set(FILLED_IN) == set(_render_context([], {}, "a task"))
+
+
+def test_a_reasoner_the_engine_doesnt_know_elsewhere_holds_up_no_other_change(library):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("odd", "reasoner: {type: chatgpt}\n"))
+    change(library, add_namespace, "mine", "")
+    change(library, change_namespace, "mine", "system_suffix: Be brief.\n")
+    change(library, delete_namespace, "mine", 0)
+    with pytest.raises(LibraryError, match="namespace 'odd': unknown reasoner type"):
+        change(library, add_namespace, "odd.child", "")
+    with pytest.raises(LibraryError, match="namespace 'odd': unknown reasoner type"):
+        change(library, change_namespace, "odd", "reasoner: {type: chatgpt}\n")
+
+
+def test_an_import_with_a_reasoner_the_engine_doesnt_know_is_refused(library, tmp_path):
+    config = tmp_path / "odd.yaml"
+    config.write_text(
+        "namespaces:\n  odd:\n    reasoner: {type: chatgpt}\n", encoding="utf-8"
+    )
+    before = dumped(library)
+    with pytest.raises(LibraryError, match="namespace 'odd': unknown reasoner type"):
+        import_into(library, config)
+    assert dumped(library) == before
