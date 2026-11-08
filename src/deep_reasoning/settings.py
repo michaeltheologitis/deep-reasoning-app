@@ -347,6 +347,11 @@ def providers(library: Path) -> list[Provider]:
     return [*VENDORS, *servers(library)]
 
 
+def key_names(library: Path) -> list[str]:
+    """Each provider's key variable: what a run's worker may get, and withholds."""
+    return [each.key_env for each in providers(library)]
+
+
 def find_provider(library: Path, name: str) -> Provider | None:
     return next((each for each in providers(library) if each.name == name), None)
 

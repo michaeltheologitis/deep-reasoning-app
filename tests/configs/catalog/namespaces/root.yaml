@@ -1,0 +1,5 @@
+# The shared root: a local REPL and the base `llm` tool every namespace inherits.
+repl:
+  type: local
+tools:
+  - llm

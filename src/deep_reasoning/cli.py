@@ -24,15 +24,22 @@ from deep_reasoning.app import create_app
 from deep_reasoning.app_tools import open_existing
 from deep_reasoning.chats import chats_in
 from deep_reasoning.folders import data_folder, holds_any, short_path
+from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
     LIBRARY_ONLY,
     SCHEMA_VERSION,
     LibraryError,
-    import_config,
     open_library,
     schema_version,
 )
-from deep_reasoning.settings import DEFAULT_FOLDER, ENV_FILE, settings_in
+from deep_reasoning.runs import WITHHELD, secrets_of, worker_env
+from deep_reasoning.settings import (
+    DEFAULT_FOLDER,
+    ENV_FILE,
+    key_names,
+    saved_keys,
+    settings_in,
+)
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -63,13 +70,15 @@ LOCK = ".lock"
 LOCK_MODE = 0o644
 # What flock meets on a file system without locks: NFS mounted nolock, some FUSE and SMB.
 NO_LOCKS = {errno.ENOLCK, errno.EOPNOTSUPP, errno.EINVAL}
-IN_USE = "Deep Reasoning is already using {}, so {}."
 NOT_STARTED = (
     "this one didn't start: two on one Library would end each other's runs. Use the one"
     " that is running, stop it first, or pass another --library"
 )
 NOT_IMPORTED = "nothing was imported: stop it first, then import"
 NOT_DELETED = "nothing was deleted: stop it first, then reset"
+# Claude Code's: an API key it would bill in place of the subscription, and the
+# subscription's own token.
+CLAUDE_CODES_KEYS = (WITHHELD, "CLAUDE_CODE_OAUTH_TOKEN")
 
 log = structlog.get_logger()
 
@@ -148,7 +157,7 @@ def take(lock, library, refused):
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        sys.exit(IN_USE.format(library, refused))
+        sys.exit(f"Deep Reasoning is already using {library}, so {refused}.")
     except OSError as error:
         if error.errno not in NO_LOCKS:
             raise
@@ -160,19 +169,36 @@ def take(lock, library, refused):
         )
 
 
+def provider_keys(library, home):
+    """Each key variable, a provider's or Claude Code's, and each key, saved in settings
+    or set in the shell: none may be imported, nor reach a tool built to check it."""
+    names = [*key_names(library), *CLAUDE_CODES_KEYS]
+    return names, [*secrets_of(os.environ, names), *secrets_of(saved_keys(home), names)]
+
+
+def keyless(names, secrets):
+    """What a run's worker gets of this environment, but any key: what the tools an
+    import builds to check them get."""
+    return {
+        name: value
+        for name, value in worker_env({}).items()
+        if name not in names and value not in secrets
+    }
+
+
 def import_or_exit(library, config, home):
     folder_or_exit(library, home)
     with owning(library, NOT_IMPORTED) as connection, contextlib.closing(connection):
         try:
-            imported = import_config(connection, config)
+            names, secrets = provider_keys(library, home)
+            said = import_config(connection, config, secrets, keyless(names, secrets))
         except (OSError, ValueError, yaml.YAMLError, sqlite3.Error) as error:
             sys.exit(f"Could not import {config}; the Library is unchanged.\n{error}")
-    log.info(
-        "Imported into the Library",
-        config=str(config),
-        library=str(library),
-        **imported,
-    )
+    if said["changes"]:
+        header = f"Imported {config} into the Library at {library}."
+    else:
+        header = f"Imported {config}: the Library at {library} already held all of it."
+    print("\n".join([header, *said["changes"], *said["left_out"]]))
 
 
 def file_or_exit(library):

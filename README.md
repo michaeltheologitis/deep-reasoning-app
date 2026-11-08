@@ -143,7 +143,12 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   onto its YAML (or a tool's block and Python) before and after; ask the librarian to undo it, and it writes the
   before back from the record. The decompositions panel and the
   namespace menu under the message box show the change at once.
-- `uv run deep-reasoning import CONFIG.yaml` brings in a `deep_reasoner` config, replacing items with the same name.
+- `uv run deep-reasoning import CONFIG.yaml` brings a `deep_reasoner` config's namespaces, decompositions, tools and
+  run settings into the Library (each chat keeps its own model), replacing items of the same name and the root fields
+  it sets, and prints what it changed and what it left out. It refuses, changing nothing, a file that isn't a config,
+  the app's `historian` and `librarian` namespaces or one under them, a tool named as a built-in, a key anywhere in
+  it, and a tool a namespace grants that doesn't build: it builds each such tool once to check it, from its own file
+  alone and without your keys, so a file or module beside the config isn't carried in. Import only configs you trust.
 - `uv run deep-reasoning reset` starts afresh: it deletes the Library file (`--library PATH` for another), with its
   chats and settings, and its run and scratch folders, after listing them and asking you to type `delete`
   (`--yes` skips the question). Your keys in `.env` and the folders you picked stay. It deletes only a Library file:
@@ -153,7 +158,7 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   file, let go when the app stops, even in a crash; on a file system without locks it says so and runs without. A
   `--library` in a folder that isn't there is refused rather than made.
 - The Tools tab lists the app's own tools beside the built-in ones, and every tool in the Library; a tool of yours can't
-  be named `history`, `library` or `page`.
+  be named `history`, `library` or `page`, nor as a built-in.
 - Every run builds every tool some namespace grants, whatever namespace its chat is in (only which agents can call a
   tool is per namespace): once any namespace grants a tool, its code runs at the start of every message in every
   chat, and a granted tool that stops building stops every chat until you take it out of the namespaces' tools in

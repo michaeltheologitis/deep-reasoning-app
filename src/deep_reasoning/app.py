@@ -78,9 +78,9 @@ from deep_reasoning.settings import (
     default_folder,
     find_provider,
     forget_key,
+    key_names,
     model_lists,
     provider_list,
-    providers,
     remember_pick,
     remove_server,
     run_key,
@@ -495,15 +495,13 @@ def create_app(library, home):
         client = {"base_url": provider.base_url, "api_key_env": provider.key_env}
         keys = {provider.key_env: key}
         # Any provider's key in the shell reaches the worker, so is withheld too.
-        key_names = [each.key_env for each in providers(library)]
+        names = key_names(library)
 
         def config_for(run_folder):
             # A run's folder is named by its id.
             run = run_folder.name
             tools = run_folder / "tools"
-            config = engine_config(
-                library, namespace, tools, chat["id"], run, key_names
-            )
+            config = engine_config(library, namespace, tools, chat["id"], run, names)
             return config | {"model": model["name"], "client": client}
 
         run = runs.start(
@@ -514,7 +512,7 @@ def create_app(library, home):
             provider.name,
             keys,
             folder,
-            key_names,
+            names,
         )
         choose(library, chat["id"], namespace, provider.name, model["name"])
         if not earlier:
