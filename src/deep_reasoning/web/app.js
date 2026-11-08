@@ -6,6 +6,7 @@ import {
   PRICE_UNKNOWN,
   UNKNOWN_COST,
   caret,
+  clamped,
   clock,
   costView,
   element,
@@ -101,6 +102,17 @@ function trailText({ tasks, step }) {
   return parts.join(" › ");
 }
 
+function renderPrompt(turn) {
+  return clamped(turn, "prompt", turn.prompt, () => element("div", { class: "user" }, element("span", { class: "prompt" }, "> "), turn.prompt));
+}
+
+// A run out of turns has no answer: the engine's words saying so show as its failure.
+function renderTurnAnswer(turn) {
+  if (turn.answer == null) return null;
+  if (turn.outcome === "exhausted") return out(turn.answer, { tone: "warn", full: true });
+  return clamped(turn, "answer", turn.answer, () => renderAnswer(turn.answer));
+}
+
 // A turn names its namespace when it differs from the turn before's, so a chat that switched reads clearly.
 function renderTurn(turn, previous) {
   const live = state.live?.turn === turn;
@@ -112,7 +124,7 @@ function renderTurn(turn, previous) {
   const el = element(
     "section",
     { class: "turn" },
-    element("div", { class: "user" }, element("span", { class: "prompt" }, "> "), turn.prompt),
+    renderPrompt(turn),
     toggler(turn, { class: "summary" }, [
       caret(open),
       going ? spinner() : element("span", {}, "✻"),
@@ -120,7 +132,7 @@ function renderTurn(turn, previous) {
     ]),
     live && !open && latest && out(trailText(latest), { full: true }),
     open && element("div", { class: "steps" }, turn.steps.map((step) => renderStep(step, true))),
-    turn.answer != null && renderAnswer(turn.answer),
+    renderTurnAnswer(turn),
     turn.outcome === "failed" && turn.detail && out(turn.detail, { tone: "err", full: true }),
     turn.changes.length > 0 && element("div", { class: "changes" }, turn.changes.map(renderListedChange)),
     turn.pages.length > 0 && element("div", { class: "pages" }, turn.pages.map((step) => pageLink(step, { class: "page-line" }, `▸ page: ${asText(step.title)} ↗`))),

@@ -8,6 +8,7 @@ import threading
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urljoin
 
 import httpx
 import pytest
@@ -210,6 +211,19 @@ def test_static_assets_are_served(client, path):
     response = client.get(f"/{path}")
     assert response.status_code == 200
     assert response.content == (WEB / path).read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("page", "url"), [("index.html", "/"), ("page.html", "/pages/x")]
+)
+def test_a_page_loads_its_scripts_and_styles_from_the_app_alone(client, page, url):
+    html = (WEB / page).read_text()
+    loaded = re.findall(r'<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"', html)
+    assert any("vendor/" in each for each in loaded)
+    for each in loaded:
+        assert "//" not in each, each
+        response = client.get(urljoin(url, each))
+        assert response.status_code == 200, each
 
 
 def test_the_api_returns_the_library_as_the_engine_resolves_it(client):
@@ -2028,6 +2042,14 @@ def a_page(library, chat):
 def pages_in(library):
     with closing(open_library(library)) as connection:
         return {page for (page,) in connection.execute("SELECT id FROM pages")}
+
+
+def test_the_chat_and_a_pages_tab_load_nothing_but_from_the_app(client):
+    page = a_page(client.app.state.runs.library, client.post("/api/chats").json()["id"])
+    for path in ["/", f"/pages/{page}"]:
+        policy = client.get(path).headers["content-security-policy"]
+        assert "default-src 'self'" in policy
+        assert "img-src 'self' data:" in policy
 
 
 def test_a_page_is_read_from_the_api_and_its_tab_is_the_page_drawing_it(client):

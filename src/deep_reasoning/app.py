@@ -91,6 +91,13 @@ UNWRITABLE = ("SQLITE_READONLY", "SQLITE_FULL", "SQLITE_IOERR", "SQLITE_CANTOPEN
 BUSY = ("SQLITE_BUSY", "SQLITE_LOCKED")
 MODEL_NAME = r"^[^\x00-\x1f\x7f]{1,200}$"
 NO_PAGE = "There is no such page: it may have been deleted with its chat."
+# The app's pages load and send nothing but to the app, whatever an answer holds; inline
+# styles are the custom properties the page sets (--depth, --clamp-lines).
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+    "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+)
+POLICY = {"Content-Security-Policy": CONTENT_SECURITY_POLICY}
 
 log = structlog.get_logger()
 
@@ -112,6 +119,15 @@ class ChatChange(BaseModel):
     namespace: str | None = None
     model: ModelPick | None = None
     folder: str | None = None
+
+
+class Web(StaticFiles):
+    """The UI's files, each sent with the policy."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers.update(POLICY)
+        return response
 
 
 def shown_folder(folder):
@@ -476,8 +492,8 @@ def create_app(library, home):
             found = page_exists(connection, page)
         if not found:
             return PlainTextResponse(NO_PAGE, status_code=HTTPStatus.NOT_FOUND)
-        return FileResponse(WEB / "page.html")
+        return FileResponse(WEB / "page.html", headers=POLICY)
 
     # A mount at / answers every path, so API routes must be added above it.
-    app.mount("/", StaticFiles(directory=WEB, html=True))
+    app.mount("/", Web(directory=WEB, html=True))
     return app
