@@ -2781,10 +2781,15 @@ def hand_offs_made(registry, targets):
 
 def checked(rows):
     """A namespace's stored decompositions, *rows* as read_decompositions() reads them,
-    each with its problems as a worked example; or, for one left out, why: its templates
-    were checked as it was read."""
+    each with its problems as a worked example; or, for one left out, which agents aren't
+    shown (read: false), why: its templates were checked as it was read."""
     return [
-        {"name": row["name"], "yaml": row["yaml"], "problems": problems_of(row)}
+        {
+            "name": row["name"],
+            "yaml": row["yaml"],
+            "problems": problems_of(row),
+            "read": row["decomposition"] is not None,
+        }
         for row in rows
     ]
 

@@ -24,8 +24,6 @@ const CHECK_DELAY_MS = 300;
 // What a namespace's save says while it runs, as the engine checks the whole Library, and a tool it grants afresh is built first.
 const SAVING = "Saving…";
 const BUILDING = "Saving. A custom tool this grants for the first time is built first, to check it, which can take up to a minute.";
-// as library.py's UNREAD_DECOMPOSITION words the first of a decomposition's problems when agents aren't shown it
-const UNREAD_DECOMPOSITION = "Agents aren't shown it: the engine can't read it.";
 // as the server's limit on a decomposition's YAML; a file of more bytes than 4 a character can't fit
 const MAX_YAML_CHARS = 1_000_000;
 const UTF8_MAX_BYTES = 4;
@@ -772,7 +770,7 @@ function decompositionsField(name) {
   const levels = new Map();
   for (const level of chain(name)) {
     for (const each of namespaceNamed(level)?.decompositions ?? []) {
-      if (each.problems[0] !== UNREAD_DECOMPOSITION) levels.set(each.name, level);
+      if (each.read) levels.set(each.name, level);
     }
   }
   const items = [...levels].map(([value, level]) => ({ value, source: level === name ? "attached here" : `inherited from ${level}`, here: level === name }));

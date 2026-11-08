@@ -1372,7 +1372,8 @@ async def test_the_library_tool_adds_a_decomposition_then_replaces_it_each_chang
     assert f"'problems': {EXAMPLE_PROBLEMS}" in output
     assert librarian["decompositions"] == [
         *LIBRARIANS_SEEDED,
-        {"name": "count the tickets", "yaml": REWORDED, "problems": EXAMPLE_PROBLEMS},
+        {"name": "count the tickets", "yaml": REWORDED, "problems": EXAMPLE_PROBLEMS}
+        | {"read": True},
     ]
     assert [events[-1]["outcome"] for events in (added, replaced)] == ["answered"] * 2
     assert any("The `library` tool" in each for each in system_prompts(fake.calls[-1:]))
@@ -1409,7 +1410,10 @@ async def test_a_change_to_the_library_applies_from_the_next_message(
 # A fresh Library's decompositions, as the panel lists them: root's hand-offs (to the
 # librarian, then to the historian), the historian's examples, and the librarian's.
 FRESH_DECOMPOSITIONS = [
-    [{"name": parsed(text).name, "yaml": text, "problems": []} for text in texts]
+    [
+        {"name": parsed(text).name, "yaml": text, "problems": [], "read": True}
+        for text in texts
+    ]
     for texts in (
         [*LIBRARIAN_HAND_OFFS, *(hand_off(text) for text in HISTORIANS_EXAMPLES)],
         HISTORIANS_EXAMPLES,
@@ -2175,7 +2179,8 @@ async def test_in_a_librarian_chat_a_sub_agent_handed_the_tool_elsewhere_writes(
     librarian = next(each for each in namespaces if each["name"] == "librarian")
     assert librarian["decompositions"] == [
         *LIBRARIANS_SEEDED,
-        {"name": "count the tickets", "yaml": EXAMPLE, "problems": EXAMPLE_PROBLEMS},
+        {"name": "count the tickets", "yaml": EXAMPLE, "problems": EXAMPLE_PROBLEMS}
+        | {"read": True},
     ]
 
 
@@ -3999,13 +4004,8 @@ def test_a_decomposition_the_engine_cant_read_shows_its_yaml_and_why_agents_dont
                 " template."
             ),
         ],
+        "read": False,
     }
-
-
-def test_the_panel_tells_a_decomposition_agents_dont_see_by_the_servers_words(client):
-    # library.js leaves such a one out of a namespace's Decompositions field
-    page = client.get("/library.js").text
-    assert f'"{UNREAD_DECOMPOSITION}"' in page
 
 
 def test_malformed_settings_read_as_unset_and_the_page_can_set_them_again(
