@@ -95,6 +95,8 @@ let sent = 0;
 let applied = 0;
 
 const dot = () => element("span", { class: "lib-dot", "aria-hidden": "true" }, "·");
+// YAML and source keep their lines and scroll sideways, so each takes focus, for the arrows to scroll it, as a data table does
+const sideways = (label, text) => element("pre", { class: "code lib-pre", role: "region", tabindex: "0", "aria-label": `${label}, scrolls sideways` }, text);
 const namespaceNamed = (name) => library.namespaces.find((namespace) => namespace.name === name);
 // one a chat may run in: a shared file's may hold one the engine can't read, listed with why (problems) to fix or delete
 const usable = (name) => Boolean(namespaceNamed(name)?.usable);
@@ -270,7 +272,7 @@ async function showNewer(form) {
     return;
   }
   form.was = now;
-  form.newer.replaceChildren(element("p", { class: "lib-note" }, "Stored now, which Save replaces with yours:"), element("pre", { class: "code lib-pre" }, now === null ? "(too long to show)" : now || "(blank: it sets nothing)"));
+  form.newer.replaceChildren(element("p", { class: "lib-note" }, "Stored now, which Save replaces with yours:"), sideways("What is stored now", now === null ? "(too long to show)" : now || "(blank: it sets nothing)"));
 }
 
 function say(where, text) {
@@ -706,7 +708,7 @@ function decompositionRow(namespace, decomposition) {
     const question = `Delete "${name}" from ${namespace}? Agents in ${reach(namespace)} stop seeing it from the next message.`;
     return [
       problemList(problems),
-      yaml != null && element("pre", { class: "code lib-pre" }, yaml),
+      yaml != null && sideways(`${name}'s YAML`, yaml),
       deletable(key, yaml == null ? [] : form.toggle, { question, remove, said: decompositionForm.confirmation, stored: () => storedDecomposition(namespace, name) != null }),
       form.el,
       form.confirmation,
@@ -782,10 +784,10 @@ function renderTool(tool) {
     // one the engine can't read, as a shared file may hold, says why instead
     problemList(tool.problems),
     fields(tool.problems.length ? [granted] : [...made, granted]),
-    tool.config && element("pre", { class: "code lib-pre" }, tool.config),
+    tool.config && sideways(`${tool.name}'s settings`, tool.config),
     // What the agent is told it does, for a custom tool as far as its source says; it wraps, as one may run long.
     tool.description && element("pre", { class: "code lib-doc" }, tool.description),
-    tool.source != null && [element("p", { class: "lib-note" }, `Its Python, ${tool.file}:`), element("pre", { class: "code lib-pre" }, tool.source)],
+    tool.source != null && [element("p", { class: "lib-note" }, `Its Python, ${tool.file}:`), sideways(`${tool.name}'s Python`, tool.source)],
     tool.stored && deletable(toolKey(tool.name), [], { question: `Delete tool ${tool.name}?`, refusal: () => tool.refusal, remove, said: toolsSaid, stored }),
   ];
 }
