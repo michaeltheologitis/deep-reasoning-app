@@ -19,7 +19,7 @@ import sys
 import unicodedata
 from collections import Counter, defaultdict
 from contextlib import closing, contextmanager
-from functools import partial
+from functools import lru_cache, partial
 from pathlib import Path
 
 import deep_reasoner.llm
@@ -597,6 +597,9 @@ NOT_A_RUN_SETTING = "The Library never holds it: each chat or run sets it, or th
 # can't render, which would fail every run in its namespace and below.
 UNREAD_DECOMPOSITION = "Agents aren't shown it: the engine can't read it."
 UNRENDERED_DECOMPOSITION = "Agents aren't shown it: a run can't render it."
+# How many stored decompositions' readings are kept, so a read of the Library parses only
+# those that changed; a Library holds a few dozen.
+DECOMPOSITIONS_KEPT = 256
 FIELDS_MAPPING = 'The YAML should be a mapping of fields, like "tools: [llm]".'
 # A var named as one of these hides it from the agent's code, as max: 10 breaks max(numbers).
 BUILTIN_NAMES = frozenset(dir(builtins))
@@ -1061,11 +1064,13 @@ def read_decompositions(connection, names):
     return rows
 
 
+@lru_cache(maxsize=DECOMPOSITIONS_KEPT)
 def decomposition_read(text, size, names):
-    """The decomposition a row's *text*, *size* bytes, as fitting() read them, describes,
-    as the engine's model reads it, and None; or None, and why it is left out, as the
-    panel lists it: the engine can't read it, or can't render a turn, its templates
-    reading only *names*."""
+    """A stored decomposition, read from its row's *text* and *size* (as fitting() reads
+    them), and why it is left out: the decomposition and None when agents can be shown
+    it; None and why, as the panel lists it, when the engine can't read it or can't
+    render one of its turns, whose templates may read only *names*. Kept for the next
+    read of the Library, which most requests and every run make."""
     try:
         decomposition = decomposition_in(row_text(text, size))
     except LibraryError as error:
@@ -1632,7 +1637,7 @@ def sandbox_templates():
 def template_names(variables):
     """The names a turn's template may read: what the engine fills in, and the run
     settings' prompt_template_variables, *variables*."""
-    return {*FILLED_IN, *variables}
+    return frozenset({*FILLED_IN, *variables})
 
 
 def first_use(template, name):
@@ -2719,7 +2724,6 @@ def namespace_rows(read, config, registry):
     for row in read["decompositions"]:
         decompositions[row["namespace"]].append(row)
     left = read["namespaces_left"]
-    names = template_names(config.prompt_template_variables)
     targets = hand_off_targets(config)
     handed = Counter(hand_offs_made(registry, targets))
     readable = set(registry.names)
@@ -2734,7 +2738,7 @@ def namespace_rows(read, config, registry):
                 if name in readable
                 else []
             ),
-            "decompositions": checked(decompositions[name], names),
+            "decompositions": checked(decompositions[name]),
             "yaml": own_yaml(read["namespace_yaml"].get(name, "")),
             "handed_to": handed[name],
             # The engine supplies a bare root when the file's is left out.
@@ -2757,22 +2761,21 @@ def hand_offs_made(registry, targets):
             yield target
 
 
-def checked(rows, names):
+def checked(rows):
     """A namespace's stored decompositions, *rows* as read_decompositions() reads them,
-    each with its problems as a worked example and as templates reading only *names*, as
-    a shared file may hold one the engine can't render; or, for one the engine can't
-    read, why."""
+    each with its problems as a worked example; or, for one left out, why: its templates
+    were checked as it was read."""
     return [
-        {"name": row["name"], "yaml": row["yaml"], "problems": problems_of(row, names)}
+        {"name": row["name"], "yaml": row["yaml"], "problems": problems_of(row)}
         for row in rows
     ]
 
 
-def problems_of(row, names):
+def problems_of(row):
     decomposition = row["decomposition"]
     if decomposition is None:
         return row["why"].splitlines()
-    return decomposition_problems(decomposition, names)
+    return example_problems(decomposition)
 
 
 def listed_tools(read, config, registry, names):
