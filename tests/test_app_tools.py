@@ -48,6 +48,7 @@ from deep_reasoning.app_tools import (
 from deep_reasoning.library import (
     CHANGED_MEANWHILE,
     FIELDS_MAPPING,
+    HERE_LINE,
     HISTORIAN,
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
@@ -56,6 +57,7 @@ from deep_reasoning.library import (
     LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
     MAX_YAML_CHARS,
+    SPAWN_LINE,
     TOO_LONG_ROW,
     UNREAD_DECOMPOSITION,
     UPSERT_DECOMPOSITION,
@@ -1495,6 +1497,35 @@ def test_a_suffix_copying_a_line_added_at_run_time_is_refused(fresh, method, nam
     refusal = "which the app adds at run time: leave it out"
     with pytest.raises(LibraryError, match=refusal):
         getattr(tool, method)(name, {"system_suffix": f"Draft.\n\n{line}"})
+    assert stored_namespaces(fresh) == before
+
+
+@pytest.mark.parametrize(
+    ("method", "name", "fields", "line"),
+    [
+        (
+            "add_namespace",
+            "research",
+            {},
+            HERE_LINE.render(name="research", above=False, loops=True),
+        ),
+        (
+            "change_namespace",
+            "drafts",
+            {"spawn": ["drafts"]},
+            SPAWN_LINE.render(allowed=["drafts"], above=False),
+        ),
+    ],
+    ids=["its-own-here-line", "a-spawn-line-it-brings-in"],
+)
+def test_a_suffix_holding_a_line_the_write_itself_brings_in_is_refused(
+    fresh, method, name, fields, line
+):
+    before = stored_namespaces(fresh)
+    with pytest.raises(LibraryError, match="which the app adds at run time"):
+        getattr(library_tool(fresh), method)(
+            name, fields | {"system_suffix": f"Draft.\n\n{line}"}
+        )
     assert stored_namespaces(fresh) == before
 
 
