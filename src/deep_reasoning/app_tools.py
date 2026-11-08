@@ -111,7 +111,7 @@ from deep_reasoning.runs import (
     total_cost,
     withheld,
 )
-from deep_reasoning.tool_check import check_tools
+from deep_reasoning.tool_check import refuse_unbuilt
 
 log = structlog.get_logger()
 
@@ -1214,14 +1214,7 @@ def check_builds(
     if not tools:
         return
     config = tool_check.config_of(tools_dir.parent / SPEC)
-    verdicts = check_tools(tools, config, os.environ, tools_dir / CHECKS)
-    failed = [
-        f"Tool {name} doesn't build, so it {done}: {why}"
-        for name, why in verdicts.items()
-        if why is not None
-    ]
-    if failed:
-        raise LibraryError("\n".join(failed))
+    refuse_unbuilt(tools, config, os.environ, tools_dir / CHECKS, done)
 
 
 def build_library(client: Any, params: dict[str, Any]) -> Func:

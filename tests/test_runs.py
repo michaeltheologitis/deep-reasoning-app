@@ -22,10 +22,10 @@ from genai_prices import Usage, calc_price
 from structlog.testing import capture_logs
 
 from deep_reasoning import runs as runs_module
+from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
     default_namespace,
     engine_config,
-    import_config,
     open_library,
 )
 from deep_reasoning.runs import (

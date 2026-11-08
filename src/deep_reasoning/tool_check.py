@@ -28,7 +28,6 @@ it.
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -44,7 +43,8 @@ from deep_reasoner.tools import ToolBuildError
 from deep_reasoner.v2 import LLM
 from deep_reasoner.v2.cli import V2Config, make_tool
 
-from deep_reasoning.library import dump, tool_file
+from deep_reasoning.library import LibraryError, dump, tool_file
+from deep_reasoning.runs import kill_group
 
 YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 # A factory that takes longer is refused: every run would wait on it.
@@ -147,25 +147,54 @@ def run(
             # Whether it ended or not, and however (a tool may end it with os._exit, or
             # crash it), what a tool started goes too: unreaped, its pid and its group's
             # are no one else's.
-            with suppress(ProcessLookupError, PermissionError):
-                os.killpg(check.pid, signal.SIGKILL)
+            kill_group(check.pid)
             check.wait()
     return read_notes(notes), printed.read_text(errors="replace"), timed_out
 
 
+if hasattr(os, "waitid"):
+
+    def exited(check: subprocess.Popen) -> bool:
+        """Whether the process *check* has ended, seen without reaping it."""
+        flags = os.WEXITED | os.WNOHANG | os.WNOWAIT
+        return os.waitid(os.P_PID, check.pid, flags) is not None
+
+else:
+
+    def exited(check: subprocess.Popen) -> bool:
+        """Whether the process *check* has ended. Without os.waitid (macOS), this reaps
+        it, so its group is killed straight after, as close as it can be."""
+        return check.poll() is not None
+
+
 def ended(check: subprocess.Popen, deadline: float) -> bool:
-    """Whether the process *check* ended before *deadline* (time.monotonic()), seen
-    without reaping it, by os.waitid. Where there is none (macOS), poll reaps it, so its
-    group is killed straight after, which is as close as it can be."""
+    """Whether the process *check* ended before *deadline* (time.monotonic())."""
     while time.monotonic() < deadline:
-        if hasattr(os, "waitid"):
-            seen = os.waitid(os.P_PID, check.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-            if seen is not None:
-                return True
-        elif check.poll() is not None:
+        if exited(check):
             return True
         time.sleep(POLL_S)
     return False
+
+
+def refuse_unbuilt(
+    tools: Tools,
+    config: dict[str, Any],
+    env: Mapping[str, str],
+    work: Path,
+    done: str | None = None,
+    note: str | None = None,
+) -> None:
+    """Raise LibraryError, in words, naming each of *tools* that doesn't build, as
+    check_tools finds: *done* says what wasn't done, and *note* follows them."""
+    verdicts = check_tools(tools, config, env, work)
+    so = f", so it {done}" if done else ""
+    failed = [
+        f"Tool {name} doesn't build{so}: {why}"
+        for name in tools
+        if (why := verdicts[name]) is not None
+    ]
+    if failed:
+        raise LibraryError("\n".join([*failed, *([note] if note else [])]))
 
 
 def read_notes(notes: Path) -> list[dict[str, Any]]:

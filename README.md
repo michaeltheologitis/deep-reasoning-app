@@ -134,24 +134,12 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   onto its YAML (or a tool's block and Python) before and after; ask the librarian to undo it, and it writes the
   before back from the record. The decompositions panel and the
   namespace menu under the message box show the change at once.
-- `uv run deep-reasoning import CONFIG.yaml` brings in a `deep_reasoner` config: its namespaces with their
-  decompositions, its tools and its run settings (each chat keeps its own model), replacing items with the same name
-  and leaving what the Library already holds as it is. Root is every config's, so the root fields a config sets
-  replace root's own and root keeps the rest. It then says what it changed: each run setting before and after, root's
-  fields, the namespaces and tools it added or replaced, the decompositions the panel will mark ✗, a tool no
-  namespace grants any more, what reaches the historian and librarian too (the system prompt, an `llm` block, root's
-  `system_suffix`, `repl`, `reasoner` and `spawn`), and what it left out: top-level decompositions, the model and
-  client, and a key the engine doesn't read (an anchor block such as `x-defaults`, or a typo such as `max_iters`,
-  with what it may have meant). It changes nothing, saying why, for a file none of whose keys the engine reads, a
-  namespace named `historian` or `librarian` (the app's own) or under one, a tool named as a built-in (`llm`, `rag`,
-  `kg`, `safe_url`, `claude_code`) but not that built-in given its settings, a key anywhere in it (a provider's, or
-  Claude Code's `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`), or a tool of your own that a namespace grants
-  after the import (one already in the Library included) and that doesn't build. It builds each such tool once to
-  check it, from its own file alone as a run does (a file or module beside the config isn't carried in, and a
-  package it needs must be installed in the app's environment), in a process of its own with the environment a run
-  gets but none of those keys, stopped after 60 seconds; a tool no namespace grants isn't built, and the import says
-  so. The build runs as you, so its code can read your files, `~/.deep-reasoning/.env` included, as any granted
-  tool's can at the start of a run: import only configs you trust.
+- `uv run deep-reasoning import CONFIG.yaml` brings a `deep_reasoner` config's namespaces, decompositions, tools and
+  run settings into the Library (each chat keeps its own model), replacing items of the same name and the root fields
+  it sets, and prints what it changed and what it left out. It refuses, changing nothing, a file that isn't a config,
+  the app's `historian` and `librarian` namespaces or one under them, a tool named as a built-in, a key anywhere in
+  it, and a tool a namespace grants that doesn't build: it builds each such tool once to check it, from its own file
+  alone and without your keys, so a file or module beside the config isn't carried in. Import only configs you trust.
 - `uv run deep-reasoning reset` starts afresh: it deletes the Library file (`--library PATH` for another), with its
   chats and settings, and its run and scratch folders, after listing them and asking you to type `delete`
   (`--yes` skips the question). Your keys in `.env` and the folders you picked stay. It deletes only a Library file:
