@@ -9,13 +9,14 @@ from contextlib import closing
 from datetime import date
 from pathlib import Path
 
+import deep_reasoner.llm
 import pytest
 import yaml
 from deep_reasoner.config import load_cli_config, resolve_api_key
 from deep_reasoner.namespaces import ROOT, build_registry
 from deep_reasoner.tools import load_tool_factory
 from deep_reasoner.v2 import DeepReasoner
-from deep_reasoner.v2.agent import _render_context
+from deep_reasoner.v2.agent import _render_context, _rendered_turns
 from deep_reasoner.v2.cli import (
     V2Config,
     build_namespace_registry,
@@ -23,6 +24,7 @@ from deep_reasoner.v2.cli import (
     close_run,
     declared_tool_names,
 )
+from deep_reasoner.v2.messages import func, var
 from structlog.testing import capture_logs
 
 from deep_reasoning.library import (
@@ -66,6 +68,7 @@ from deep_reasoning.library import (
     panel,
     parsed,
     running_code,
+    sandbox_templates,
     store_tool,
     stored_config,
     turn_problems,
@@ -1340,6 +1343,32 @@ def answering(name, code):
     )
 
 
+TURN_2_TEMPLATE = (
+    "Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a Jinja"
+    " template"
+)
+# Templates no run renders: each with why, as the check words it.
+INTERNALS = "reaches into Python internals ({}), which a run refuses"
+INCLUDES = "includes another template ({{% {} %}}), which a worked example can't"
+REFUSED_TEMPLATES = {
+    "an-attribute-of-the-task": (
+        'print("{{ task.__class__.__name__ }}")',
+        INTERNALS.format("__class__"),
+    ),
+    "an-attribute-of-a-jinja-global": (
+        'print("{{ cycler.__init__ }}")',
+        INTERNALS.format("__init__"),
+    ),
+    "a-key": ("print(\"{{ vars['_hidden'] }}\")", INTERNALS.format("_hidden")),
+    "the-attr-filter": (
+        "print(\"{{ task|attr('upper') }}\")",
+        "reads an attribute through |attr, which a worked example can't; write .name instead",
+    ),
+    "an-include": ("{% include 'x.html' %}", INCLUDES.format("include")),
+    "an-extends": ("{% extends 'x.html' %}", INCLUDES.format("extends")),
+    "an-import": ("{% import 'x.html' as x %}", INCLUDES.format("import")),
+    "a-from-import": ("{% from 'x.html' import x %}", INCLUDES.format("from")),
+}
 # Templates that would stop the panel if rendered or compiled unguarded.
 NESTED_TOO_DEEP = "{% for a in [1] %}" * 21 + "x" + "{% endfor %}" * 21
 BILLIONS_OF_LOOPS = (
@@ -1389,6 +1418,10 @@ BILLIONS_OF_LOOPS = (
             "{{ lipsum(n=100000) }}",
             'Turn 2 (assistant), line 4: the engine reads a turn holding {{ or {% as a Jinja template, and this one names "lipsum"',
         ),
+        *(
+            (code, f"{TURN_2_TEMPLATE}, and this one {why}.")
+            for code, why in REFUSED_TEMPLATES.values()
+        ),
     ],
     ids=[
         "an-f-string",
@@ -1397,6 +1430,7 @@ BILLIONS_OF_LOOPS = (
         "nested-too-deep",
         "billions-of-loops",
         "a-jinja-global",
+        *REFUSED_TEMPLATES,
     ],
 )
 def test_a_decomposition_the_engine_cant_render_is_refused_naming_its_turn(
@@ -1457,7 +1491,7 @@ def test_a_shared_files_decomposition_the_engine_cant_render_is_marked_with_why(
         "braces": 'print(f"{{{total}}}")',
         "nested": NESTED_TOO_DEEP,
         "loops": BILLIONS_OF_LOOPS,
-    }
+    } | {name: code for name, (code, _) in REFUSED_TEMPLATES.items()}
     with closing(open_library(library)) as connection, writing(connection):
         for name, code in stored.items():
             connection.execute(
@@ -1579,6 +1613,56 @@ def test_a_namespace_granting_a_tool_root_grants_says_it_grants_it_here(library)
 
 def test_the_names_a_template_may_read_are_those_the_engine_fills_in():
     assert set(FILLED_IN) == set(_render_context([], {}, "a task"))
+
+
+# Templates as the engine's docs and the panel's template write them, each rendered
+# against TICKETS, a topic var and a word_count tool.
+WRITTEN_TEMPLATES = {
+    "the task": ("Count the tickets: {{ task }}", "Count the tickets: open tickets"),
+    "a filter": ("{{ task|upper }}", "OPEN TICKETS"),
+    "a var": ("{{ vars.topic.value }}", "ml"),
+    "each tool": (
+        "{% for f in funcs.values() %}{{ f.name }} {% endfor %}",
+        "word_count ",
+    ),
+    "a loop": (
+        "{% for word in task.split() %}{{ loop.index }}:{{ word }} {% endfor %}",
+        "1:open 2:tickets ",
+    ),
+    "a template variable": ("{{ term }}", "fall"),
+}
+TICKETS = "open tickets"
+
+
+def test_each_worked_example_a_run_renders_renders_the_same_sandboxed(
+    library, tmp_path, monkeypatch
+):
+    for config in ("catalog/advisors.yaml", "examples/experience/experience.yaml"):
+        import_into(library, CONFIGS / config)
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(
+            UPSERT_SETTING, ("prompt_template_variables", dump({"term": "fall"}))
+        )
+    for name, (template, _) in WRITTEN_TEMPLATES.items():
+        example = {"name": name, "messages": [{"role": "user", "content": template}]}
+        change(library, add_decomposition, ROOT, dump(example))
+    registry = registry_of(library, tmp_path)
+    bindings = [var("topic", "ml", "a topic"), func("word_count", len, "words")]
+    context = _render_context(bindings, {"term": "fall"}, TICKETS)
+
+    def rendered():
+        return {
+            (namespace, example.name): _rendered_turns(example, context, namespace)
+            for namespace in registry.names
+            for example in registry.resolve(namespace).decompositions
+        }
+
+    unsandboxed = rendered()
+    monkeypatch.setattr(deep_reasoner.llm, "_JinjaEnv", deep_reasoner.llm._JinjaEnv)
+    sandbox_templates()
+    assert rendered() == unsandboxed
+    for name, (_, expected) in WRITTEN_TEMPLATES.items():
+        assert unsandboxed[ROOT, name] == [("user", expected)]
 
 
 def test_a_reasoner_the_engine_doesnt_know_elsewhere_holds_up_no_other_change(library):

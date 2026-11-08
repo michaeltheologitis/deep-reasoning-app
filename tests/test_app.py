@@ -51,6 +51,7 @@ from deep_reasoning.library import (
     HISTORY_DESCRIPTION,
     LIBRARIANS_EXAMPLES,
     PAGE_DESCRIPTION,
+    UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
     UPSERT_TOOL,
@@ -728,6 +729,105 @@ async def test_a_run_on_a_fresh_library_gets_the_llm_tools_answer(library_on, co
             events = await run_events(api, run)
     assert events[-1]["outcome"] == "answered", events[-1]
     assert events[-1]["answer"] == "7"
+
+
+# Templates a shared file may hold that read a Python internal: each renders a name
+# unsandboxed, and the sandbox refuses it.
+PROBES = {
+    "through a jinja global": "{{ cycler.__init__.__name__ }}",
+    "through the task alone": "{{ task.__class__.__name__ }}",
+}
+PROBE_PLAN = {"what is 2+2?": [repl("FinalAnswer(4)")]}
+
+
+def stored(library, upsert, *row):
+    """A row written straight into the app file, as a shared file may hold it."""
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(upsert, row)
+
+
+async def ask_plainly(library, connect):
+    """A plain message in a new chat of *library*: its run's events."""
+    async with connect(library) as api:
+        return await run_events(
+            api, await send(api, await new_chat(api), "hello, what is 2+2?")
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("template", "why"),
+    [
+        (PROBES["through a jinja global"], "access to attribute '__init__' of 'type'"),
+        (PROBES["through the task alone"], "access to attribute '__class__' of 'str'"),
+        ("{% include 'x.html' %}", "x.html"),
+    ],
+    ids=[*PROBES, "including another template"],
+)
+async def test_a_shared_files_worked_example_no_run_renders_fails_the_run_naming_it(
+    template, why, library_on, connect
+):
+    example = {
+        "name": "innocent",
+        "messages": [
+            {"role": "user", "content": f"Example: {template}"},
+            {"role": "assistant", "content": repl("FinalAnswer(1)", think="ok")},
+        ],
+    }
+    with FakeOpenAI(scripted(PROBE_PLAN)) as fake:
+        library = library_on(fake)
+        stored(library, UPSERT_DECOMPOSITION, "root", "innocent", dump(example))
+        events = await ask_plainly(library, connect)
+    end = events[-1]
+    assert end["outcome"] == "failed"
+    assert end["detail"].startswith(
+        "ValueError: decomposition 'innocent' in namespace 'root' could not be"
+        f" rendered: {why}"
+    )
+    assert fake.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("probe", PROBES.values(), ids=PROBES)
+@pytest.mark.parametrize("where", ["system_suffix", "system_prompt"])
+async def test_a_shared_files_prompt_reading_python_internals_is_shown_as_written(
+    probe, where, library_on, connect
+):
+    text = f"Answer for {probe}."
+    with FakeOpenAI(scripted(PROBE_PLAN)) as fake:
+        library = library_on(fake)
+        if where == "system_suffix":
+            root = {"tools": ["llm"], "system_suffix": text}
+            stored(library, UPSERT_NAMESPACE, "root", dump(root))
+        else:
+            stored(library, UPSERT_SETTING, "system_prompt", dump(text))
+        events = await ask_plainly(library, connect)
+    assert events[-1]["outcome"] == "answered", events[-1]
+    assert any(text in each["content"] for each in fake.calls[0].messages)
+
+
+@pytest.mark.anyio
+async def test_a_chats_earlier_messages_and_answers_are_never_rendered(
+    library_on, connect
+):
+    asked = f"Echo {{{{ 6 * 7 }}}} {PROBES['through a jinja global']}"
+    answer = f"{{{{ 7 * 6 }}}} {PROBES['through the task alone']}"
+    plan = {
+        "Echo": [repl(f"FinalAnswer({answer!r})")],
+        "And now?": [repl("FinalAnswer(0)")],
+    }
+    with FakeOpenAI(scripted(plan)) as fake:
+        async with connect(library_on(fake)) as api:
+            chat = await new_chat(api)
+            first = await run_events(api, await send(api, chat, asked))
+            then = await run_events(api, await send(api, chat, "And now?"))
+    assert [first[-1]["answer"], then[-1]["outcome"]] == [answer, "answered"]
+    shown = [(each["role"], each["content"]) for each in fake.calls[-1].messages]
+    assert shown[-3:] == [
+        ("user", asked),
+        ("assistant", folded_answer(repr(answer))),
+        ("user", "And now?"),
+    ]
 
 
 def historian_or(historian, others):

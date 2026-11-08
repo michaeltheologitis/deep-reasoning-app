@@ -19,8 +19,10 @@ import sys
 import unicodedata
 from collections import Counter, defaultdict
 from contextlib import closing, contextmanager
+from functools import partial
 from pathlib import Path
 
+import deep_reasoner.llm
 import jinja2
 import structlog
 import yaml
@@ -47,7 +49,15 @@ from deep_reasoner.v2.cli import (
     declared_tool_names,
 )
 from deep_reasoner.v2.messages import NoCodeBlock, _has_jinja, code
-from jinja2 import Environment, TemplateError, TemplateSyntaxError, meta, nodes
+from jinja2 import (
+    DictLoader,
+    Environment,
+    TemplateError,
+    TemplateSyntaxError,
+    meta,
+    nodes,
+)
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 from pydantic import ValidationError
 
 log = structlog.get_logger()
@@ -530,6 +540,18 @@ NAMES_ONLY = (
     "a template may name only task, vars, funcs, coroutines and the run settings'"
     " prompt_template_variables, which the engine fills in"
 )
+# A shared file is a trust boundary: its templates must not reach Python internals.
+# With no templates to include, an include fails as a render the engine words.
+SANDBOXED = partial(ImmutableSandboxedEnvironment, loader=DictLoader({}))
+# What a run renders no turn with: another template, as there are none, and a Python
+# internal, which the sandbox refuses; the sandbox, not this, is the guard.
+INCLUDES = {
+    nodes.Include: "include",
+    nodes.Extends: "extends",
+    nodes.Import: "import",
+    nodes.FromImport: "from",
+}
+REFUSED = (*INCLUDES, nodes.Getattr, nodes.Getitem, nodes.Filter)
 # Compiling a template nested too deep raises Python's own errors, not Jinja's.
 TEMPLATE_FAILURES = (TemplateError, SyntaxError, RecursionError, MemoryError)
 
@@ -1193,6 +1215,12 @@ def checked_text(text):
         )
 
 
+def sandbox_templates():
+    """Make every Jinja render the engine does in this process sandboxed: each process
+    that runs the engine calls it first."""
+    deep_reasoner.llm._JinjaEnv = SANDBOXED
+
+
 def template_names(config):
     """The names a turn's template may read: what the engine fills in, and the run
     settings' prompt_template_variables in *config*."""
@@ -1209,14 +1237,55 @@ def first_use(template, name):
     return min(uses)
 
 
+def internal_read(node):
+    """The Python internal *node* reads, a name starting with _, which a run's sandbox
+    refuses; None for none."""
+    if isinstance(node, nodes.Getattr):
+        name = node.attr
+    elif isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Const):
+        name = node.arg.value
+    else:
+        return None
+    return name if isinstance(name, str) and name.startswith("_") else None
+
+
+def refused(node):
+    """Why a worked example may not hold *node*, in words; None when it may."""
+    if type(node) in INCLUDES:
+        tag = INCLUDES[type(node)]
+        return (
+            f"includes another template ({{% {tag} %}}), which a worked example can't"
+        )
+    if isinstance(node, nodes.Filter) and node.name == "attr":
+        return "reads an attribute through |attr, which a worked example can't; write .name instead"
+    if internal := internal_read(node):
+        return f"reaches into Python internals ({internal}), which a run refuses"
+    return None
+
+
+def first_refused(template):
+    """The line of *template* (parsed) where it first holds what a worked example may
+    not, and why; None when it holds none. Of a chain such as a._b._c, the first read."""
+    for node in template.find_all(REFUSED):
+        if refused(node):
+            while (inner := getattr(node, "node", None)) is not None and refused(inner):
+                node = inner
+            return node.lineno, refused(node)
+    return None
+
+
 def template_problem(label, text, names):
-    """Why the engine couldn't render the turn *text*, *label*, when it reads more than
-    *names* or doesn't parse or compile; None when it holds no template or neither. It is
-    never rendered, so this runs none of its code."""
+    """Why the engine couldn't render the turn *text*, *label*, when it includes another
+    template, reads a Python internal, reads more than *names* or doesn't parse or
+    compile; None when it holds no template or none of these. It is never rendered, so
+    this runs none of its code."""
     if not _has_jinja(text):
         return None
     try:
         template = JINJA.parse(text)
+        if found := first_refused(template):
+            line, why = found
+            return f"{label}, line {line}: {TEMPLATE}, and this one {why}. {ESCAPE}"
         missing = sorted(meta.find_undeclared_variables(template) - names)
         if missing:
             line = first_use(template, missing[0])
