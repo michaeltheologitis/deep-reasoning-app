@@ -125,12 +125,16 @@ def test_no_browser_opens_no_tab(monkeypatch, opened, free_port):
     cli.main(["--port", str(free_port), "--no-browser"])
 
 
-def test_a_taken_port_exits_with_a_plain_error_suggesting_another(served):
+def test_a_taken_port_exits_with_a_plain_error_making_no_library(served, tmp_path):
+    folder = tmp_path / "libraries"
+    folder.mkdir()
+    library = folder / "new.sqlite"
     with socket.create_server(("127.0.0.1", 0)) as taken:
         port = taken.getsockname()[1]
         with pytest.raises(SystemExit, match=f"Port {port} is already in use.*--port"):
-            cli.main(["--port", str(port), "--no-browser"])
+            cli.main(["--port", str(port), "--no-browser", "--library", str(library)])
     assert served == []
+    assert list(folder.iterdir()) == []
 
 
 @pytest.mark.parametrize("port", ["-1", "65536"])

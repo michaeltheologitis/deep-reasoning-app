@@ -30,6 +30,13 @@ ADD_CHAT = (
     " VALUES (:id, :title, :created, :folder)"
 )
 NEW_TITLE = "New chat"
+# The longest title kept: a longer one, typed or taken from a first message, is cut.
+TITLE_CHARS = 200
+# A run id's shape, as a GLOB: ids sort by when their runs began.
+RUN_GLOB = "-".join("[0-9]" * digits for digits in (8, 6, 6))
+LAST_RUN = (
+    "SELECT max(id) FROM runs WHERE chat = ? AND typeof(id) = 'text' AND id GLOB ?"
+)
 # Three words, like "tunneling-easygoing-mosquito": over 300 million ids.
 ID_WORDS = 3
 
@@ -67,18 +74,27 @@ def chats_in(connection: sqlite3.Connection) -> list[Chat]:
     return [dict(row) for row in rows if well_formed(row)]
 
 
+def with_last_run(connection: sqlite3.Connection, chat: Chat) -> Chat:
+    """*chat* with the id of its latest run, None if it has none."""
+    last = connection.execute(LAST_RUN, (chat["id"], RUN_GLOB)).fetchone()[0]
+    return chat | {"last_run": last}
+
+
 def list_chats(path: Path) -> list[Chat]:
-    """Every chat the app could have written, newest first."""
+    """Every chat the app could have written, with its latest run, newest first."""
     with connect(path) as connection:
-        return chats_in(connection)
+        return [with_last_run(connection, chat) for chat in chats_in(connection)]
 
 
 def find_chat(path: Path, chat: str) -> Chat | None:
+    """The chat, with its latest run; None when it isn't there."""
     with connect(path) as connection:
         row = connection.execute(
             f"SELECT {COLUMNS} FROM chats WHERE id = ?", (chat,)
         ).fetchone()
-    return None if row is None or not well_formed(row) else dict(row)
+        if row is None or not well_formed(row):
+            return None
+        return with_last_run(connection, dict(row))
 
 
 def create_chat(path: Path, folder: str | None = None) -> Chat:
@@ -93,12 +109,19 @@ def create_chat(path: Path, folder: str | None = None) -> Chat:
     with connect(path) as connection:
         while not connection.execute(ADD_CHAT, chat).rowcount:
             chat["id"] = generate_slug(ID_WORDS)
-    return dict.fromkeys(CHOICES) | chat
+    return dict.fromkeys(CHOICES) | chat | {"last_run": None}
+
+
+def capped(title: str) -> str:
+    return title[:TITLE_CHARS].rstrip()
 
 
 def rename_chat(path: Path, chat: str, title: str) -> None:
+    """Title the chat *title*, cut past TITLE_CHARS."""
     with connect(path) as connection:
-        connection.execute("UPDATE chats SET title = ? WHERE id = ?", (title, chat))
+        connection.execute(
+            "UPDATE chats SET title = ? WHERE id = ?", (capped(title), chat)
+        )
 
 
 def choose(
@@ -125,8 +148,8 @@ def choose_folder(path: Path, chat: str, folder: str | None) -> None:
 
 def title_new_chat(path: Path, chat: str, message: str) -> None:
     """Title a chat still called "New chat" after *message*'s first line that isn't
-    blank."""
-    title = message.strip().partition("\n")[0].strip()
+    blank, cut past TITLE_CHARS."""
+    title = capped(message.strip().partition("\n")[0].strip())
     if not title:
         return
     with connect(path) as connection:

@@ -29,17 +29,21 @@ from deep_reasoning.library import (
     open_library,
 )
 from deep_reasoning.runs import (
+    CHAT_DELETED,
     EARLIER_TURNS_NOTE,
     LOST,
+    NOT_SAVED,
     TOO_LONG,
     RunInProgress,
     Runs,
     Turn,
+    chat_turns,
     earlier_messages,
     end_unfinished,
     new_run_id,
     read_events,
     read_turn,
+    run_started,
     save_event,
 )
 from deep_reasoning.settings import VENDORS
@@ -606,7 +610,7 @@ async def test_a_chat_takes_its_next_message_once_its_turn_has_ended(
     assert events[-1]["outcome"] == "answered"
 
 
-async def test_remove_stops_the_chats_run_and_deletes_its_folder_once_it_ended(
+async def test_remove_ends_the_chats_run_as_deleted_and_deletes_its_folder_once_ended(
     home, library, fake_config
 ):
     spin = "while True:\n    pass"
@@ -620,7 +624,8 @@ async def test_remove_stops_the_chats_run_and_deletes_its_folder_once_it_ended(
         rest = [event async for event in watching]
     with pytest.raises(ProcessLookupError):
         os.killpg(group_of(events), 0)
-    assert rest[-1]["kind"] == "turn.end" and rest[-1]["outcome"] == "stopped"
+    assert rest[-1]["kind"] == "turn.end"
+    assert (rest[-1]["outcome"], rest[-1]["detail"]) == ("deleted", CHAT_DELETED)
     assert not (home / "runs" / run).exists()
     assert saved(library, run) == [] and not runs.exists(run)
 
@@ -726,9 +731,45 @@ async def test_an_event_the_app_file_refuses_ends_the_run_failed_and_frees_the_c
         _, again = await run_to_the_end(runs, "Hi.", fake_config(fake))
     assert events[-1]["kind"] == "turn.end" and events[-1]["outcome"] == "failed"
     assert FULL in events[-1]["detail"]
-    assert saved(library, run) == events[:2]
-    assert turn_of(library, run) == Turn("Spin.", "failed", None, LOST)
+    # the next start finds the file taking events again, and saves what it refused
+    assert saved(library, run) == events
+    assert turn_of(library, run) == Turn("Spin.", "failed", None, events[-1]["detail"])
     assert again[-1]["outcome"] == "answered"
+
+
+async def test_a_run_whose_end_the_file_refused_reads_back_as_it_ended_until_saved(
+    home, library, fake_config, monkeypatch
+):
+    with FakeOpenAI(scripted({"Spin.": [repl("while True:", "    pass")]})) as fake:
+        runs = Runs(library, home)
+        monkeypatch.setattr(sqlite3, "connect", partial(CONNECT, factory=full_disk(2)))
+        run, events = await run_to_the_end(runs, "Spin.", fake_config(fake))
+        streamed_again = [event async for event in runs.events(run)]
+        with closing(open_library(library)) as connection:
+            turns = chat_turns(connection, CHAT, held=runs.held)
+            turn = read_turn(connection, run, runs.held[run])
+        await runs.close()
+        refused_at_close = saved(library, run)
+        monkeypatch.setattr(sqlite3, "connect", CONNECT)
+        await runs.close()
+    assert events[-1]["detail"].startswith(NOT_SAVED) and FULL in events[-1]["detail"]
+    assert streamed_again == events
+    assert turns == [{"run": run, "events": events}]
+    assert turn == Turn("Spin.", "failed", None, events[-1]["detail"])
+    assert refused_at_close == events[:2]
+    assert saved(library, run) == events and runs.held == {}
+
+
+@pytest.mark.parametrize(
+    ("run", "began"),
+    [
+        ("20261025-120000-000000", datetime(2026, 10, 25, 12, tzinfo=UTC).timestamp()),
+        ("20261325-120000-000000", None),
+        (None, None),
+    ],
+)
+def test_a_run_id_says_when_its_run_began(run, began):
+    assert run_started(run) == began
 
 
 def test_run_ids_are_utc_so_they_sort_in_order_across_a_clock_change(monkeypatch):

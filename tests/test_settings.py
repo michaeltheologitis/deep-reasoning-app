@@ -224,10 +224,14 @@ def test_a_vendor_with_no_key_cannot_run(app_home):
         ("", "Name the server with letters"),
         ("vllm/../x", "Name the server with letters"),
         ("x" * 41, "Name the server with letters"),
-        ("openai", "There is a provider named OpenAI already"),
+        ("lm studio", r"There is a provider named lm studio already\.$"),
+        ("openai", "named OpenAI already, and names differing only in case count as"),
         # its key would be kept under Anthropic's variable
-        ("anthropic.", "There is a provider named Anthropic already"),
-        ("lm-studio", "There is a provider named lm studio already"),
+        (
+            "anthropic.",
+            "Anthropic already, and anthropic. would keep its key under the",
+        ),
+        ("lm-studio", "same variable, DEEP_REASONING_LM_STUDIO_KEY: pick a name that"),
     ],
 )
 def test_a_server_name_that_is_bad_or_taken_is_refused(

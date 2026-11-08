@@ -103,7 +103,8 @@ def test_a_version_2_file_opens_with_its_chats_and_settings_kept_and_gains_runs(
         runs = chat_runs(connection, chat["id"])
         events = read_events(connection, run)
     assert version == SCHEMA_VERSION
-    assert list_chats(imported) == before and before[0]["title"] == "Plans"
+    assert list_chats(imported) == [before[0] | {"last_run": run}]
+    assert before[0]["title"] == "Plans"
     assert read_settings(imported) == settings
     assert settings[LAST_MODEL] == {"provider": "OpenAI", "name": "gpt-6-luna"}
     assert (runs, events) == ([run], [started])

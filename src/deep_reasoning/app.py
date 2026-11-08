@@ -68,6 +68,7 @@ from deep_reasoning.runs import (
     delete_orphans,
     end_unfinished,
     read_turn,
+    run_started,
 )
 from deep_reasoning.settings import (
     Provider,
@@ -138,6 +139,15 @@ class Web(StaticFiles):
 def shown_folder(folder):
     """A folder kept as an absolute path, as the page shows it; None stays None."""
     return None if folder is None else short_path(Path(folder))
+
+
+def last_used(chat):
+    """When the chat was last used: its latest run's start, else when it was made."""
+    started = run_started(chat["last_run"])
+    if started is not None:
+        return started
+    created = chat["created"]
+    return created if isinstance(created, int | float) else 0.0
 
 
 def same_origin(
@@ -351,9 +361,12 @@ def create_app(library, home):
     def read_folders(path: str = "~"):
         return list_folders(path)
 
+    # A default folder that isn't on this computer is marked: new chats get their scratch folder.
     @app.get("/api/default-folder")
     async def read_default_folder():
-        return {"folder": shown_folder(default_folder(library))}
+        folder = default_folder(library)
+        missing = folder is not None and starting_folder(folder) is None
+        return {"folder": shown_folder(folder), "missing": missing}
 
     @app.put("/api/default-folder")
     async def put_default_folder(folder: Annotated[str | None, Body(embed=True)]):
@@ -366,8 +379,8 @@ def create_app(library, home):
         return default_namespace(library), starting_model(home, library)
 
     def shown(chat, starts):
-        """A chat as the API gives it: with the id of its run that is going, if one is, and
-        the namespace and model its next message runs on."""
+        """A chat as the API gives it: with the id of its run that is going, if one is, its
+        latest run's, and the namespace and model its next message runs on."""
         namespace, model = starts
         if chat["model"] is not None:
             model = {"provider": chat["provider"], "name": chat["model"]}
@@ -376,6 +389,7 @@ def create_app(library, home):
             "title": chat["title"],
             "created": chat["created"],
             "live": runs.live(chat["id"]),
+            "last_run": chat["last_run"],
             "namespace": chat["namespace"] or namespace,
             "model": model,
             "folder": shown_folder(chat["folder"]),
@@ -392,10 +406,12 @@ def create_app(library, home):
 
     KnownChat = Annotated[dict, Depends(known_chat)]
 
+    # The chat used last first, so a reload opens it.
     @app.get("/api/chats")
     async def read_chats():
         starts = starting_points()
-        return [shown(chat, starts) for chat in list_chats(library)]
+        chats = sorted(list_chats(library), key=last_used, reverse=True)
+        return [shown(chat, starts) for chat in chats]
 
     @app.post("/api/chats", status_code=HTTPStatus.CREATED)
     async def post_chat():
@@ -406,7 +422,7 @@ def create_app(library, home):
     async def read_chat(chat: KnownChat):
         going = runs.live(chat["id"])
         with closing(open_library(library)) as connection:
-            turns = chat_turns(connection, chat["id"], going)
+            turns = chat_turns(connection, chat["id"], going, runs.held)
         return shown(chat, starting_points()) | {"turns": turns}
 
     @app.patch("/api/chats/{chat}")
@@ -457,8 +473,10 @@ def create_app(library, home):
                 raise LibraryError(
                     f"This chat's namespace {namespace} no longer exists — pick another."
                 )
+            held = runs.held
             turns = [
-                read_turn(connection, run) for run in chat_runs(connection, chat["id"])
+                read_turn(connection, run, held.get(run, ()))
+                for run in chat_runs(connection, chat["id"])
             ]
         earlier = [turn for turn in turns if turn is not None]
         if model is None:
