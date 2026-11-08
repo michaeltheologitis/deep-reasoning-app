@@ -3197,6 +3197,22 @@ def test_a_shared_files_chats_table_that_refuses_new_chats_answers_in_plain_word
     }
 
 
+def test_a_shared_files_app_settings_table_that_refuses_a_setting_answers_in_words(
+    client, library
+):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute("DROP TABLE app_settings")
+        connection.execute(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, json TEXT NOT NULL,"
+            " CHECK (0))"
+        )
+    saved = client.put("/api/default-folder", json={"folder": None})
+    assert saved.status_code == 400
+    assert saved.json() == {
+        "detail": "The Library file refused the setting: CHECK constraint failed: 0."
+    }
+
+
 def test_a_title_that_isnt_utf_8_reads_with_a_replacement_character(client, library):
     chat = client.post("/api/chats").json()["id"]
     with closing(open_library(library)) as connection:
