@@ -1,20 +1,20 @@
-{"seq": 1, "t": 1794135034.8317468, "kind": "turn.start", "run": "20261108-105034-806625", "chat": "recorded", "prompt": "Remember and fork.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261108-105034-806625"}
-{"seq": 2, "t": 1794135035.9324274, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Remember and fork.", "namespace": "root", "drive": 1}
-{"seq": 3, "t": 1794135036.0363684, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1339, "tokens_out": 21, "cost": 0.0013599999999999999}
-{"seq": 4, "t": 1794135036.036609, "kind": "cell.start", "node": 1, "cell": 1, "code": "s = subagent()\nfirst = run_all([anext(s.send('Note that the answer is 42.'))])\nagain = run_all([anext(s.send('Say it again.'))])\nprint(first, again)"}
-{"seq": 5, "t": 1794135036.0390925, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Note that the answer is 42.", "namespace": "root", "drive": 1}
-{"seq": 6, "t": 1794135036.0827227, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1342, "tokens_out": 4, "cost": 0.001346}
-{"seq": 7, "t": 1794135036.082922, "kind": "cell.start", "node": 2, "cell": 2, "code": "FinalAnswer(42)"}
-{"seq": 8, "t": 1794135036.0837505, "kind": "cell.end", "node": 2, "cell": 2, "code": "FinalAnswer(42)", "output": "FinalAnswer: 42", "status": "done"}
-{"seq": 9, "t": 1794135036.0838573, "kind": "agent.end", "node": 2, "status": "done", "result": "42", "detail": null}
-{"seq": 10, "t": 1794135036.0892298, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Say it again.", "namespace": "root", "drive": 2}
-{"seq": 11, "t": 1794135036.1506855, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1352, "tokens_out": 5, "cost": 0.001357}
-{"seq": 12, "t": 1794135036.150811, "kind": "cell.start", "node": 2, "cell": 3, "code": "FinalAnswer('again 42')"}
-{"seq": 13, "t": 1794135036.1513085, "kind": "cell.end", "node": 2, "cell": 3, "code": "FinalAnswer('again 42')", "output": "FinalAnswer: 'again 42'", "status": "done"}
-{"seq": 14, "t": 1794135036.1513782, "kind": "agent.end", "node": 2, "status": "done", "result": "again 42", "detail": null}
-{"seq": 15, "t": 1794135036.1572573, "kind": "cell.end", "node": 1, "cell": 1, "code": "s = subagent()\nfirst = run_all([anext(s.send('Note that the answer is 42.'))])\nagain = run_all([anext(s.send('Say it again.'))])\nprint(first, again)", "output": "[42] ['again 42']", "status": "done"}
-{"seq": 16, "t": 1794135036.1769621, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1364, "tokens_out": 5, "cost": 0.001369}
-{"seq": 17, "t": 1794135036.1770723, "kind": "cell.start", "node": 1, "cell": 4, "code": "FinalAnswer([first, again])"}
-{"seq": 18, "t": 1794135036.1775053, "kind": "cell.end", "node": 1, "cell": 4, "code": "FinalAnswer([first, again])", "output": "FinalAnswer: [[42], ['again 42']]", "status": "done"}
-{"seq": 19, "t": 1794135036.1775913, "kind": "agent.end", "node": 1, "status": "done", "result": "[[42], ['again 42']]", "detail": null}
-{"seq": 20, "t": 1794135036.1776404, "kind": "turn.end", "outcome": "answered", "answer": "[[42], ['again 42']]", "detail": null, "cost": 0.005431999999999999, "seconds": 1.3458936214447021}
+{"seq": 1, "t": 1794136965.6041389, "kind": "turn.start", "run": "20261108-112245-581236", "chat": "recorded", "prompt": "Remember and fork.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261108-112245-581236"}
+{"seq": 2, "t": 1794136966.5448034, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Remember and fork.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794136966.6369555, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1339, "tokens_out": 21, "cost": 0.0013599999999999999}
+{"seq": 4, "t": 1794136966.637148, "kind": "cell.start", "node": 1, "cell": 1, "code": "s = subagent()\nfirst = run_all([anext(s.send('Note that the answer is 42.'))])\nagain = run_all([anext(s.send('Say it again.'))])\nprint(first, again)"}
+{"seq": 5, "t": 1794136966.6403081, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Note that the answer is 42.", "namespace": "root", "drive": 1}
+{"seq": 6, "t": 1794136966.6859949, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1342, "tokens_out": 4, "cost": 0.001346}
+{"seq": 7, "t": 1794136966.6861408, "kind": "cell.start", "node": 2, "cell": 2, "code": "FinalAnswer(42)"}
+{"seq": 8, "t": 1794136966.68707, "kind": "cell.end", "node": 2, "cell": 2, "code": "FinalAnswer(42)", "output": "FinalAnswer: 42", "status": "done"}
+{"seq": 9, "t": 1794136966.6871462, "kind": "agent.end", "node": 2, "status": "done", "result": "42", "detail": null}
+{"seq": 10, "t": 1794136966.6893752, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Say it again.", "namespace": "root", "drive": 2}
+{"seq": 11, "t": 1794136966.7316163, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1352, "tokens_out": 5, "cost": 0.001357}
+{"seq": 12, "t": 1794136966.731783, "kind": "cell.start", "node": 2, "cell": 3, "code": "FinalAnswer('again 42')"}
+{"seq": 13, "t": 1794136966.7323225, "kind": "cell.end", "node": 2, "cell": 3, "code": "FinalAnswer('again 42')", "output": "FinalAnswer: 'again 42'", "status": "done"}
+{"seq": 14, "t": 1794136966.732435, "kind": "agent.end", "node": 2, "status": "done", "result": "again 42", "detail": null}
+{"seq": 15, "t": 1794136966.733773, "kind": "cell.end", "node": 1, "cell": 1, "code": "s = subagent()\nfirst = run_all([anext(s.send('Note that the answer is 42.'))])\nagain = run_all([anext(s.send('Say it again.'))])\nprint(first, again)", "output": "[42] ['again 42']", "status": "done"}
+{"seq": 16, "t": 1794136966.7397032, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1364, "tokens_out": 5, "cost": 0.001369}
+{"seq": 17, "t": 1794136966.7398307, "kind": "cell.start", "node": 1, "cell": 4, "code": "FinalAnswer([first, again])"}
+{"seq": 18, "t": 1794136966.7404041, "kind": "cell.end", "node": 1, "cell": 4, "code": "FinalAnswer([first, again])", "output": "FinalAnswer: [[42], ['again 42']]", "status": "done"}
+{"seq": 19, "t": 1794136966.7405324, "kind": "agent.end", "node": 1, "status": "done", "result": "[[42], ['again 42']]", "detail": null}
+{"seq": 20, "t": 1794136966.740628, "kind": "turn.end", "outcome": "answered", "answer": "[[42], ['again 42']]", "detail": null, "unfinished_calls": 0, "cost": 0.005431999999999999, "seconds": 1.1364891529083252}
