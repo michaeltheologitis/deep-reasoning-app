@@ -18,7 +18,6 @@ import pytest
 import structlog
 import yaml
 from fake_model import FakeOpenAI, folded_answer, repl, scripted, task_and_turn
-from genai_prices import Usage, calc_price
 from structlog.testing import capture_logs
 
 from deep_reasoning import runs as runs_module
@@ -29,6 +28,7 @@ from deep_reasoning.library import (
     open_library,
 )
 from deep_reasoning.runs import (
+    CHAT_DELETED,
     EARLIER_TURNS_NOTE,
     LOST,
     TOO_LONG,
@@ -64,6 +64,8 @@ FAN_OUT = {
 }
 FAN_OUT_ANSWER = "{'C1': 'C1: 3', 'C2': 'C2: 4'}"
 PRINT_GROUP = repl("import os", "print(os.getpgrp())")
+# More namespaces than a cell adds before a Stop at the first one's change ends it.
+ADDS = 12
 SAVE_S = 1.0
 LEDGER = """\
 import time
@@ -327,29 +329,87 @@ async def test_stop_before_the_root_starts_calls_no_model(home, library, fake_co
     assert fake.calls == []
     assert [event["status"] for event in of_kind(events, "agent.end")] == ["stopped"]
     assert events[-1]["outcome"] == "stopped" and events[-1]["cost"] == 0
+    assert events[-1]["unfinished_calls"] == 0
 
 
-async def test_each_call_is_priced_from_its_usage(home, library, fake_config):
-    usage = {
-        "prompt_tokens": 10_000,
-        "completion_tokens": 2_000,
-        "total_tokens": 12_000,
-        "prompt_tokens_details": {"cached_tokens": 8_000},
-    }
-    tokens = Usage(input_tokens=10_000, cache_read_tokens=8_000, output_tokens=2_000)
-    price = float(calc_price(tokens, "gpt-6-luna").total_price)
+def in_the_librarian(library, chat_config):
+    """The config of a run of a chat in the librarian namespace, on *chat_config*'s model."""
+
+    def config_for(folder):
+        config = engine_config(
+            library, "librarian", folder / "tools", CHAT, folder.name
+        )
+        chats = chat_config(folder)
+        return config | {"model": chats["model"], "client": chats["client"]}
+
+    return config_for
+
+
+def namespaces_in(library):
+    with closing(open_library(library)) as connection:
+        return {name for (name,) in connection.execute("SELECT name FROM namespaces")}
+
+
+async def test_a_stop_amid_library_writes_ends_the_run_with_each_written_change_recorded(
+    home, library, fake_config
+):
+    names = [f"added{number}" for number in range(ADDS)]
+    adds = repl(
+        f"for name in {names!r}:",
+        "    library.add_namespace(name, {'system_suffix': 'Be brief.'})",
+    )
+    before = namespaces_in(library)
+    with FakeOpenAI(scripted({"Add them.": [adds]})) as fake:
+        runs = Runs(library, home)
+        config = in_the_librarian(library, fake_config(fake))
+        run = runs.start(CHAT, "Add them.", config, [])
+        events, stopped_at = [], None
+        async for event in runs.events(run):
+            events.append(event)
+            if event["kind"] == "library.change" and stopped_at is None:
+                stopped_at = time.monotonic()
+                assert runs.stop(run)
+    assert time.monotonic() - stopped_at < runs_module.STOP_GRACE_S
+    assert [event["status"] for event in of_kind(events, "agent.end")] == ["stopped"]
+    assert events[-1]["outcome"] == "stopped" and saved(library, run) == events
+    assert events[-1]["unfinished_calls"] == 0
+    logged = {event["name"] for event in of_kind(events, "library.change")}
+    assert namespaces_in(library) - before == logged
+
+
+async def test_a_run_whose_first_call_fails_ends_with_that_call_unfinished(
+    home, library, fake_config
+):
+    def failing(messages):
+        raise RuntimeError("the fake model is down")
+
+    with FakeOpenAI(failing) as fake:
+        _, events = await run_to_the_end(
+            Runs(library, home), "Summarize two courses.", fake_config(fake)
+        )
+    assert of_kind(events, "usage") == []
+    end = events[-1]
+    assert (end["outcome"], end["cost"], end["unfinished_calls"]) == ("failed", 0, 1)
+
+
+async def test_each_call_costs_what_its_server_says_it_cost(home, library, fake_config):
+    usage = {"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.25}
     with FakeOpenAI(scripted(FAN_OUT), usage=lambda messages, reply: usage) as fake:
         _, events = await run_to_the_end(
             Runs(library, home), "Summarize two courses.", fake_config(fake)
         )
     costs = [event["cost"] for event in of_kind(events, "usage")]
-    assert costs == [pytest.approx(price)] * len(fake.calls)
-    assert events[-1]["cost"] == pytest.approx(price * len(fake.calls))
+    assert costs == [0.25] * len(fake.calls)
+    assert events[-1]["cost"] == pytest.approx(0.25 * len(fake.calls))
 
 
-async def test_an_unknown_models_calls_cost_null_not_zero(home, library, fake_config):
+async def test_a_vendors_model_on_a_server_of_your_own_costs_null_not_its_price(
+    home, library, fake_config
+):
+    """A server that is no vendor and names no cost: a model under OpenAI's name there
+    isn't OpenAI's to price."""
     with FakeOpenAI(scripted(FAN_OUT)) as fake:
-        config = fake_config(fake, model="a-model-nobody-prices")
+        config = fake_config(fake, model="gpt-6-luna")
         _, events = await run_to_the_end(
             Runs(library, home), "Summarize two courses.", config
         )
@@ -606,7 +666,7 @@ async def test_a_chat_takes_its_next_message_once_its_turn_has_ended(
     assert events[-1]["outcome"] == "answered"
 
 
-async def test_remove_stops_the_chats_run_and_deletes_its_folder_once_it_ended(
+async def test_remove_ends_the_chats_run_as_deleted_and_deletes_its_folder_once_ended(
     home, library, fake_config
 ):
     spin = "while True:\n    pass"
@@ -620,7 +680,8 @@ async def test_remove_stops_the_chats_run_and_deletes_its_folder_once_it_ended(
         rest = [event async for event in watching]
     with pytest.raises(ProcessLookupError):
         os.killpg(group_of(events), 0)
-    assert rest[-1]["kind"] == "turn.end" and rest[-1]["outcome"] == "stopped"
+    assert rest[-1]["kind"] == "turn.end"
+    assert (rest[-1]["outcome"], rest[-1]["detail"]) == ("deleted", CHAT_DELETED)
     assert not (home / "runs" / run).exists()
     assert saved(library, run) == [] and not runs.exists(run)
 

@@ -17,7 +17,7 @@ export function changeText({ what, namespace, name, before }) {
 
 export function newFold() {
   return {
-    turn: { prompt: "", steps: [], changes: [], pages: [], answer: null, outcome: null, detail: null, cost: null, unpriced: false, seconds: null, started: null, model: null, namespace: null },
+    turn: { prompt: "", steps: [], changes: [], pages: [], answer: null, outcome: null, detail: null, cost: null, unpriced: false, unfinished: false, seconds: null, started: null, model: null, provider: null, namespace: null, run: null },
     seq: 0,
     // node → its holder (the turn for the root, else its row) and its parent's node
     nodes: new Map(),
@@ -42,7 +42,7 @@ export function foldEvents(events) {
 }
 
 const FOLDS = {
-  "turn.start": (fold, { prompt, t, model, namespace }) => Object.assign(fold.turn, { prompt, started: t, model, namespace }),
+  "turn.start": (fold, { prompt, t, model, provider, namespace, run }) => Object.assign(fold.turn, { prompt, started: t, model, provider, namespace, run }),
   "agent.start": startAgent,
   think: (fold, event) => addStep(fold, event.node, { kind: "think", text: event.text }),
   "cell.start": startCell,
@@ -108,11 +108,15 @@ function endCell(fold, event) {
 
 // A call's cost counts for its agent, every agent above it and the turn; once one call is unpriced, so is each of their totals
 // (unpriced, cost null), unlike a holder with no calls yet (cost null alone). A cost that isn't a number, as a shared file may hold, is unknown.
+// A sub-agent's own call names the model it asked for on its row, when that isn't the run's.
 function addUsage(fold, event) {
   for (const { holder } of lineage(fold, event.node)) {
     holder.unpriced ||= typeof event.cost !== "number";
     holder.cost = holder.unpriced ? null : (holder.cost ?? 0) + event.cost;
   }
+  const row = fold.nodes.get(event.node)?.holder;
+  if (event.own !== true || !row || row === fold.turn || typeof event.model !== "string" || event.model === fold.turn.model) return;
+  row.model = event.model;
 }
 
 function endAgent(fold, event) {
@@ -121,12 +125,29 @@ function endAgent(fold, event) {
   Object.assign(row, { status: event.status, result: event.result ?? event.detail, seconds: event.t - row.started });
 }
 
+// The run's own total counts only calls that finished: one whose only calls were cut off or failed totals 0 but cost what no one knows.
 function endTurn(fold, event) {
   const { outcome, answer, detail, cost, seconds } = event;
-  // the run's own total, null only when a call was unpriced: it counts every call, and a run with none costs 0
-  const priced = typeof cost === "number";
-  Object.assign(fold.turn, { outcome, answer, detail, cost: priced ? cost : null, unpriced: !priced, seconds });
+  const unfinished = cost === 0 && event.unfinished_calls > 0;
+  const priced = typeof cost === "number" && !unfinished;
+  Object.assign(fold.turn, { outcome, answer, detail, cost: priced ? cost : null, unpriced: !priced && !unfinished, unfinished, seconds });
   markStopped(fold.turn, event.t);
+}
+
+// Each node of a turn's tree with where it is, "turn" or its steps' and sub-agents' places, the same each time its events are folded.
+export function* nodesOf(turn) {
+  yield ["turn", turn];
+  yield* nodesBelow(turn, "");
+}
+
+function* nodesBelow(holder, path) {
+  for (const [i, step] of holder.steps.entries()) {
+    yield [`${path}${i}`, step];
+    for (const [j, agent] of (step.agents ?? []).entries()) {
+      yield [`${path}${i}.${j}`, agent];
+      yield* nodesBelow(agent, `${path}${i}.${j}.`);
+    }
+  }
 }
 
 // What the run left going when it ended was stopped with it.

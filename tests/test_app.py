@@ -41,8 +41,8 @@ from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
 from deep_reasoning import settings as settings_module
-from deep_reasoning.app import WEB, create_app
-from deep_reasoning.chats import create_chat
+from deep_reasoning.app import NO_PAGE, WEB, create_app
+from deep_reasoning.chats import TITLE_CHARS, create_chat
 from deep_reasoning.folders import data_folder
 from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
@@ -191,6 +191,19 @@ def saved_runs(library):
 def namespaces(client):
     return {
         each["name"]: each for each in client.get("/api/library").json()["namespaces"]
+    }
+
+
+def test_the_namespace_menu_reads_the_panels_namespaces_and_default(client):
+    panel = client.get("/api/library").json()
+    menu = client.get("/api/namespaces").json()
+    assert menu == {
+        "namespaces": [
+            {"name": each["name"], "usable": True}
+            for each in panel["namespaces"]
+            if each["usable"]
+        ],
+        "default_namespace": panel["default_namespace"],
     }
 
 
@@ -2160,8 +2173,54 @@ def test_a_blank_title_is_refused(client, title):
     assert client.get("/api/chats").json() == [chat]
 
 
+def test_a_title_past_the_longest_kept_is_cut(client):
+    chat = client.post("/api/chats").json()
+    long = "Trip " + "x" * TITLE_CHARS
+    renamed = client.patch(f"/api/chats/{chat['id']}", json={"title": long})
+    assert renamed.json()["title"] == long[:TITLE_CHARS]
+
+
 async def title_of(api, chat):
     return (await api.get(f"/api/chats/{chat}")).json()["title"]
+
+
+@pytest.mark.anyio
+async def test_the_first_message_titles_a_chat_cut_past_the_longest_kept(
+    library_on, connect
+):
+    prompt = "Count to two. " + "x" * TITLE_CHARS + "\nSlowly."
+    with FakeOpenAI(scripted(PLAN)) as fake:
+        async with connect(library_on(fake)) as api:
+            chat = await new_chat(api)
+            first = await api.post(f"/api/chats/{chat}/runs", json={"prompt": prompt})
+            await run_events(api, first.json()["run"])
+            later = await api.post(f"/api/chats/{chat}/runs", json={"prompt": "Hi."})
+            await run_events(api, later.json()["run"])
+            title = await title_of(api, chat)
+    assert title == first.json()["title"] == later.json()["title"]
+    assert title == prompt[:TITLE_CHARS]
+
+
+@pytest.mark.anyio
+async def test_chats_are_listed_by_their_latest_message_else_when_made(
+    library_on, connect
+):
+    with FakeOpenAI(scripted(PLAN)) as fake:
+        async with connect(library_on(fake)) as api:
+            older, newer = await new_chat(api), await new_chat(api)
+            run = await send(api, older, "Count to two.")
+            await run_events(api, run)
+            used = (await api.get("/api/chats")).json()
+            newest = await new_chat(api)
+            listed = (await api.get("/api/chats")).json()
+            read = (await api.get(f"/api/chats/{older}")).json()
+    assert [each["id"] for each in used] == [older, newer]
+    assert [(each["id"], each["last_run"]) for each in listed] == [
+        (newest, None),
+        (older, run),
+        (newer, None),
+    ]
+    assert read["last_run"] == run
 
 
 @pytest.mark.anyio
@@ -2345,7 +2404,7 @@ def test_a_copy_of_the_app_file_under_another_home_has_its_chats_and_settings(
         ]
     )
     assert (server["base_url"], server["key"]) == (VLLM, "none")
-    assert folder == {"folder": "~/code"}
+    assert folder == {"folder": "~/code", "missing": False}
 
 
 @pytest.mark.anyio
@@ -2612,11 +2671,14 @@ def test_a_page_is_read_from_the_api_and_its_tab_is_the_page_drawing_it(client):
 
 
 @pytest.mark.parametrize("page", ["no-such-page", "not%20an%20id", "x" * 101])
-def test_a_page_not_there_or_with_no_pages_id_is_a_plain_404(client, page):
+def test_a_page_not_there_or_with_no_pages_id_is_a_404_its_tab_says_in_the_apps_look(
+    client, page
+):
     read, tab = client.get(f"/api/pages/{page}"), client.get(f"/pages/{page}")
     assert (read.status_code, tab.status_code) == (404, 404)
-    assert read.json()["detail"] == tab.text
-    assert tab.headers["content-type"].startswith("text/plain")
+    assert read.json()["detail"] == NO_PAGE
+    assert tab.text == (WEB / "page.html").read_text()
+    assert "default-src 'self'" in tab.headers["content-security-policy"]
 
 
 @pytest.mark.parametrize("path", ["/api/pages/{}", "/pages/{}"])
@@ -3200,11 +3262,14 @@ async def test_a_chat_without_a_folder_works_in_its_scratch_folder_across_messag
         async with connect(library_on(fake)) as api:
             chat = await new_chat(api)
             before = (data / "work" / chat).exists()
+            empty = (await api.get(f"/api/chats/{chat}/scratch")).json()
             first = await run_events(api, await send(api, chat, "Write a note."))
             second = await run_events(api, await send(api, chat, "Read the note."))
             read = (await api.get(f"/api/chats/{chat}")).json()
+            written = (await api.get(f"/api/chats/{chat}/scratch")).json()
     scratch = data / "work" / chat
     assert not before
+    assert (empty, written) == ({"files": False}, {"files": True})
     assert (read["folder"], read["scratch_folder"]) == (
         None,
         f"~/files/{data.name}/work/{chat}",
@@ -3312,10 +3377,11 @@ def test_new_chats_start_in_the_default_folder_and_older_chats_keep_theirs(
     after = client.post("/api/chats").json()
     cleared = client.put("/api/default-folder", json={"folder": ""})
     last = client.post("/api/chats").json()
-    assert unset == {"folder": None} and saved.json() == {"folder": "~/code"}
+    assert unset == {"folder": None, "missing": False}
+    assert saved.json() == {"folder": "~/code", "missing": False}
     assert refused.status_code == 400
     assert default_folder(library) is None
-    assert cleared.json() == {"folder": None}
+    assert cleared.json() == {"folder": None, "missing": False}
     assert [each["folder"] for each in (before, after, last)] == [None, "~/code", None]
     listed = {each["id"]: each["folder"] for each in client.get("/api/chats").json()}
     assert listed[before["id"]] is None and listed[after["id"]] == "~/code"
@@ -3332,7 +3398,10 @@ def test_a_default_folder_that_is_not_here_gives_new_chats_their_scratch_folder(
         None,
         f"~/files/{data.name}/work/{chat['id']}",
     )
-    assert client.get("/api/default-folder").json() == {"folder": "~/code"}
+    assert client.get("/api/default-folder").json() == {
+        "folder": "~/code",
+        "missing": True,
+    }
 
 
 @pytest.mark.anyio
@@ -3699,7 +3768,7 @@ def test_malformed_settings_read_as_unset_and_the_page_can_set_them_again(
     assert (chat.status_code, chat.json()["model"], folder) == (
         201,
         None,
-        {"folder": None},
+        {"folder": None, "missing": False},
     )
     assert (
         added.status_code == 201 and by_name(added.json())["vllm"]["base_url"] == VLLM

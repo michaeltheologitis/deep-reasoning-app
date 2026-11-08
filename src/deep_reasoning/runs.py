@@ -34,11 +34,11 @@ import structlog
 import yaml
 
 from deep_reasoning.folders import remove_unless_kept
-from deep_reasoning.library import open_library, writing
+from deep_reasoning.library import RUN_ID, RUN_ID_FORMAT, open_library, writing
 
 log = structlog.get_logger()
 
-Outcome = Literal["answered", "exhausted", "failed", "stopped"]
+Outcome = Literal["answered", "exhausted", "failed", "stopped", "deleted"]
 RUNS = "runs"
 SPEC = "spec.yaml"
 # What a library.change event says of a change the library tool made to the Library.
@@ -57,7 +57,6 @@ ORPHANS = (
 ORPHAN_PAGES = "NOT EXISTS (SELECT 1 FROM chats WHERE chats.id = pages.chat)"
 # libyaml's where PyYAML has it: the pure-Python one takes ~0.6 s a MiB, on the loop.
 YAML_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
-RUN_ID = r"^\d{8}-\d{6}-\d{6}$"
 STOP_GRACE_S = 5.0
 MIB = 1024 * 1024
 LINE_LIMIT = 64 * MIB
@@ -68,9 +67,15 @@ TOO_LONG = (
 # Never handed to a run: with it set, Claude Code bills that key instead of the subscription.
 WITHHELD = "ANTHROPIC_API_KEY"
 SHUT_DOWN = "Deep Reasoning shut down while the run was going."
-LOST = "Deep Reasoning stopped while the run was going, so the run was lost."
+LOST = (
+    "The run's end wasn't saved: the app stopped while it was going, or the Library file"
+    " refused its events."
+)
 LOST_END = {"kind": "turn.end", "outcome": "failed", "answer": None, "detail": LOST}
 NOT_SAVED = "The app couldn't save the run in the Library file, so it ended the run"
+# A run whose chat was deleted while it went: only the streams still open on it see this.
+CHAT_DELETED = "Its chat was deleted, so the run was stopped."
+DELETED_END = {"outcome": "deleted", "answer": None, "detail": CHAT_DELETED}
 KEY_WITHHELD = "[key withheld]"
 # A shorter key is no secret (a local server's "x"), and withholding it would garble the run's text.
 SHORTEST_SECRET = 8
@@ -153,6 +158,7 @@ class _Live:
     process: asyncio.subprocess.Process | None = None
     pump: asyncio.Task | None = None
     stop_asked: bool = False
+    chat_deleted: bool = False
     kill_timer: asyncio.TimerHandle | None = None
     detail: str | None = None  # why the server ended it, if it did
 
@@ -461,7 +467,7 @@ def earlier_messages(turns: Sequence[Turn]) -> list[dict[str, str]]:
 def new_run_id() -> str:
     """The start time in UTC, to the microsecond: run ids sort in the order the runs
     began, across a change of the local clock."""
-    return datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+    return datetime.now(UTC).strftime(RUN_ID_FORMAT)
 
 
 def worker_env(keys: dict[str, str]) -> dict[str, str]:
@@ -615,6 +621,7 @@ class Runs:
         workers = []
         for run, live in self._live.items():
             if live.chat == chat:
+                live.chat_deleted = True
                 self.stop(run)
                 workers.append(live.pump)
         if workers:
@@ -657,6 +664,8 @@ class Runs:
         event = {"seq": len(live.events) + FIRST_SEQ, "t": time.time()} | event
         if event["kind"] == "turn.end":
             event |= totals(live.events, event["t"])
+            if live.chat_deleted:
+                event |= DELETED_END
         live.events.append(event)
         for queue in live.watchers:
             queue.put_nowait(event)

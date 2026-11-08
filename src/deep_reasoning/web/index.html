@@ -10,18 +10,18 @@
 </head>
 <body>
 <div class="app" id="app">
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar" aria-label="Chats">
     <div class="brand"><span aria-hidden="true">✻</span> Deep Reasoning</div>
-    <div class="label">Chats</div>
-    <ul class="chats" id="chats"></ul>
     <button type="button" class="new-chat" id="new-chat">+ New chat</button>
+    <div class="label" id="chats-label">Chats</div>
+    <ul class="chats" id="chats" aria-labelledby="chats-label"></ul>
     <button type="button" class="settings-toggle" id="settings-toggle" aria-expanded="false" aria-controls="settings">settings</button>
   </aside>
   <main class="main">
     <header class="topbar">
-      <button type="button" class="menu" id="menu" aria-label="Show chats">☰</button>
+      <button type="button" class="menu" id="menu" aria-label="Chats" aria-expanded="false" aria-controls="sidebar">☰</button>
       <h1 class="title" id="title"></h1>
-      <button type="button" class="library-toggle" id="library-toggle" aria-expanded="false" aria-controls="library">decompositions</button>
+      <button type="button" class="library-toggle" id="library-toggle" aria-expanded="false" aria-controls="library">library</button>
       <button type="button" class="theme" id="theme"></button>
     </header>
     <div class="scroll" id="scroll"><div class="log" id="log"></div></div>
@@ -38,15 +38,16 @@
           <span class="choices" id="choices" hidden>
             <button type="button" class="choice" id="folder" aria-haspopup="dialog" aria-expanded="false"><span id="folder-name"></span><span aria-hidden="true"> ▾</span></button>
             <span aria-hidden="true">·</span>
-            <button type="button" class="choice" id="namespace" aria-haspopup="listbox" aria-expanded="false" title="This chat's namespace, from its next message"><span id="namespace-name"></span><span aria-hidden="true"> ▾</span></button>
+            <button type="button" class="choice" id="namespace" aria-haspopup="listbox" aria-expanded="false"><span id="namespace-name"></span><span aria-hidden="true"> ▾</span></button>
             <span aria-hidden="true">·</span>
-            <button type="button" class="choice" id="model" aria-haspopup="listbox" aria-expanded="false" title="This chat's model, from its next message"><span id="model-name"></span><span aria-hidden="true"> ▾</span></button>
+            <button type="button" class="choice" id="model" aria-haspopup="listbox" aria-expanded="false"><span id="model-name"></span><span class="provider" id="model-provider"></span><span aria-hidden="true"> ▾</span></button>
           </span>
           <span id="total"></span>
         </span>
       </div>
     </form>
   </main>
+  <div class="sr-only" id="announce" aria-live="polite"></div>
   <aside class="library" id="library" aria-label="Library" hidden></aside>
   <aside class="library" id="settings" aria-label="Settings" hidden></aside>
 </div>
