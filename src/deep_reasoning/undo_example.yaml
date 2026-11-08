@@ -17,9 +17,9 @@ messages:
       </observation>
   - role: assistant
     content: |
-      <think>The haiku change is message 2's, to astronomy's system_suffix. Read it whole and write back the before of each field it changed, from the value changes() returned: change_namespace keeps the other fields, so message 3's tools stay.</think>
+      <think>The haiku change is message 2's, to astronomy's system_suffix. Read message 2's changes whole and write back the before of each field it changed, from the value changes() returned: change_namespace keeps the other fields, so message 3's tools stay.</think>
       <repl>
-      [haiku] = library.changes(2, whole=True)
+      [haiku] = library.changes(2)
       undo = {field: value["before"] for field, value in haiku["changed"].items()}
       print(library.change_namespace("astronomy", undo))
       </repl>

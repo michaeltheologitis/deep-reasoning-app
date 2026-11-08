@@ -79,10 +79,10 @@ from deep_reasoning.library import (
     literals,
     loaded,
     namespace_rows,
-    namespace_yaml,
     parsed,
     parsed_python,
     read_library,
+    read_namespaces,
     reading,
     refuse_keys,
     run_config_and_registry,
@@ -180,15 +180,21 @@ LOCKED_FIELDS = {
     ),
 }
 USERS_CHOICE = "the user's choice, in the Library panel's Namespaces tab (Edit YAML)."
-# A var's or tool setting's name with one of these as a word part reads as a secret's,
-# unless its last part says it names the environment variable that holds one.
+# A var's or tool setting's name with one of these as a word part reads as a secret's.
 SECRET_WORD = re.compile(r"(api)?(key|token|secret|password)s?", re.IGNORECASE)
 WORD_PART = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
+# And a value shaped like a key: 16 or more characters of a token's alphabet, letters
+# and digits among them, as no id, date, name or column label is.
+SECRET_SHAPED = re.compile(r"(?=.*[A-Za-z])(?=.*\d)[\w.+/=~-]{16,}", re.ASCII)
+# Unless the name ends in env and the value is an environment variable's name.
 NAMES_A_VARIABLE = "env"
+VARIABLE_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
+ABSENT = object()
 SECRET_LIKE = jinja2.Template(
-    "{{ field }} may not set {{ names | join(', ') }} to text: named like a secret (key,"
-    " token, secret, password), it would be saved in the Library file, which is shared"
-    " with every chat and copied whole with the file. Keep a secret in the shell that"
+    "{{ field }} may not set {{ names | join(', ') }} to what reads as a secret: named"
+    " like one (key, token, secret, password) and shaped like a key, it would be saved in"
+    " the Library file, which is shared with every chat and copied whole with the file."
+    " Keep a secret in the shell that"
     " starts the app (export WEATHER_KEY=… before uv run deep-reasoning) and read it in"
     ' a tool with os.environ["WEATHER_KEY"]; a var or setting may name that variable'
     " instead, as weather_key_env: WEATHER_KEY. If it holds no secret, name it without"
@@ -203,6 +209,11 @@ NOT_TURNS = (
     " before printed)."
 )
 STEP = ("think", "code")
+TWO_FORMS = (
+    "write_decomposition takes write_decomposition(namespace, name, turns), for a worked"
+    " example written as turns, or write_decomposition(namespace, yaml), for one written"
+    " as YAML: name the example once, and only with its turns."
+)
 NOT_A_TOOL = (
     "name, source and factory should be text, and settings a dict of plain values (text,"
     " numbers, True, False, None, and lists and dicts of them keyed by text, each one"
@@ -219,7 +230,7 @@ CHECKS = "checks"
 WRITTEN = "wasn't written"
 GRANTED = f"wasn't granted ({STOPS_EVERY_CHAT}; fix it with write_tool first)"
 # What a tool couldn't import, as a build's refusal says it, and what the user does.
-MISSING_MODULE = re.compile(r"No module named '([^'.]+)")
+MISSING_MODULE = re.compile(r"No module named '([^']+)'")
 NOT_INSTALLED = jinja2.Template(
     "The app's Python has no {{ module }}: the user adds it by restarting the app as `uv"
     " run --with {{ module }} deep-reasoning` (with the package's name on PyPI, where it"
@@ -1141,36 +1152,50 @@ def plain(value: Any) -> bool:
 
 def secret_like(name: Any) -> bool:
     """Whether *name*, a var's or setting's, reads as a secret's: key, token, secret or
-    password is one of its word parts, and the last doesn't say it names a variable."""
+    password is one of its word parts."""
     parts = WORD_PART.findall(name) if type(name) is str else []
-    return (
-        bool(parts)
-        and parts[-1].lower() != NAMES_A_VARIABLE
-        and any(SECRET_WORD.fullmatch(part) for part in parts)
-    )
+    return any(SECRET_WORD.fullmatch(part) for part in parts)
 
 
-def check_no_secrets(
-    field: str, values: dict[str, Any], stored: dict[str, Any]
-) -> None:
-    """Raise if *values*, a namespace's vars or a tool's settings, sets text named like a
-    secret, or held under such a name, otherwise than *stored* holds it: the user's own,
-    kept as they stored it, stays."""
+def secret_shaped(name: Any, value: Any) -> bool:
+    """Whether *value*, held under *name*, is text shaped like a key, and not the name of
+    the environment variable that holds one, as a name ending in env gives."""
+    if type(value) is not str or not SECRET_SHAPED.fullmatch(value):
+        return False
+    parts = WORD_PART.findall(name) if type(name) is str else []
+    names_a_variable = [part.lower() for part in parts[-1:]] == [NAMES_A_VARIABLE]
+    return not (names_a_variable and VARIABLE_NAME.fullmatch(value))
+
+
+def stored_at(stored: Any, path: tuple[Any, ...]) -> Any:
+    """What *stored* holds at *path*, its keys and indexes in turn; ABSENT for none."""
+    for step in path:
+        try:
+            stored = stored[step]
+        except (KeyError, IndexError, TypeError):
+            return ABSENT
+    return stored
+
+
+def check_no_secrets(field: str, values: dict[str, Any], stored: Any) -> None:
+    """Raise if *values*, a namespace's vars or a tool's settings, holds anywhere text
+    shaped like a key under a name like a secret's, its own or one it is held under,
+    unless *stored* holds it in the same place: the user's own stays."""
     found = set()
-    stack = [
-        (name, value, False)
-        for name, value in values.items()
-        if name not in stored or stored[name] != value
-    ]
+    stack = [((name,), name, value, False) for name, value in values.items()]
     while stack:
-        name, value, under = stack.pop()
+        path, name, value, under = stack.pop()
         under = under or secret_like(name)
-        if type(value) is str and value.strip() and under:
-            found.add(name)
-        elif type(value) is dict:
-            stack.extend((key, each, under) for key, each in value.items())
+        if type(value) is dict:
+            stack.extend(
+                ((*path, key), key, each, under) for key, each in value.items()
+            )
         elif type(value) is list:
-            stack.extend((name, each, under) for each in value)
+            stack.extend(
+                ((*path, at), name, each, under) for at, each in enumerate(value)
+            )
+        elif under and secret_shaped(name, value) and stored_at(stored, path) != value:
+            found.add(str(name))
     if found:
         raise LibraryError(SECRET_LIKE.render(field=field, names=sorted(found)))
 
@@ -1243,7 +1268,7 @@ def check_locks(
     stored = NamespaceConfig(name=name) if new else registry.config(name)
     for key in LOCKED_FIELDS:
         if getattr(namespace, key) != getattr(stored, key):
-            raise locked(key, name)
+            raise locked(key, name, new)
     changed = sorted((set(namespace.tools) ^ set(stored.tools)) & APP_TOOLS.keys())
     if changed:
         raise LibraryError(
@@ -1262,22 +1287,35 @@ def check_locks(
         check_inherited(config, registry, name, above)
 
 
-def locked(key: str, name: str) -> LibraryError:
-    """The refusal to set or change namespace *name*'s *key*, repl or reasoner."""
+def locked(key: str, name: str, adding: bool) -> LibraryError:
+    """The refusal to set or change namespace *name*'s *key*, repl or reasoner, as a new
+    one when *adding*."""
+    where = (
+        f"Namespaces → + Add namespace, set in {name}'s YAML"
+        if adding
+        else f"Namespaces → {name} → Edit YAML"
+    )
     return LibraryError(
         f"{key} may not be set or changed: {LOCKED_FIELDS[key]}, in the Library panel:"
-        f" Namespaces → {name} → Edit YAML."
+        f" {where}."
     )
 
 
-def check_unlocked(connection: sqlite3.Connection, name: str, text: str) -> None:
+def row_fields(connection: sqlite3.Connection, name: str) -> dict[str, Any]:
+    """The fields namespace *name*'s row sets, whether or not the engine reads it."""
+    return fields_of(read_namespaces(connection)[2].get(name) or "")
+
+
+def check_unlocked(
+    connection: sqlite3.Connection, name: str, text: str, adding: bool
+) -> None:
     """Raise if the YAML *text* sets namespace *name*'s repl or reasoner otherwise than
-    its own YAML does: before the engine reads it, so the lock is the refusal, not a
-    field a sandbox's settings lack."""
-    given, own = fields_of(text), fields_of(namespace_yaml(connection, name) or "")
+    its row does: before the engine reads it, so the lock is the refusal, not a field a
+    sandbox's settings lack."""
+    given, own = fields_of(text), row_fields(connection, name)
     for key in LOCKED_FIELDS:
         if key in given and given[key] != own.get(key):
-            raise locked(key, name)
+            raise locked(key, name, adding)
 
 
 def check_no_run_lines(
@@ -1502,11 +1540,9 @@ def change_in_brief(event: Event) -> dict[str, Any]:
     return brief
 
 
-def chat_changes(
-    library: str, chat: str, turn: Any, whole: bool
-) -> list[dict[str, Any]]:
-    """The Library changes of *chat*'s message *turn*, or of every message of its, this
-    one's so far included, each with its turn and message, in brief or *whole*."""
+def chat_changes(library: str, chat: str, turn: Any) -> list[dict[str, Any]]:
+    """The Library changes of *chat*'s message *turn*, whole, or of every message of
+    its, this one's so far included, in brief; each with its turn and message."""
     with app_file(library, "ro") as connection:
         turns = chat_turns(connection, chat)
     if turn is not None and (type(turn) is not int or not 1 <= turn <= len(turns)):
@@ -1514,6 +1550,7 @@ def chat_changes(
             f"There is no message {turn!r}: this chat's messages are numbered 1 to"
             f" {len(turns)}, this one last."
         )
+    whole = turn is not None
     found, limit = [], MAX_VALUE_CHARS if whole else BRIEF_CHARS
     for number, each in enumerate(turns, start=1):
         if turn not in (None, number):
@@ -1546,12 +1583,22 @@ def check_builds(
 
 def module_notes(refusal: str) -> list[str]:
     """What the user does about each module the build's *refusal* says a tool couldn't
-    import: add it to the app's Python, or, as this worker finds it in the chat's folder,
-    which a build doesn't have, put it in the tool."""
-    return [
-        (IN_FOLDER_ONLY if find_spec(module) else NOT_INSTALLED).render(module=module)
-        for module in dict.fromkeys(MISSING_MODULE.findall(refusal))
-    ]
+    import: add its package to the app's Python; or, a package this worker finds, which
+    the build couldn't, as it is in the chat's folder, put it in the tool. A module an
+    installed package lacks needs neither."""
+    notes = []
+    for module in dict.fromkeys(MISSING_MODULE.findall(refusal)):
+        package = module.partition(".")[0]
+        try:
+            found = find_spec(package) is not None
+        except (ImportError, ValueError):
+            # As for one made in code: what holds it is unknown, so say nothing more.
+            continue
+        if not found:
+            notes.append(NOT_INSTALLED.render(module=package))
+        elif module == package:
+            notes.append(IN_FOLDER_ONLY.render(module=module))
+    return notes
 
 
 def build_library(client: Any, params: dict[str, Any]) -> Func:
@@ -1589,10 +1636,10 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             return cut(rows, limit=BRIEF_CHARS)
         return named(rows, name, "tool", "tools()")
 
-    def changes(turn: int | None = None, whole: bool = False) -> list[dict[str, Any]]:
-        """This chat's Library changes, in message *turn* or in every one, each in a line,
-        or *whole*."""
-        return chat_changes(library, params["chat"], turn, whole)
+    def changes(turn: int | None = None) -> list[dict[str, Any]]:
+        """This chat's Library changes: in every message, each in a line; or in message
+        *turn*, whole."""
+        return chat_changes(library, params["chat"], turn)
 
     def check_grant(registry: NamespaceRegistry) -> None:
         """Raise unless this run's chat is in a namespace that grants the library tool, as
@@ -1622,8 +1669,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         config, registry = config_and_registry(connection)
         check_grant(registry)
         check_locks(config, registry, namespace)
-        name = namespace.name
-        stored = registry.config(name).vars if name in registry.names else {}
+        stored = row_fields(connection, namespace.name).get("vars")
         check_no_secrets("vars", namespace.vars, stored)
         check_no_run_lines(config, registry, namespace)
         if afresh:
@@ -1645,7 +1691,8 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         the custom tools it grants afresh are built (built_grants())."""
         build = partial(check_builds, tools_dir=tools_dir, done=GRANTED)
         with app_file(library, "ro") as connection:
-            check_unlocked(connection, name, text)
+            may_write(connection)
+            check_unlocked(connection, name, text, adding)
             built = built_grants(
                 connection, name, text, build, adding, merge=merge, locks=locks
             )
@@ -1654,8 +1701,12 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def write_decomposition(
         namespace: str, yaml: Any = None, turns: Any = None, name: Any = None
     ) -> dict[str, Any]:
-        """Add to *namespace* the worked example *name* (or *yaml*) written from its
-        *turns*, or else the decomposition *yaml*; or replace the one of its name."""
+        """Add to *namespace* the worked example named *yaml* (or *name*), written from
+        its *turns*, or else the decomposition *yaml*; or replace the one of its name.
+        The documented calls are write_decomposition(namespace, name, turns) and
+        write_decomposition(namespace, yaml)."""
+        if name is not None and (turns is None or yaml is not None):
+            raise LibraryError(TWO_FORMS)
         if turns is not None:
             text = from_turns(yaml if name is None else name, turns)
         else:

@@ -205,10 +205,10 @@ imports too.
 - It never changes root, a namespace's REPL or backbone, which namespaces grant `library`, `history` or `page`, the
   system prompt or the run settings; never grants a tool that runs Claude Code (billed to your subscription), or adds
   a namespace under one that grants `library` or runs Claude Code; never replaces a tool root grants or one built
-  into the engine, or names one as a built-in or app tool; never deletes; never writes a key, nor text in a var or
-  tool setting named like a secret (`weather_key`, `api_token`; one you stored yourself stays). Asked to, it says
-  why and how you do it in the panel. These limits guard the tool, not the file: the agent's Python isn't
-  sandboxed, and could open the file itself.
+  into the engine, or names one as a built-in or app tool; never deletes; never writes a key, nor a key-shaped
+  value in a var or tool setting named like a secret (`weather_key`, `api_token`; one you stored yourself stays).
+  Asked to, it says why and how you do it in the panel. These limits guard the tool, not the file: the agent's
+  Python isn't sandboxed, and could open the file itself.
 - Any chat can ask about the Library ("what namespaces do I have?", "add a namespace for legal questions"): root hands
   it to a librarian sub-agent, which there only reads, and asked for a change says to pick `librarian` and ask there,
   or how to do it in the panel. A namespace that can't reach `historian` or `librarian` (left out of its `spawn`, or

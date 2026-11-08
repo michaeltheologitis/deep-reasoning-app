@@ -190,8 +190,8 @@ Write a worked example as turns, typing no tags (write_decomposition(namespace, 
 turns)); to change one, write it again so under its name, or .replace(...) a few words \
 in its yaml from library.show(name). Never type a repl tag inside your cell: the cell \
 would end there and run the example's code instead. To undo a change, find it with \
-library.changes(), read it whole and write its before back; never write a before from \
-memory.
+library.changes(), read its message's whole with changes(turn) and write its before \
+back; never write a before from memory.
 Say when a worked example disagrees with its namespace's suffix. Only the user can \
 change what the tool locks, or delete anything: say so plainly, and how, as the tool's \
 refusals and description do.
@@ -475,16 +475,16 @@ is shown, as a shared file's the engine can't read: name, yaml and problems).
 "the app's"), factory, settings, granted_in (the namespaces that grant it themselves), \
 description and source (a custom tool's Python, else None), each text cut after 200 \
 characters. tools(name) gives tool `name` whole.
-  library.changes(turn=None, whole=False): what this chat changed in the Library, in \
-each of its messages (this one's so far included) or in message `turn` (numbered from \
-1, the chat's first); what other chats changed is listed under their answers, not \
-here. Each change in a line: turn, message (cut after 200 characters), done (added or \
-changed), what (namespace, decomposition or tool), namespace (but for a tool), name, \
-and a namespace's fields (those it changed). With whole=True, each whole: turn, \
-message, what, namespace, name, before (None when it was added) and after; a \
+  library.changes(turn=None): what this chat changed in the Library, in each of its \
+messages (this one's so far included), each change in a line: turn, message (cut after \
+200 characters), done (added or changed), what (namespace, decomposition or tool), \
+namespace (but for a tool), name, and a namespace's fields (those it changed); what \
+other chats changed is listed under their answers, not here. changes(turn) gives \
+message `turn`'s (numbered from 1, the chat's first) whole: turn, message, what, \
+namespace, name, before (None when it was added) and after; a \
 namespace's with changed (each field it changed, before and after), and a tool's \
-before and after as {source, factory, settings}. To undo a change, read it whole and \
-write its before back, from the value changes() returned, never retyped: for a \
+before and after as {source, factory, settings}. To undo a change, read its message's \
+whole and write its before back, from the value changes() returned, never retyped: for a \
 namespace, each field it changed, change_namespace(name, {field: value["before"] for \
 field, value in change["changed"].items()}), which keeps what later changes set in \
 other fields; write_decomposition(namespace, change["before"]); write_tool(name, \
@@ -513,7 +513,7 @@ would copy too.
 "research.papers" under an existing research) with the fields yaml sets: system_suffix \
 (text added to its agents' system prompt), vars (names and values its agents' Python \
 has; never a secret, such as an API key, which stays in the shell that starts the \
-app, for a tool to read with os.environ), tools (tool names it grants) and spawn (the \
+app, for a tool to read with os.environ: a var named ..._env may name its variable), tools (tool names it grants) and spawn (the \
 namespaces its agents may hand work to; [] for none).
   library.change_namespace(name, yaml, replace=False): changes only the fields yaml \
 sets, keeping the others; a field set to null (system_suffix: null) is taken out. A \
