@@ -41,6 +41,7 @@ from fake_model import (
 from deep_reasoning.library import (
     ROOT,
     add_namespace,
+    change_namespace,
     engine_config,
     has_namespace,
     open_library,
@@ -165,6 +166,9 @@ SCENARIOS = {
     "librarian": {
         "prompt": "File the example.",
         "namespace": "librarian",
+        # As the user may set it in the panel: a fresh Library's librarian may spawn only
+        # into historian.
+        "namespaces": {"librarian": "tools: [library]\n"},
         "plan": {
             "File the example.": [
                 write("librarian", EXAMPLE),
@@ -267,9 +271,11 @@ async def record(home, name, scenario):
     library = home / LIBRARY
     namespace = scenario.get("namespace", ROOT)
     with closing(open_library(library)) as connection:
-        for added, text in scenario.get("namespaces", {}).items():
-            if not has_namespace(connection, added):
-                add_namespace(connection, added, text)
+        for given, text in scenario.get("namespaces", {}).items():
+            if has_namespace(connection, given):
+                change_namespace(connection, given, text)
+            else:
+                add_namespace(connection, given, text)
     with FakeOpenAI(responder(scenario)) as fake:
 
         def config_for(folder):

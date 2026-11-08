@@ -122,7 +122,33 @@ FRESH_ROOT = {"tools": ["llm"]}
 # picks when it wants edits, and which no namespace inherits from.
 LIBRARIAN = "librarian"
 LIBRARY_TOOL = "library"
-FRESH_LIBRARIAN = {"tools": [LIBRARY_TOOL]}
+LIBRARIAN_SUFFIX = """\
+You are the librarian, the namespace the user picks to change this app's Library, \
+which you do with the library tool. Your jobs: add namespaces and change their fields \
+(system_suffix, vars, tools, spawn); write worked examples into them; write custom \
+Python tools, fix them and grant them; and undo the changes made in this chat. Asked \
+what you can do, say these jobs. Read before you write: library.show() lists the \
+namespaces, library.tools() the tools. Write only what the user asked for, and answer by \
+saying what changed, as the tool's result says. A change applies from the user's next \
+message.
+To change a worked example already stored, take its yaml from library.show(name) and \
+edit it with .replace(...) in your cell; never type it out again, as its own repl tags \
+would end your cell and run its code instead. To undo a change, find it with \
+library.changes() and write its before back; never write a before from memory.
+Only the user can change root, a namespace's repl or reasoner, which namespaces grant \
+library, history or page, the system prompt or the run settings, or delete anything (in \
+the Library panel: a namespace in its Namespaces tab, a decomposition in its \
+Decompositions tab, a tool no namespace grants in its Tools tab): say so plainly, and \
+how, as the tool's refusals and description do.
+"""
+# It may hand questions about earlier messages to the historian, but never spawn itself:
+# copying root's hand-off into its own namespace would nest it until max_depth. A
+# default, not a lock: the user may widen it in the panel.
+FRESH_LIBRARIAN = {
+    "tools": [LIBRARY_TOOL],
+    "spawn": ["historian"],
+    "system_suffix": LIBRARIAN_SUFFIX,
+}
 # A specialist that root hands questions about earlier messages to.
 HISTORIAN = "historian"
 HISTORY_TOOL = "history"
@@ -160,20 +186,28 @@ FRESH_NAMESPACES = {
     HISTORIAN: FRESH_HISTORIAN,
     LIBRARIAN: FRESH_LIBRARIAN,
 }
+
+
+def read_examples(*files):
+    return [
+        Path(__file__).with_name(file).read_text(encoding="utf-8") for file in files
+    ]
+
+
 # The historian's worked examples: without them, models answer in the cell that prints
 # history. Each opens with the question and root's hand-off.
-HISTORIANS_EXAMPLES = [
-    Path(__file__).with_name(file).read_text(encoding="utf-8")
-    for file in (
-        "history_example.yaml",
-        "typed_example.yaml",
-        "sub_agents_example.yaml",
-        "page_example.yaml",
-        "table_example.yaml",
-        "wrong_place_example.yaml",
-        "nothing_example.yaml",
-    )
-]
+HISTORIANS_EXAMPLES = read_examples(
+    "history_example.yaml",
+    "typed_example.yaml",
+    "sub_agents_example.yaml",
+    "page_example.yaml",
+    "table_example.yaml",
+    "wrong_place_example.yaml",
+    "nothing_example.yaml",
+)
+# The librarian's: without the first, models write real <repl> tags into the example in
+# their own cell, and the engine runs the example's code instead of the write.
+LIBRARIANS_EXAMPLES = read_examples("worked_example_example.yaml", "undo_example.yaml")
 # Root's are those two turns of each, under the same name: every namespace inherits them,
 # but in historian its own take their place.
 HAND_OFF_TURNS = 2
@@ -315,60 +349,99 @@ were cut; history.full gives a step uncut. errors and find list at most 50 rows,
 {more, note}: how many more, and to pass a turn to list fewer."""
 LIBRARY_DESCRIPTION = """\
 The `library` tool reads and writes the app's Library: its namespaces, each with its own \
-fields, the decompositions (worked examples) each one's agents are shown, and the custom \
-tools namespaces may grant. Its methods return plain data, and the REPL shows only what \
-you print: print what you inspect. A change applies from the user's next message, not in \
+fields, the decompositions (worked examples) each one's agents are shown, and the tools \
+namespaces may grant. Its methods return plain data, and the REPL shows only what you \
+print: print what you inspect. A change applies from the user's next message, not in \
 this run, and only a chat whose namespace grants this tool may make one. A namespace's \
 agents get what it sets and what the namespaces above it set (root, then research, then \
 research.papers): their tools, vars and system_suffix texts add up, and a decomposition \
-of the same name lower down takes the place of its parent's there; show() lists only \
-each namespace's own. Locked, so you may read them but not write them: root; a \
-namespace's repl and reasoner; which namespaces grant the app's own tools (library, \
-history, page); granting a tool that runs Claude Code (its factory is claude_code), which \
-bills the user's subscription; a new namespace under one that grants library or runs \
-Claude Code (as its reasoner or a tool); a tool root grants, or one the engine builds \
-from its block alone (no Python of its own); a tool named as a built-in (llm, rag, kg, \
-safe_url, claude_code), one of the app's, a Python keyword or a name the REPL binds \
-itself; the system prompt and the run settings.
-  library.show(): every namespace (a list of dicts): name, depth, yaml (the fields it \
-sets itself), fields (each as the engine resolves it, with where it comes from) and \
-decompositions (each with its name, yaml and problems).
+of the same name lower down takes the place of its parent's there. Where a method takes \
+yaml, give YAML text or a dict of plain values.
+  library.show(name=None): every namespace, in brief: name, depth, sets (the fields it \
+sets itself), tools (all its agents get, inherited ones included) and decompositions \
+(each name, with how many problems it has as a worked example: 0 is ✓). Each text is \
+cut after 200 characters, ending "…(+N chars)". show(name) gives namespace `name` whole: \
+name, depth, yaml (the fields it sets itself, as change_namespace takes them), fields \
+(each as the engine resolves it, with where it comes from) and decompositions (each with \
+its name, yaml and problems).
+  library.tools(name=None): every tool, in brief: name, kind ("custom", "built-in" or \
+"the app's"), factory, settings, granted_in (the namespaces that grant it themselves), \
+description and source (a custom tool's Python, else None), each text cut after 200 \
+characters. tools(name) gives tool `name` whole.
+  library.changes(turn=None): what this chat changed in the Library, in each of its \
+messages (this one's so far included) or in message `turn` (numbered from 1, the chat's \
+first): turn, message, what (namespace, decomposition or tool), namespace, name, before \
+(None when it was added) and after, whole; a namespace's with changed (each field it \
+changed, before and after), and a tool's before and after as {source, factory, \
+settings}. To undo a change, write its before back, from the value changes() returned, \
+never retyped: for a namespace, each field it changed, change_namespace(name, {field: \
+value["before"] for field, value in change["changed"].items()}), which keeps what later \
+changes set in other fields; write_decomposition(namespace, change["before"]); \
+write_tool(name, **change["before"]). A change whose before is None added something, \
+and undoing it is deleting it, which this tool never does: the user can, in the Library \
+panel (a namespace in its Namespaces tab, a decomposition in its Decompositions tab, a \
+tool no namespace grants in its Tools tab).
   library.write_decomposition(namespace, yaml): adds the decomposition written as YAML \
 to namespace `namespace`, or replaces the one of that name there. Agents copy it, so \
-write it as they work, like those show() lists: name: <its name>, then messages:, a list \
-of turns, each a role and content (content: | for several lines): the user's task; then \
-assistant turns, each <think>…</think> and one <repl>…</repl> of Python; after each \
+write it as they work, like those show(name) lists: name: <its name>, then messages:, a \
+list of turns, each a role and content (content: | for several lines): the user's task; \
+then assistant turns, each <think>…</think> and one <repl>…</repl> of Python; after each \
 but the last, a user turn with the <observation>…</observation> its code printed; the \
 last calls FinalAnswer(...). The last <repl> block in your reply is the one that runs, \
-so in your cell write the repl tags as [repl] and [/repl]; the tool writes the real \
-ones. It is stored even when it isn't yet a worked example like that: the result's \
-problems lists each way it isn't (empty when none), and until you write it again \
-without them the Library panel marks it ✗.
+so in your cell write the example's repl tags as [repl] and [/repl], in a raw string \
+(r\"\"\"…\"\"\") so its code keeps the escapes you type; the tool writes the real tags. A \
+yaml that already holds a real <repl> tag, as one from show(name) or changes() does, is \
+written as it is, [repl] and all: to edit a stored decomposition, change its yaml in \
+your cell (with .replace(...)) rather than typing it again. It is stored even when it \
+isn't yet a worked example like that: the result's problems lists each way it isn't \
+(empty when none), and until you write it again without them the Library panel marks it \
+✗. The result's code_problems, when there are any, lists each turn whose code isn't \
+valid Python, which agents copying it would copy too.
   library.add_namespace(name, yaml): adds namespace `name` ("research", or \
-"research.papers" under an existing research) with the fields its YAML sets, written as \
-show() gives a namespace's yaml: system_suffix (text added to its agents' system \
-prompt), vars (names and values its agents' Python has), tools (tool names it grants) \
-and spawn (the namespaces its agents may hand work to).
-  library.change_namespace(name, yaml): gives namespace `name` the fields its YAML sets \
-in place of its own, keeping its decompositions.
+"research.papers" under an existing research) with the fields yaml sets: system_suffix \
+(text added to its agents' system prompt), vars (names and values its agents' Python \
+has), tools (tool names it grants) and spawn (the namespaces its agents may hand work \
+to; [] for none).
+  library.change_namespace(name, yaml, replace=False): changes only the fields yaml \
+sets, keeping the others; a field set to null (system_suffix: null) is taken out. A \
+field yaml sets takes the place of the namespace's own whole: tools, spawn and vars \
+too, so to grant one more tool give the whole list (the namespace's own tools, as \
+show(name)'s yaml gives them, and the new one), and to add a var give all its vars. \
+With replace=True, yaml is the namespace's whole own YAML, and each field it doesn't set \
+is taken out. It keeps the namespace's decompositions, and returns changed (each field \
+it changed, before and after) and kept (the fields it left as they were).
   library.write_tool(name, source, factory, settings=None): adds the tool `name` (a \
 Python name), or replaces the one of that name, from `source`, the text of a Python \
-module that defines the function `factory`. A run calls factory(client, params), with the \
-run's model client and params = `settings` (a dict of plain values), and it returns \
+module that defines the function `factory`. A run calls factory(client, params), with \
+params = `settings` (a dict of plain values), and it returns \
 deep_reasoner.primitives.Func(value, description=...): value is what agents call by the \
 tool's name (a function, or an object whose methods they call), and description is what \
-they are told it does (value's docstring when not given; name the methods). It is built \
-once here to check it, as another chat would build it: in a process of its own, from an \
-empty folder, so a tool that needs a file or module only this chat's folder has doesn't \
-build. Building it doesn't call it: say it was built, not tried. Agents see it only in a \
-namespace that grants it (add its name to a namespace's tools with change_namespace, \
-from the next message), but once any namespace grants it, its module and factory run at \
+they are told it does (value's docstring when not given; name the methods). client is \
+the run's async OpenAI client: client.chat.completions.create(...) returns a coroutine, \
+not a reply. A tool that needs the model takes the agent's llm as an argument and calls \
+llm(prompt), which returns text from the chat's model; never name a model in a tool. It \
+is built once here to check it, as another chat would build it: in a process of its \
+own, from an empty folder, so a tool that needs a file or module only this chat's \
+folder has doesn't build. Building it doesn't call it: say it was built, not tried. \
+Agents see it only in a namespace that grants it (add its name to a namespace's tools \
+with change_namespace), but once any namespace grants it, its module and factory run at \
 the start of every run of every chat, so add_namespace and change_namespace first build \
 each custom tool they grant that no namespace granted yet, and refuse one that doesn't \
 build, as it would stop every chat. Writing or granting a custom tool works only in a \
 chat whose namespace runs the local REPL.
-Each write returns what it did, as {done, what, name} (and namespace, but for a \
-tool); a refusal raises ValueError saying why."""
+Locked, so you may read them but not write them: root; a namespace's repl and reasoner; \
+which namespaces grant the app's own tools (library, history, page); granting a tool \
+that runs Claude Code (its factory is claude_code), which bills the user's subscription; \
+a new namespace under one that grants library or runs Claude Code (as its reasoner or a \
+tool); a tool root grants, or one the engine builds from its block alone (no Python of \
+its own); a tool named as a built-in (llm, rag, kg, safe_url, claude_code), one of the \
+app's, a Python keyword or a name the REPL binds itself. The user changes namespaces in \
+the Library panel's Namespaces tab (Edit YAML). There is no method for the system \
+prompt or the run settings: they come from a config the user imports (deep-reasoning \
+import), and only the user can change them.
+Each write returns what it did, as {done, what, name} (and namespace, but for a tool); \
+a refusal raises ValueError saying why. One that holds "…(+N chars)", where a brief \
+list cut a text short, is refused: write the whole text."""
 PAGE_DESCRIPTION = """\
 When the user asks to see something (how an earlier answer was worked out, what an \
 agent did, an error) and you found it, show it on a page with `page`: the app opens it \
@@ -592,6 +665,7 @@ def seed_new_library(connection):
         connection.execute(UPSERT_NAMESPACE, (name, dump(fields)))
     examples = [(ROOT, hand_off(text)) for text in HISTORIANS_EXAMPLES]
     examples += [(HISTORIAN, text) for text in HISTORIANS_EXAMPLES]
+    examples += [(LIBRARIAN, text) for text in LIBRARIANS_EXAMPLES]
     rows = [(namespace, parsed(text).name, text) for namespace, text in examples]
     connection.executemany(UPSERT_DECOMPOSITION, rows)
     settings = [(key, dump(value)) for key, value in DEFAULT_SETTINGS.items()]
@@ -911,16 +985,23 @@ def has_namespace(connection, name):
     return found.fetchone() is not None
 
 
-def check_namespace(connection, name):
-    """Namespace *name*'s own YAML; raise if the Library has no namespace *name*."""
+def namespace_yaml(connection, name):
+    """Namespace *name*'s own YAML as stored; None when the Library has no namespace
+    *name*."""
     found = connection.execute(
         "SELECT yaml FROM namespaces WHERE name = ?", (name,)
     ).fetchone()
+    return None if found is None else found[0]
+
+
+def check_namespace(connection, name):
+    """Namespace *name*'s own YAML; raise if the Library has no namespace *name*."""
+    found = namespace_yaml(connection, name)
     if found is None:
         raise LibraryError(
             f'The Library has no namespace "{name}"; pick one from the list.'
         )
-    return found[0]
+    return found
 
 
 def config_and_registry(connection):
@@ -1503,13 +1584,55 @@ def check_place(connection, name):
         raise LibraryError(f'Add namespace "{parent}" first: "{name}" goes under it.')
 
 
-def change_namespace(connection, name, text, allowed=None, was=None):
+def fields_of(text):
+    """The fields a namespace's own YAML *text* sets: none when it sets none, or isn't
+    YAML, as a change a cell logged may not be."""
+    try:
+        fields = loaded(text) if type(text) is str else None
+    except (LibraryError, RecursionError):
+        return {}
+    return fields if isinstance(fields, dict) else {}
+
+
+def merged(before, text):
+    """A namespace's own YAML *before* with each field the YAML *text* sets in place of
+    its own, and each it sets to null taken out; the rest kept, as typed when none
+    changes."""
+    given = loaded(text)
+    if given is None:
+        given = {}
+    if not isinstance(given, dict):
+        raise LibraryError(
+            'The YAML should be a mapping of fields, like "tools: [llm]".'
+        )
+    own = fields_of(before)
+    fields = dict(own)
+    for key, value in given.items():
+        if value is None:
+            fields.pop(key, None)
+        else:
+            fields[key] = value
+    if fields == own:
+        return before
+    together = dump(fields) if fields else ""
+    if len(together) > MAX_YAML_CHARS:
+        raise LibraryError(
+            f"A namespace's YAML may be at most {MAX_YAML_CHARS:,} characters; with"
+            f" this change it would be {len(together):,}."
+        )
+    return together
+
+
+def change_namespace(connection, name, text, allowed=None, was=None, merge=False):
     """Give namespace *name* the fields its YAML *text* gives in place of its own, keeping
-    its decompositions, or raise LibraryError saying why not; *allowed* as add_namespace
-    takes it. Given *was*, the YAML the person opened it on, ChangedMeanwhile unless it
-    is still stored so. The YAML it replaced, and the YAML stored."""
-    namespace, stored = authored(name, text)
+    its decompositions, or raise LibraryError saying why not; with *merge*, only those
+    fields, keeping the rest. *allowed* as add_namespace takes it. Given *was*, the YAML
+    the person opened it on, ChangedMeanwhile unless it is still stored so. The YAML it
+    replaced, and the YAML stored."""
     with writing(connection):
+        if merge:
+            text = merged(namespace_yaml(connection, name) or "", text)
+        namespace, stored = authored(name, text)
         if allowed is not None:
             allowed(connection, namespace)
         before = check_namespace(connection, name)

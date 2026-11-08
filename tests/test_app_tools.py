@@ -7,11 +7,13 @@ from pathlib import Path
 
 import pytest
 import yaml
-from fake_model import WORD_COUNT
+from fake_model import RESEARCH_CHANGED, SPLIT_COUNT, WORD_COUNT
 from structlog.testing import capture_logs
 
 from deep_reasoning.app_tools import (
+    BRIEF_CHARS,
     CHANGED_MEANWHILE,
+    CUT_SHORT,
     EMPTY,
     MAX_FOUND,
     MAX_VALUE_CHARS,
@@ -41,6 +43,8 @@ from deep_reasoning.library import (
     HISTORIAN,
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
+    LIBRARIAN,
+    LIBRARIANS_EXAMPLES,
     UPSERT_TOOL,
     LibraryError,
     add_namespace,
@@ -696,12 +700,12 @@ def library_tool(library, namespace="librarian"):
 
 
 # A fresh app file's decompositions: root's hand-offs, then the historian's examples of the
-# same names.
+# same names, then the librarian's.
 FRESH = [
     (namespace, parsed(text).name)
     for namespace in ("root", HISTORIAN)
     for text in HISTORIANS_EXAMPLES
-]
+] + [(LIBRARIAN, parsed(text).name) for text in LIBRARIANS_EXAMPLES]
 
 
 def stored(library):
@@ -720,24 +724,67 @@ def fresh(library):
     return library
 
 
-def test_show_gives_every_namespace_with_its_decompositions_as_plain_data(fresh):
+def test_show_lists_every_namespace_in_brief_as_plain_data(fresh):
     tool = library_tool(fresh)
-    done = tool.write_decomposition("librarian", EXAMPLE)
+    done = tool.write_decomposition("drafts", EXAMPLE)
     shown = tool.show()
     by_name = {each["name"]: each for each in shown}
     assert done == {
         "done": "added",
         "what": "decomposition",
-        "namespace": "librarian",
+        "namespace": "drafts",
         "name": "count the tickets",
         "problems": ONLY_THE_TASK,
     }
     assert json.loads(json.dumps(shown)) == shown
-    assert list(by_name) == ["root", "drafts", HISTORIAN, "librarian"]
-    assert by_name["librarian"]["yaml"] == "tools:\n- library\n"
-    assert by_name["librarian"]["decompositions"] == [
+    assert list(by_name) == ["root", "drafts", HISTORIAN, LIBRARIAN]
+    assert by_name["drafts"] == {
+        "name": "drafts",
+        "depth": 1,
+        "sets": {},
+        "tools": ["llm"],
+        "decompositions": [{"name": "count the tickets", "problems": 1}],
+    }
+    assert by_name[LIBRARIAN]["sets"]["spawn"] == [HISTORIAN]
+    assert by_name[LIBRARIAN]["tools"] == ["llm", "library"]
+    assert by_name[LIBRARIAN]["decompositions"] == [
+        {"name": parsed(text).name, "problems": 0} for text in LIBRARIANS_EXAMPLES
+    ]
+
+
+def test_show_of_a_name_gives_that_namespace_whole_as_the_panel_shows_it(fresh):
+    tool = library_tool(fresh)
+    tool.write_decomposition("drafts", EXAMPLE)
+    drafts = tool.show("drafts")
+    assert (drafts["name"], drafts["depth"], drafts["yaml"]) == ("drafts", 1, "")
+    assert drafts["decompositions"] == [
         {"name": "count the tickets", "yaml": EXAMPLE, "problems": ONLY_THE_TASK}
     ]
+    assert {each["label"] for each in drafts["fields"]} >= {"Tools", "System suffix"}
+
+
+def test_show_cuts_each_long_text_in_its_brief_list_but_not_for_one_namespace(fresh):
+    suffix = "Cite. " * 1_000
+    tool = library_tool(fresh)
+    tool.change_namespace("drafts", {"system_suffix": suffix})
+    [drafts] = [each for each in tool.show() if each["name"] == "drafts"]
+    cut_at = BRIEF_CHARS
+    assert drafts["sets"]["system_suffix"] == (
+        f"{suffix[:cut_at]}…(+{len(suffix) - cut_at:,} chars)"
+    )
+    assert yaml.safe_load(tool.show("drafts")["yaml"]) == {"system_suffix": suffix}
+
+
+@pytest.mark.parametrize(
+    ("method", "refusal"),
+    [
+        ("show", 'The Library has no namespace "nowhere": show() lists them.'),
+        ("tools", 'The Library has no tool "nowhere": tools() lists them.'),
+    ],
+)
+def test_reading_one_that_isnt_there_says_where_they_are_listed(fresh, method, refusal):
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        getattr(library_tool(fresh), method)("nowhere")
 
 
 @pytest.mark.parametrize(
@@ -770,8 +817,7 @@ def test_a_decomposition_written_with_repl_placeholders_is_stored_with_the_real_
     answer = "- role: assistant\n  content: "
     tool = library_tool(fresh)
     tool.write_decomposition("drafts", EXAMPLE + answer + content)
-    by_name = {each["name"]: each for each in tool.show()}
-    assert by_name["drafts"]["decompositions"] == [
+    assert tool.show("drafts")["decompositions"] == [
         {
             "name": "count the tickets",
             "yaml": EXAMPLE + answer + stored_content,
@@ -832,7 +878,10 @@ def test_a_write_the_tool_refuses_says_why_and_stores_nothing(
 
 @pytest.mark.parametrize(
     ("change", "argument"),
-    [(change_namespace, "tools: [llm]\n"), (delete_namespace, 0)],
+    [
+        (change_namespace, "tools: [llm]\n"),
+        (delete_namespace, len(LIBRARIANS_EXAMPLES)),
+    ],
 )
 def test_a_chat_whose_namespace_lost_the_grant_mid_run_may_not_write(
     fresh, change, argument
@@ -840,9 +889,10 @@ def test_a_chat_whose_namespace_lost_the_grant_mid_run_may_not_write(
     tool = library_tool(fresh)
     with closing(open_library(fresh)) as connection:
         change(connection, "librarian", argument)
+    before = stored(fresh)
     with pytest.raises(LibraryError, match=NOT_THIS_CHAT):
         tool.write_decomposition("drafts", EXAMPLE)
-    assert stored(fresh) == FRESH
+    assert stored(fresh) == before
 
 
 def test_a_busy_app_file_is_a_refusal_in_words(fresh):
@@ -900,6 +950,11 @@ def test_a_chat_whose_namespace_doesnt_grant_the_tool_may_not_write_a_namespace(
     assert stored_namespaces(fresh) == before
 
 
+def own_fields(library, name):
+    """The fields namespace *name* sets itself, in the app file."""
+    return yaml.safe_load(dict(stored_namespaces(library))[name]) or {}
+
+
 def test_a_change_keeping_the_repl_and_app_tools_the_user_set_is_written(fresh):
     set_by_the_user = "tools: [history]\nrepl: {type: local}\n"
     changed = "repl: {type: local}\ntools: [llm, history]\nsystem_suffix: Draft.\n"
@@ -911,8 +966,121 @@ def test_a_change_keeping_the_repl_and_app_tools_the_user_set_is_written(fresh):
         "what": "namespace",
         "namespace": "drafts",
         "name": "drafts",
+        "changed": {
+            "tools": {"before": ["history"], "after": ["llm", "history"]},
+            "system_suffix": {"before": None, "after": "Draft."},
+        },
+        "kept": ["repl"],
     }
-    assert ("drafts", changed) in stored_namespaces(fresh)
+    assert own_fields(fresh, "drafts") == yaml.safe_load(changed)
+
+
+RESEARCHING = "system_suffix: Cite a source.\ntools: [llm]\nvars: {year: 2026}\n"
+
+
+@pytest.mark.parametrize(
+    ("given", "fields"),
+    [
+        (
+            "tools: []\n",
+            {"system_suffix": "Cite a source.", "tools": [], "vars": {"year": 2026}},
+        ),
+        (
+            "system_suffix: null\nvars: {year: 2027}\n",
+            {"tools": ["llm"], "vars": {"year": 2027}},
+        ),
+        ({"tools": None, "vars": None}, {"system_suffix": "Cite a source."}),
+    ],
+    ids=["one-field", "a-field-set-to-null-is-taken-out", "a-dict"],
+)
+def test_a_change_sets_only_the_fields_it_gives_and_keeps_the_rest(
+    fresh, given, fields
+):
+    tool = library_tool(fresh)
+    tool.add_namespace("research", RESEARCHING)
+    tool.change_namespace("research", given)
+    assert own_fields(fresh, "research") == fields
+
+
+def test_a_change_with_replace_sets_every_field_as_the_panels_edit_yaml_does(fresh):
+    tool = library_tool(fresh)
+    tool.add_namespace("research", RESEARCHING)
+    done = tool.change_namespace("research", "spawn: [historian]\n", replace=True)
+    assert ("research", "spawn: [historian]\n") in stored_namespaces(fresh)
+    assert done["changed"] == {
+        "system_suffix": {"before": "Cite a source.", "after": None},
+        "tools": {"before": ["llm"], "after": None},
+        "vars": {"before": {"year": 2026}, "after": None},
+        "spawn": {"before": None, "after": ["historian"]},
+    }
+    assert done["kept"] == []
+
+
+def test_a_change_that_changes_nothing_says_so_and_keeps_the_yaml_as_typed(fresh):
+    commented = "# kept as typed\nsystem_suffix: Cite a source.\n"
+    tool = library_tool(fresh)
+    tool.add_namespace("research", commented)
+    done = tool.change_namespace("research", {"system_suffix": "Cite a source."})
+    assert done == {
+        "done": "unchanged",
+        "what": "namespace",
+        "namespace": "research",
+        "name": "research",
+    }
+    assert ("research", commented) in stored_namespaces(fresh)
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "stored_yaml"),
+    [
+        ("add_namespace", ("research", {"tools": ["llm"]}), "tools:\n- llm\n"),
+        (
+            "add_namespace",
+            ("research", "\n\nsystem_suffix: Hi.\n"),
+            "system_suffix: Hi.\n",
+        ),
+    ],
+    ids=["a-dict", "leading-blank-lines"],
+)
+def test_a_namespace_is_stored_as_clean_yaml(fresh, method, args, stored_yaml):
+    getattr(library_tool(fresh), method)(*args)
+    assert ("research", stored_yaml) in stored_namespaces(fresh)
+
+
+def test_a_decomposition_may_be_written_as_a_dict(fresh):
+    as_dict = yaml.safe_load(EXAMPLE)
+    done = library_tool(fresh).write_decomposition("drafts", as_dict)
+    assert (done["name"], done["problems"]) == ("count the tickets", ONLY_THE_TASK)
+    assert ("drafts", "count the tickets") in stored(fresh)
+
+
+@pytest.mark.parametrize(
+    "given", [["tools"], {"tools": {1, 2}}, {1: "x"}], ids=["list", "a-set", "int-key"]
+)
+def test_yaml_given_as_anything_but_text_or_a_dict_of_plain_values_is_refused(
+    fresh, given
+):
+    before = stored_namespaces(fresh)
+    with pytest.raises(LibraryError, match=re.escape(NOT_TEXT)):
+        library_tool(fresh).change_namespace("drafts", given)
+    assert stored_namespaces(fresh) == before
+
+
+def test_a_decomposition_whose_code_is_not_python_says_so(fresh):
+    # As a cell's string without r writes an escape the example's code held: a line break.
+    broken = (
+        EXAMPLE
+        + "- role: assistant\n  content: |\n    <think>Count.</think>\n"
+        + '    [repl]\n    FinalAnswer("one\n    two")\n    [/repl]\n'
+    )
+    done = library_tool(fresh).write_decomposition("drafts", broken)
+    assert done["problems"] == []
+    assert done["code_problems"] == [
+        (
+            "Turn 2 (assistant)'s code is not valid Python (line 1: unterminated string"
+            " literal (detected at line 1))."
+        )
+    ]
 
 
 @pytest.mark.parametrize(
@@ -964,7 +1132,7 @@ def test_a_claude_code_tool_the_user_granted_may_be_kept_or_taken_out(coder, cha
     with closing(open_library(coder)) as connection:
         change_namespace(connection, "drafts", "tools: [coder]\n")
     assert library_tool(coder).change_namespace("drafts", changed)["done"] == "changed"
-    assert ("drafts", changed) in stored_namespaces(coder)
+    assert own_fields(coder, "drafts") == yaml.safe_load(changed)
 
 
 @pytest.mark.parametrize(
@@ -1097,7 +1265,11 @@ def test_a_tool_the_tool_refuses_says_why_and_stores_nothing(
 
 def test_a_tool_the_engine_builds_from_its_block_alone_is_never_replaced(coder):
     before = stored_tools(coder)
-    refusal = "coder is built by the engine's own claude_code factory, which write_tool"
+    refusal = (
+        "coder is built by the engine's own claude_code factory from its block alone,"
+        " so it has no Python for write_tool to write back: only the user may replace"
+        " it, by importing a config that defines it (deep-reasoning import)."
+    )
     with pytest.raises(LibraryError, match=re.escape(refusal)):
         library_tool(coder).write_tool("coder", WORD_COUNT, "build")
     assert stored_tools(coder) == before
@@ -1110,7 +1282,9 @@ def test_a_tool_root_grants_is_never_replaced(fresh):
         change_namespace(connection, "root", "tools: [llm, history, search]\n")
     before = stored_tools(fresh)
     refusal = (
-        "root grants search: replacing it is the user's choice, in the Library panel."
+        "root grants search, so every chat would run the code you write: only the user"
+        " may replace it, once they take it out of root's tools in the Library panel's"
+        " Namespaces tab (Edit YAML)."
     )
     with pytest.raises(LibraryError, match=re.escape(refusal)):
         tool.write_tool("search", RAISING, "build")
@@ -1196,7 +1370,7 @@ def test_granting_a_tool_that_doesnt_build_is_refused_as_it_would_stop_every_cha
 def test_granting_a_tool_that_builds_grants_it(fresh):
     stored_as(fresh, "counter", WORD_COUNT)
     library_tool(fresh).change_namespace("drafts", "tools: [counter]\n")
-    assert ("drafts", "tools: [counter]\n") in stored_namespaces(fresh)
+    assert own_fields(fresh, "drafts") == {"tools": ["counter"]}
 
 
 def test_a_tool_changed_while_it_was_built_for_a_grant_is_not_granted(fresh):
@@ -1283,7 +1457,7 @@ def test_a_tool_another_namespace_grants_is_granted_without_building_it_again(
         add_namespace(connection, "marking", "tools: [marks]\n")
     library_tool(fresh).change_namespace("drafts", "tools: [marks]\n")
     assert not marker.exists()
-    assert ("drafts", "tools: [marks]\n") in stored_namespaces(fresh)
+    assert own_fields(fresh, "drafts") == {"tools": ["marks"]}
 
 
 def test_a_chat_whose_repl_became_a_sandbox_while_a_tool_was_built_may_not_grant_it(
@@ -1321,6 +1495,188 @@ def test_a_chat_whose_namespace_runs_a_sandboxed_repl_may_not_grant_a_tool_nor_b
         library_tool(fresh).change_namespace("drafts", "tools: [marks]\n")
     assert not marker.exists()
     assert ("drafts", "") in stored_namespaces(fresh)
+
+
+def test_tools_lists_every_tool_in_brief_and_gives_one_whole(fresh):
+    tool = library_tool(fresh)
+    long_source = WORD_COUNT + "#" * 500 + "\n"
+    tool.write_tool("word_count", long_source, "build", {"sep": ","})
+    tool.change_namespace("drafts", {"tools": ["word_count"]})
+    by_name = {each["name"]: each for each in tool.tools()}
+    assert by_name["word_count"] == {
+        "name": "word_count",
+        "kind": "custom",
+        "factory": "build",
+        "settings": {"sep": ","},
+        "granted_in": ["drafts"],
+        "description": "",
+        "source": f"{long_source[:BRIEF_CHARS]}…(+{len(long_source) - BRIEF_CHARS}"
+        " chars)",
+    }
+    assert (by_name["llm"]["kind"], by_name["llm"]["source"]) == ("built-in", None)
+    assert (by_name["library"]["kind"], by_name["library"]["granted_in"]) == (
+        "the app's",
+        [LIBRARIAN],
+    )
+    assert tool.tools("word_count")["source"] == long_source
+    assert json.loads(json.dumps(tool.tools())) == tool.tools()
+
+
+def test_changes_list_this_chats_library_changes_in_its_messages(library):
+    open_library(library).close()
+    namespaces, tools = recorded("namespaces"), recorded("tools")
+    plant(library, CHAT, namespaces)
+    plant(library, ANOTHER_CHAT, recorded("librarian"))
+    plant(library, CHAT, tools)
+    changes = library_tool(library).changes()
+    assert [(each["turn"], each["what"], each["name"]) for each in changes] == [
+        (1, "namespace", "research"),
+        (1, "namespace", "research"),
+        (2, "tool", "word_count"),
+        (2, "namespace", "counting"),
+        (2, "tool", "word_count"),
+    ]
+    added, changed = changes[:2]
+    assert added | {"after": None, "changed": None} == {
+        "turn": 1,
+        "message": "Set up research.",
+        "what": "namespace",
+        "namespace": "research",
+        "name": "research",
+        "before": None,
+        "after": None,
+        "changed": None,
+    }
+    assert (changed["before"], changed["after"]) == (added["after"], RESEARCH_CHANGED)
+    assert changed["changed"] == {
+        "system_suffix": {
+            "before": "Cite a source for every claim.\n",
+            "after": "Cite two sources for every claim.\n",
+        }
+    }
+    assert changes[-1]["before"] == {
+        "source": WORD_COUNT,
+        "factory": "build",
+        "settings": None,
+    }
+    assert changes[-1]["after"] == {
+        "source": SPLIT_COUNT,
+        "factory": "build",
+        "settings": {"sep": ","},
+    }
+    assert library_tool(library).changes(2) == changes[2:]
+
+
+def test_a_tools_before_written_back_restores_it_as_it_was(library):
+    open_library(library).close()
+    plant(library, CHAT, recorded("tools"))
+    tool = library_tool(library)
+    replaced = tool.changes()[-1]
+    tool.write_tool("word_count", **replaced["before"])
+    assert stored_tools(library) == [
+        ("word_count", "factory: build\nfactory_from: word_count.py\n", WORD_COUNT)
+    ]
+
+
+def test_a_logged_tool_change_that_is_no_tools_row_reads_as_it_was_logged(library):
+    open_library(library).close()
+    forged = {"kind": "library.change", "what": "tool", "name": "x", "before": None}
+    plant(library, CHAT, crafted(forged | {"after": "not a row"}))
+    [change] = library_tool(library).changes()
+    assert (change["before"], change["after"]) == (None, "not a row")
+
+
+def test_changes_in_a_chats_first_message_list_its_own_so_far(fresh):
+    assert library_tool(fresh).changes() == []
+    # As this message's run saved it, when a cell has just written research.
+    added = {"kind": "library.change", "what": "namespace", "name": "research"}
+    added |= {"namespace": "research", "before": None, "after": "tools: [llm]\n"}
+    plant(fresh, CHAT, crafted(added)[:-1])
+    [change] = library_tool(fresh).changes()
+    assert (change["turn"], change["changed"]) == (
+        1,
+        {"tools": {"before": None, "after": ["llm"]}},
+    )
+
+
+@pytest.mark.parametrize("turn", [0, 2, "1", True])
+def test_changes_of_a_message_that_isnt_there_say_which_are(fresh, turn):
+    plant(fresh, CHAT, crafted())
+    refusal = f"There is no message {turn!r}: this chat's messages are numbered 1 to 1"
+    with pytest.raises(ValueError, match=re.escape(refusal)):
+        library_tool(fresh).changes(turn)
+
+
+def test_a_logged_change_nested_too_deep_to_read_still_lists(library):
+    open_library(library).close()
+    deep = "[" * 50_000 + "]" * 50_000
+    forged = {"kind": "library.change", "what": "namespace", "namespace": "x"}
+    forged |= {"name": "x", "before": None, "after": deep}
+    tool = {"kind": "library.change", "what": "tool", "name": "y", "before": None}
+    plant(library, CHAT, crafted(forged, tool | {"after": f"{deep}\n# y.py\n"}))
+    namespace, tool = library_tool(library).changes()
+    assert (namespace["changed"], tool["after"]) == ({}, f"{deep}\n# y.py\n")
+
+
+def test_a_logged_tool_without_a_factory_is_built_by_its_name(library):
+    open_library(library).close()
+    logged = {"kind": "library.change", "what": "tool", "name": "y", "before": None}
+    plant(
+        library,
+        CHAT,
+        crafted(logged | {"after": "factory_from: y.py\n# y.py\nx = 1\n"}),
+    )
+    [change] = library_tool(library).changes()
+    assert change["after"] == {"source": "x = 1\n", "factory": "y", "settings": None}
+
+
+def test_the_seeded_worked_example_written_back_stays_as_it_was(fresh):
+    [text] = [each for each in LIBRARIANS_EXAMPLES if "[repl]" in each]
+    tool = library_tool(fresh)
+    done = tool.write_decomposition(LIBRARIAN, text)
+    [row] = [
+        each
+        for each in tool.show(LIBRARIAN)["decompositions"]
+        if each["name"] == done["name"]
+    ]
+    assert (done["done"], row["yaml"], row["problems"]) == ("replaced", text, [])
+
+
+def test_a_merge_past_the_yaml_limit_is_refused_and_changes_nothing(fresh):
+    half = "a" * 600_000
+    tool = library_tool(fresh)
+    tool.add_namespace("research", {"system_suffix": half})
+    before = stored_namespaces(fresh)
+    refusal = "A namespace's YAML may be at most 1,000,000 characters; with this change"
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        tool.change_namespace("research", {"vars": {"x": half}})
+    assert stored_namespaces(fresh) == before
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        lambda tool, cut_text: tool.change_namespace(
+            "drafts", {"system_suffix": cut_text}
+        ),
+        lambda tool, cut_text: tool.write_decomposition(
+            "drafts", EXAMPLE.replace("How many tickets are open?", cut_text)
+        ),
+        lambda tool, cut_text: tool.write_tool(
+            "counter", f"{WORD_COUNT}# {cut_text}\n", "build"
+        ),
+    ],
+    ids=["namespace", "decomposition", "tool"],
+)
+def test_what_a_brief_list_cut_short_is_never_written_back(fresh, write):
+    tool = library_tool(fresh)
+    tool.add_namespace("research", {"system_suffix": "Cite. " * 100})
+    [research] = [each for each in tool.show() if each["name"] == "research"]
+    cut_text = research["sets"]["system_suffix"]
+    before = (stored(fresh), stored_namespaces(fresh), stored_tools(fresh))
+    with pytest.raises(LibraryError, match=re.escape(CUT_SHORT)):
+        write(tool, cut_text)
+    assert (stored(fresh), stored_namespaces(fresh), stored_tools(fresh)) == before
 
 
 def page_of(library, chat=CHAT, key_names=()):

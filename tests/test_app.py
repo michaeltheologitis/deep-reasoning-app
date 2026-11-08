@@ -13,6 +13,7 @@ from urllib.parse import urljoin
 
 import httpx
 import pytest
+import yaml
 from deep_reasoner.v2.agent import DEFAULT_EXAMPLE_FENCE
 from fake_model import (
     ASKED,
@@ -48,6 +49,7 @@ from deep_reasoning.library import (
     HISTORIAN_SUFFIX,
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
+    LIBRARIANS_EXAMPLES,
     PAGE_DESCRIPTION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
@@ -1166,10 +1168,11 @@ async def test_the_library_tool_adds_a_decomposition_then_replaces_it_each_chang
     output = kinds(replaced, "cell.end")[0]["output"]
     assert f"'problems': {EXAMPLE_PROBLEMS}" in output
     assert librarian["decompositions"] == [
-        {"name": "count the tickets", "yaml": REWORDED, "problems": EXAMPLE_PROBLEMS}
+        *LIBRARIANS_SEEDED,
+        {"name": "count the tickets", "yaml": REWORDED, "problems": EXAMPLE_PROBLEMS},
     ]
     assert [events[-1]["outcome"] for events in (added, replaced)] == ["answered"] * 2
-    assert "The `library` tool" in fake.calls[-1].messages[0]["content"]
+    assert any("The `library` tool" in each for each in system_prompts(fake.calls[-1:]))
 
 
 def showing(calls, turn):
@@ -1201,15 +1204,16 @@ async def test_a_change_to_the_library_applies_from_the_next_message(
 
 
 # A fresh Library's decompositions, as the panel lists them: root's hand-offs, the
-# historian's examples, and none in librarian.
+# historian's examples, and the librarian's.
 FRESH_DECOMPOSITIONS = [
     [{"name": parsed(text).name, "yaml": text, "problems": []} for text in texts]
     for texts in (
         [hand_off(text) for text in HISTORIANS_EXAMPLES],
         HISTORIANS_EXAMPLES,
-        [],
+        LIBRARIANS_EXAMPLES,
     )
 ]
+LIBRARIANS_SEEDED = FRESH_DECOMPOSITIONS[-1]
 
 
 @pytest.mark.anyio
@@ -1311,11 +1315,14 @@ async def test_a_namespace_the_library_tool_changes_has_its_old_yaml_as_before_a
 
 
 @pytest.mark.anyio
-async def test_a_namespace_change_event_holds_the_yaml_as_stored(library_on, connect):
+async def test_a_namespace_change_event_holds_the_yaml_as_stored_and_none_is_logged_for_no_change(
+    library_on, connect
+):
     plan = {
         "Add a blank one.": [
             library_cell("add_namespace", "blank", "{}\n"),
             library_cell("change_namespace", "blank", "{}\n"),
+            library_cell("change_namespace", "blank", {"system_suffix": "Hi."}),
             repl("FinalAnswer('added')"),
         ]
     }
@@ -1325,7 +1332,8 @@ async def test_a_namespace_change_event_holds_the_yaml_as_stored(library_on, con
             events = await run_events(api, await send(api, chat, "Add a blank one."))
     added, changed = changes(events)
     assert (added["before"], added["after"]) == (None, "")
-    assert (changed["before"], changed["after"]) == ("", "")
+    assert "'done': 'unchanged'" in kinds(events, "cell.end")[1]["output"]
+    assert (changed["before"], changed["after"]) == ("", "system_suffix: Hi.\n")
 
 
 # Set by the user in the panel: what the library tool may neither change nor drop.
@@ -1345,7 +1353,7 @@ NAMESPACE_REFUSALS = [
         "reasoner may not be set or changed",
     ),
     (
-        library_cell("change_namespace", "drafts", "tools: [history]\n"),
+        repl("library.change_namespace('drafts', 'tools: [history]', replace=True)"),
         "repl may not be set or changed",
     ),
     (
@@ -1365,7 +1373,11 @@ NAMESPACE_REFUSALS = [
         "tools may not add or take out history",
     ),
     (
-        library_cell("change_namespace", "drafts", "repl: {type: local}\n"),
+        repl("library.change_namespace('drafts', 'repl: {type: local}', replace=True)"),
+        "tools may not add or take out history",
+    ),
+    (
+        library_cell("change_namespace", "drafts", {"tools": None}),
         "tools may not add or take out history",
     ),
     (
@@ -1478,7 +1490,10 @@ async def test_a_tool_the_library_tool_writes_and_grants_is_called_from_the_next
     split_row = (
         "factory: build\nfactory_from: word_count.py\nsep: ','\n# word_count.py\n"
     )
-    assert (granted["what"], granted["after"]) == ("namespace", "tools: [word_count]\n")
+    assert (granted["what"], granted["after"]) == (
+        "namespace",
+        "tools:\n- word_count\n",
+    )
     assert (replaced["before"], replaced["after"]) == (
         added["after"],
         split_row + SPLIT_COUNT,
@@ -1597,6 +1612,145 @@ async def test_a_tool_no_namespace_grants_never_runs_so_a_broken_one_fails_runs_
     )
 
 
+# A tool that calls the model as write_tool's description says: with the agent's llm.
+SHOUT = """from deep_reasoner.primitives import Func
+
+
+def build(client, params):
+    def shout(text, llm):
+        \"\"\"The model's reply to text, in capitals.\"\"\"
+        return llm(f"Say it back: {text}").upper()
+
+    return Func(shout)
+"""
+
+
+@pytest.mark.anyio
+async def test_a_tool_handed_the_agents_llm_gets_the_chats_model(
+    library, library_on, connect
+):
+    shout = dump({"factory": "build", "factory_from": "shout.py"})
+    plan = {
+        "Shout hello.": [repl("print(shout('hello', llm))"), repl("FinalAnswer('ok')")],
+        "Say it back: hello": ["hello there"],
+    }
+    with FakeOpenAI(scripted(plan)) as fake:
+        async with connect(library_on(fake)) as api:
+            with closing(open_library(library)) as connection, writing(connection):
+                connection.execute(UPSERT_TOOL, ("shout", shout, SHOUT))
+            shouting = {"name": "shouting", "yaml": "tools: [shout]\n"}
+            response = await api.post("/api/namespaces", json=shouting)
+            assert response.status_code == 201, response.text
+            chat = await chat_in(api, "shouting")
+            events = await run_events(api, await send(api, chat, "Shout hello."))
+    assert kinds(events, "cell.end")[0]["output"] == "HELLO THERE"
+    assert {call.model for call in fake.calls} == {"gpt-6-luna"}
+
+
+# The chat's messages before each of the librarian's examples is asked, each with the
+# fake's cells: what its observations print comes from them.
+LIBRARIANS_EARLIER = {
+    "add a namespace with a worked example": {},
+    "undo a change": {
+        "Add a namespace for astronomy.": [
+            library_cell(
+                "add_namespace", "astronomy", "system_suffix: Answer in one sentence.\n"
+            ),
+            repl("FinalAnswer('added')"),
+        ],
+        "Make astronomy answer in a haiku.": [
+            library_cell(
+                "change_namespace", "astronomy", {"system_suffix": "Answer in a haiku."}
+            ),
+            repl("FinalAnswer('changed')"),
+        ],
+        "Let astronomy use llm.": [
+            library_cell("change_namespace", "astronomy", {"tools": ["llm"]}),
+            repl("FinalAnswer('granted')"),
+        ],
+    },
+}
+
+
+async def ask_as_the_librarians_example(library_on, connect, text):
+    """The librarian's example *text* run through the app on the fake, after the chat's
+    earlier messages: the question's events, and the namespaces after it."""
+    example = parsed(text)
+    question, *rest = example.messages
+    earlier = LIBRARIANS_EARLIER[example.name]
+    replies = [turn.content for turn in rest if turn.role == "assistant"]
+    with FakeOpenAI(scripted(earlier | {question.content: replies})) as fake:
+        async with connect(library_on(fake)) as api:
+            chat = await librarian_chat(api)
+            for prompt in earlier:
+                await run_events(api, await send(api, chat, prompt))
+            events = await run_events(api, await send(api, chat, question.content))
+            namespaces = (await api.get("/api/library")).json()["namespaces"]
+    return events, {each["name"]: each for each in namespaces}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "text", LIBRARIANS_EXAMPLES, ids=lambda text: parsed(text).name
+)
+async def test_the_librarians_examples_show_what_the_library_tool_really_prints(
+    library_on, connect, text
+):
+    events, _ = await ask_as_the_librarians_example(library_on, connect, text)
+    shown = [turn.content for turn in parsed(text).messages[1:] if turn.role == "user"]
+    printed = [
+        f"<observation>\n{cell['output']}\n</observation>\n"
+        for cell in kinds(events, "cell.end")[: len(shown)]
+    ]
+    assert printed == shown
+    assert events[-1]["outcome"] == "answered", events[-1]
+
+
+@pytest.mark.anyio
+async def test_the_worked_example_the_librarians_example_writes_runs_as_written(
+    library_on, connect
+):
+    [text] = [
+        each
+        for each in LIBRARIANS_EXAMPLES
+        if parsed(each).name == "add a namespace with a worked example"
+    ]
+    asking, *rest = parsed(text).messages
+    plan = {asking.content: [turn.content for turn in rest if turn.role == "assistant"]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        async with connect(library_on(fake)) as api:
+            await run_events(
+                api, await send(api, await librarian_chat(api), asking.content)
+            )
+            namespaces = (await api.get("/api/library")).json()["namespaces"]
+            [written] = next(
+                each for each in namespaces if each["name"] == "astronomy"
+            )["decompositions"]
+            question, answering = parsed(written["yaml"]).messages
+            # An agent in astronomy that does just as the example it was shown does.
+            plan[question.content] = [answering.content]
+            chat = await chat_in(api, "astronomy")
+            events = await run_events(api, await send(api, chat, question.content))
+    assert written["problems"] == []
+    assert events[-1]["answer"].startswith("| step | value |\n|---|---|\n| distance |")
+
+
+@pytest.mark.anyio
+async def test_the_librarians_undo_example_writes_the_before_back_as_it_was(
+    library_on, connect
+):
+    [text] = [
+        each for each in LIBRARIANS_EXAMPLES if parsed(each).name == "undo a change"
+    ]
+    events, namespaces = await ask_as_the_librarians_example(library_on, connect, text)
+    [undone] = changes(events)
+    assert yaml.safe_load(namespaces["astronomy"]["yaml"]) == {
+        "system_suffix": "Answer in one sentence.",
+        "tools": ["llm"],
+    }
+    assert undone["after"] == namespaces["astronomy"]["yaml"]
+
+
 SPAWNED_PLAN = {
     "Have a librarian write it.": [
         repl("print(subagent('Write the example.', namespace='librarian'))"),
@@ -1645,11 +1799,40 @@ async def test_a_sub_agent_spawned_into_librarian_from_another_chat_may_not_writ
 
 
 @pytest.mark.anyio
+async def test_the_librarian_may_ask_the_historian_but_never_spawn_itself(
+    library_on, connect
+):
+    plan = {
+        "Ask yourself.": [
+            repl("print(subagent('Write the example.'))"),
+            repl("FinalAnswer('asked')"),
+        ],
+    }
+    with FakeOpenAI(scripted(plan)) as fake:
+        async with connect(library_on(fake)) as api:
+            chat = await librarian_chat(api)
+            events = await run_events(api, await send(api, chat, "Ask yourself."))
+    [cell, _] = kinds(events, "cell.end")
+    assert cell["status"] == "failed"
+    assert (
+        "namespace 'librarian' may not spawn a sub-agent in 'librarian'; allowed"
+        " scopes: ['historian']"
+    ) in cell["output"]
+    assert len(kinds(events, "agent.start")) == 1
+
+
+@pytest.mark.anyio
 async def test_in_a_librarian_chat_a_sub_agent_handed_the_tool_elsewhere_writes(
     library_on, connect
 ):
     with FakeOpenAI(scripted(SPAWNED_PLAN)) as fake:
         async with connect(library_on(fake)) as api:
+            # The user lets the librarian spawn anywhere, in the panel.
+            listed = (await api.get("/api/library")).json()["namespaces"]
+            [opened] = [each["yaml"] for each in listed if each["name"] == "librarian"]
+            anywhere = {"yaml": "tools: [library]\n", "was": opened}
+            response = await api.put("/api/namespaces/librarian", json=anywhere)
+            assert response.status_code == 200, response.text
             chat = await librarian_chat(api)
             events, child, cell = await spawned_run(api, chat, "Hand the tool over.")
             namespaces = (await api.get("/api/library")).json()["namespaces"]
@@ -1662,7 +1845,8 @@ async def test_in_a_librarian_chat_a_sub_agent_handed_the_tool_elsewhere_writes(
     )
     librarian = next(each for each in namespaces if each["name"] == "librarian")
     assert librarian["decompositions"] == [
-        {"name": "count the tickets", "yaml": EXAMPLE, "problems": EXAMPLE_PROBLEMS}
+        *LIBRARIANS_SEEDED,
+        {"name": "count the tickets", "yaml": EXAMPLE, "problems": EXAMPLE_PROBLEMS},
     ]
 
 

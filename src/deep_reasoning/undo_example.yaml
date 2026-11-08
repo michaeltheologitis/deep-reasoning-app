@@ -1,0 +1,40 @@
+name: undo a change
+messages:
+  - {role: user, content: "Take back the haiku change you made to astronomy."}
+  - role: assistant
+    content: |
+      <think>Undoing a change is writing its before back, and the record holds the before: read this chat's changes, never recall or retype one.</think>
+      <repl>
+      for change in library.changes():
+          print(change)
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      {'turn': 1, 'message': 'Add a namespace for astronomy.', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'before': None, 'after': 'system_suffix: Answer in one sentence.\n', 'changed': {'system_suffix': {'before': None, 'after': 'Answer in one sentence.'}}}
+      {'turn': 2, 'message': 'Make astronomy answer in a haiku.', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'before': 'system_suffix: Answer in one sentence.\n', 'after': 'system_suffix: Answer in a haiku.\n', 'changed': {'system_suffix': {'before': 'Answer in one sentence.', 'after': 'Answer in a haiku.'}}}
+      {'turn': 3, 'message': 'Let astronomy use llm.', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'before': 'system_suffix: Answer in a haiku.\n', 'after': 'system_suffix: Answer in a haiku.\ntools:\n- llm\n', 'changed': {'tools': {'before': None, 'after': ['llm']}}}
+      </observation>
+  - role: assistant
+    content: |
+      <think>The haiku change is message 2's, to astronomy's system_suffix. Write back the before of each field it changed, from the value changes() returned: change_namespace keeps the other fields, so message 3's tools stay.</think>
+      <repl>
+      [haiku] = library.changes(2)
+      undo = {field: value["before"] for field, value in haiku["changed"].items()}
+      print(library.change_namespace("astronomy", undo))
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      {'done': 'changed', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'changed': {'system_suffix': {'before': 'Answer in a haiku.', 'after': 'Answer in one sentence.'}}, 'kept': ['tools']}
+      </observation>
+  - role: assistant
+    content: |
+      <think>The system_suffix is back as it was before message 2, and the llm grant from message 3 is kept.</think>
+      <repl>
+      FinalAnswer(
+          "I took back the haiku change from message 2: astronomy answers in one sentence "
+          'again ("Answer in one sentence."). The llm grant from message 3 stays. That '
+          "applies from your next message."
+      )
+      </repl>

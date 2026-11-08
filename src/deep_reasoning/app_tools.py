@@ -22,7 +22,8 @@ chat's namespace grants it, so a sub-agent spawned into such a namespace from an
 can't, and never a key. It guards the tool, not the file: a cell can open the file itself.
 A tool it writes, or a custom tool a namespace it writes grants afresh, is built first as
 another chat's run would build it: in a process of its own (tool_check.py), from an empty
-folder. Each change is logged as library.change, which the worker records as a run event.
+folder. Each change is logged as library.change, which the worker records as a run event,
+and changes() reads this chat's back, so the agent can write a before back.
 """
 
 import ast
@@ -41,6 +42,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import structlog
+import yaml
 from deep_reasoner.namespaces import ROOT, NamespaceConfig, NamespaceRegistry
 from deep_reasoner.primitives import RESERVED_NAMES, Func
 from deep_reasoner.v2.cli import V2Config
@@ -67,13 +69,20 @@ from deep_reasoning.library import (
     count,
     distrust,
     dump,
+    fields_of,
+    in_chain_order,
     library_tools,
     loaded,
+    merged,
     namespace_rows,
+    namespace_yaml,
+    parsed,
     parsed_python,
     reading,
+    running_code,
     store_tool,
     tool_file,
+    tool_rows,
     tool_text,
 )
 from deep_reasoning.pages import (
@@ -118,7 +127,15 @@ NOT_THIS_CHAT = (
     "The Library can be changed only in a chat whose namespace grants the library tool;"
     " pick librarian under the message box."
 )
-NOT_TEXT = "The namespace's name and the YAML should be text."
+NOT_TEXT = (
+    "The namespace's name should be text, and the YAML text or a dict of plain values."
+)
+# Where a brief list, or history, cut a text short.
+CUT_MARK = re.compile(r"…\(\+[\d,]+ chars\)")
+CUT_SHORT = (
+    "What you wrote holds “…(+N chars)”, where a brief list cut a text short: write the"
+    " whole text, from show(name), tools(name) or changes()."
+)
 TOO_LONG = f"The YAML may be at most {MAX_YAML_CHARS:,} characters."
 HOLDS_A_KEY = (
     "What you wrote holds a provider's key, and the Library file is shared, so keys never"
@@ -126,7 +143,7 @@ HOLDS_A_KEY = (
 )
 # reasoner: claude_code would bill the user's subscription.
 LOCKED_FIELDS = ("repl", "reasoner")
-USERS_CHOICE = "the user's choice, in the Library panel."
+USERS_CHOICE = "the user's choice, in the Library panel's Namespaces tab (Edit YAML)."
 # A tool of this factory, or a reasoner of this type, runs on the user's subscription.
 CLAUDE_CODE = "claude_code"
 NOT_A_TOOL = (
@@ -184,6 +201,9 @@ NO_EARLIER = "This chat has no earlier messages: this is its first."
 # history cuts each text it returns past this, so one huge output can't swamp the prompt;
 # history.full gives a step whole.
 MAX_VALUE_CHARS = 2_000
+# And library.show() and tools() each text in their brief lists past this: a Library may
+# hold hundreds of namespaces and examples, and show(name) or tools(name) gives one whole.
+BRIEF_CHARS = 200
 # And each list or dict nested deeper than this: no run of the app's nests one past a
 # few levels, and a file from someone else may nest one thousands deep.
 MAX_VALUE_DEPTH = 20
@@ -377,18 +397,18 @@ def agent_row(row: Holder) -> dict[str, Any]:
     }
 
 
-def cut(value: Any, depth: int = 0) -> Any:
-    """*value*, copied, with each text past MAX_VALUE_CHARS cut there, saying how much is
-    left out, and each list or dict past MAX_VALUE_DEPTH levels marked in its place."""
-    if isinstance(value, str) and len(value) > MAX_VALUE_CHARS:
-        return f"{value[:MAX_VALUE_CHARS]}…(+{len(value) - MAX_VALUE_CHARS:,} chars)"
+def cut(value: Any, depth: int = 0, limit: int = MAX_VALUE_CHARS) -> Any:
+    """*value*, copied, with each text past *limit* characters cut there, saying how much
+    is left out, and each list or dict past MAX_VALUE_DEPTH levels marked in its place."""
+    if isinstance(value, str) and len(value) > limit:
+        return f"{value[:limit]}…(+{len(value) - limit:,} chars)"
     if not isinstance(value, dict | list):
         return value
     if depth == MAX_VALUE_DEPTH:
         return NESTED_TOO_DEEP
     if isinstance(value, dict):
-        return {name: cut(each, depth + 1) for name, each in value.items()}
-    return [cut(each, depth + 1) for each in value]
+        return {name: cut(each, depth + 1, limit) for name, each in value.items()}
+    return [cut(each, depth + 1, limit) for each in value]
 
 
 def error_of(output: Any) -> str | None:
@@ -880,17 +900,51 @@ def check_no_key(texts: list[str], key_names: list[str]) -> None:
         raise LibraryError(HOLDS_A_KEY)
 
 
-def check_writable(namespace: str, yaml: str, key_names: list[str]) -> None:
-    """Raise unless the tool may write *yaml* for the namespace named *namespace*."""
+def yaml_text(value: Any) -> str:
+    """*value*, YAML text or a dict of plain values, as YAML text, from its first line
+    that isn't blank."""
+    if type(value) is dict and plain(value):
+        return dump(value)
     # Exactly str: a subclass could compare unequal to "root" and still name it.
-    if type(namespace) is not str or type(yaml) is not str:
+    if type(value) is not str:
+        raise LibraryError(NOT_TEXT)
+    return value.lstrip("\n")
+
+
+def check_whole(texts: Iterable[str]) -> None:
+    """Raise if any of *texts* holds the mark of a text a brief list cut short."""
+    if any(CUT_MARK.search(text) for text in texts):
+        raise LibraryError(CUT_SHORT)
+
+
+def check_writable(namespace: str, text: str, key_names: list[str]) -> None:
+    """Raise unless the tool may write the YAML *text* for the namespace named
+    *namespace*."""
+    if type(namespace) is not str:
         raise LibraryError(NOT_TEXT)
     if namespace == ROOT:
         raise LibraryError(ROOT_LOCKED)
-    if len(yaml) > MAX_YAML_CHARS:
+    if len(text) > MAX_YAML_CHARS:
         raise LibraryError(TOO_LONG)
+    check_whole([text])
     # Parsed too, as an escape such as "\x73k-" spells a key the raw text doesn't hold.
-    check_no_key([namespace, yaml, *texts_in(loaded(yaml))], key_names)
+    check_no_key([namespace, text, *texts_in(loaded(text))], key_names)
+
+
+def code_problems(text: str) -> list[str]:
+    """Each assistant turn of the decomposition written as YAML *text* whose code, the
+    <repl> block the engine runs, isn't valid Python."""
+    problems = []
+    for number, turn in enumerate(parsed(text).messages, start=1):
+        if turn.role != "assistant":
+            continue
+        try:
+            parsed_python(
+                running_code(turn.content), f"Turn {number} (assistant)'s code"
+            )
+        except LibraryError as error:
+            problems.append(str(error))
+    return problems
 
 
 def plain(value: Any) -> bool:
@@ -931,6 +985,7 @@ def check_tool(
         )
     if max(len(source), len(dump(settings))) > MAX_YAML_CHARS:
         raise LibraryError(TOOL_TOO_LONG)
+    check_whole([source, *texts_in(settings)])
     module = parsed_python(source)
     # Its literals too, as an escape can spell a key the raw text doesn't hold.
     literals = [
@@ -945,12 +1000,18 @@ def check_tool_locks(config: V2Config, registry: NamespaceRegistry, name: str) -
     """Raise if the tool may not write tool *name*: root grants it, or the engine builds
     it from its block alone, which the tool couldn't write back."""
     if name in registry.config(ROOT).tools:
-        raise LibraryError(f"root grants {name}: replacing it is {USERS_CHOICE}")
+        raise LibraryError(
+            f"root grants {name}, so every chat would run the code you write: only the"
+            " user may replace it, once they take it out of root's tools in the Library"
+            " panel's Namespaces tab (Edit YAML)."
+        )
     block = config.tools.get(name)
     if block is not None and "factory_from" not in block:
         raise LibraryError(
-            f"{name} is built by the engine's own {block.get('factory', name)} factory,"
-            f" which write_tool can't write back: replacing it is {USERS_CHOICE}"
+            f"{name} is built by the engine's own {block.get('factory', name)} factory"
+            " from its block alone, so it has no Python for write_tool to write back:"
+            " only the user may replace it, by importing a config that defines it"
+            " (deep-reasoning import). Write a tool of another name instead."
         )
 
 
@@ -1029,6 +1090,126 @@ def logged(done: str, before: str | None, after: str, **change: str) -> Event:
     return {"done": done, **change}
 
 
+def field_changes(before: str, after: str) -> tuple[dict[str, Any], list[str]]:
+    """Each field a namespace's own YAML *after* sets otherwise than *before* does, with
+    its value in each (None when unset), and the names of those it leaves as they were."""
+    old, new = fields_of(before), fields_of(after)
+    keys = dict.fromkeys([*old, *new])
+    changed = {
+        key: {"before": old.get(key), "after": new.get(key)}
+        for key in keys
+        if old.get(key) != new.get(key)
+    }
+    return changed, [key for key in keys if key not in changed]
+
+
+def in_brief(row: dict[str, Any], registry: NamespaceRegistry) -> dict[str, Any]:
+    """A namespace as show() lists it: what it sets itself and the tools its agents get,
+    and each of its decompositions with how many problems it has, each text cut short."""
+    brief = {
+        "name": row["name"],
+        "depth": row["depth"],
+        "sets": fields_of(row["yaml"]),
+        "tools": list(registry.resolve(row["name"]).tools),
+        "decompositions": [
+            {"name": each["name"], "problems": len(each["problems"])}
+            for each in row["decompositions"]
+        ],
+    }
+    return cut(brief, limit=BRIEF_CHARS)
+
+
+def tool_entries(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every tool, as the panel's Tools tab lists them, with its settings and a custom
+    tool's Python source."""
+    config, registry = config_and_registry(connection)
+    sources = {name: source for name, _, source in library_tools(connection)}
+    rows = tool_rows(config, registry, in_chain_order(registry), sources)
+    return [
+        {
+            "name": row["name"],
+            "kind": row["badge"] or "custom",
+            "factory": row["factory"],
+            "settings": {
+                key: value
+                for key, value in config.tools.get(row["name"], {}).items()
+                if key not in OWN_KEYS
+            },
+            "granted_in": row["granted_in"],
+            "description": row["description"],
+            "source": row["source"],
+        }
+        for row in rows
+    ]
+
+
+def named(rows: list[dict[str, Any]], name: Any, noun: str, lister: str) -> Any:
+    """The one of *rows* named *name*; a LibraryError saying where they are listed when
+    none is."""
+    found = [row for row in rows if row["name"] == name]
+    if not found:
+        raise LibraryError(f'The Library has no {noun} "{name}": {lister} lists them.')
+    return found[0]
+
+
+def tool_fields(name: Any, text: Any) -> Any:
+    """Tool *name*'s row, as tool_text writes it, as write_tool takes it: {source,
+    factory, settings}; *text* as it is when it isn't one, as any cell may log a change
+    and a shared file hold one."""
+    if type(name) is not str or type(text) is not str:
+        return text
+    found = re.search(rf"^# {re.escape(name)}\.py\n", text, re.MULTILINE)
+    try:
+        block = yaml.safe_load(text[: found.start()]) if found else None
+    except (yaml.YAMLError, RecursionError):
+        return text
+    if type(block) is not dict:
+        return text
+    settings = {key: value for key, value in block.items() if key not in OWN_KEYS}
+    return {
+        "source": text[found.end() :],
+        "factory": block.get("factory", name),
+        "settings": settings or None,
+    }
+
+
+def as_written(event: Event) -> dict[str, Any]:
+    """A library.change *event*'s fields: a namespace's with each field it changed, and a
+    tool's before and after as write_tool takes them."""
+    change = {key: event.get(key) for key in CHANGE_FIELDS}
+    if change["what"] == "namespace":
+        before, after = change["before"], change["after"]
+        change["changed"] = field_changes(before or "", after)[0]
+    if change["what"] == "tool":
+        for key in ("before", "after"):
+            change[key] = tool_fields(change["name"], change[key])
+    return change
+
+
+def chat_changes(library: str, chat: str, turn: Any) -> list[dict[str, Any]]:
+    """The Library changes of *chat*'s message *turn*, or of every message of its, this
+    one's so far included, each with its turn and message."""
+    with app_file(library, "ro") as connection:
+        turns = chat_turns(connection, chat)
+    if turn is not None and (type(turn) is not int or not 1 <= turn <= len(turns)):
+        raise ValueError(
+            f"There is no message {turn!r}: this chat's messages are numbered 1 to"
+            f" {len(turns)}, this one last."
+        )
+    found = []
+    for number, each in enumerate(turns, start=1):
+        if turn not in (None, number):
+            continue
+        events = each["events"]
+        at = {"turn": number, "message": cut(events[0]["prompt"])}
+        found += [
+            at | as_written(event)
+            for event in events
+            if event["kind"] == "library.change"
+        ]
+    return found
+
+
 def granted_afresh(
     connection: sqlite3.Connection,
     registry: NamespaceRegistry,
@@ -1071,10 +1252,26 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     library, chat_namespace = params["library"], params["namespace"]
     key_names, tools_dir = params["key_names"], Path(params["tools_dir"])
 
-    def show() -> list[dict[str, Any]]:
-        """Every namespace, as the Library panel shows it."""
+    def show(name: str | None = None) -> Any:
+        """Every namespace in brief, or namespace *name* as the Library panel shows it."""
         with app_file(library, "ro") as connection, reading(connection):
-            return namespace_rows(connection, *config_and_registry(connection))
+            config, registry = config_and_registry(connection)
+            rows = namespace_rows(connection, config, registry)
+        if name is None:
+            return [in_brief(row, registry) for row in rows]
+        return named(rows, name, "namespace", "show()")
+
+    def tools(name: str | None = None) -> Any:
+        """Every tool in brief, or tool *name* whole, with its source."""
+        with app_file(library, "ro") as connection, reading(connection):
+            rows = tool_entries(connection)
+        if name is None:
+            return cut(rows, limit=BRIEF_CHARS)
+        return named(rows, name, "tool", "tools()")
+
+    def changes(turn: int | None = None) -> list[dict[str, Any]]:
+        """This chat's Library changes, in message *turn* or in every one."""
+        return chat_changes(library, params["chat"], turn)
 
     def check_grant(registry: NamespaceRegistry) -> None:
         """Raise unless this run's chat is in a namespace that grants the library tool, as
@@ -1115,15 +1312,20 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         check_local(registry)
         check_tool_locks(config, registry, name)
 
-    def built_grants(name: str, text: str, adding: bool) -> dict[str, tuple[str, str]]:
-        """The custom tools namespace *name*, as the YAML *text* would make it, grants
-        afresh, as stored, each built, after what the write would refuse cheaply, so a
-        write refused for that runs no tool. With none, the write makes every check, under
-        its lock; the build holds no lock, so the write checks the tools again under it."""
+    def built_grants(
+        name: str, text: str, adding: bool, merge: bool = False
+    ) -> dict[str, tuple[str, str]]:
+        """The custom tools namespace *name*, as the YAML *text* would make it (merged
+        into its own with *merge*), grants afresh, as stored, each built, after what the
+        write would refuse cheaply, so a write refused for that runs no tool. With none,
+        the write makes every check, under its lock; the build holds no lock, so the write
+        checks the tools again under it."""
         if adding:
             check_name(name)
-        namespace, _ = authored(name, text)
         with app_file(library, "ro") as connection, reading(connection):
+            if merge:
+                text = merged(namespace_yaml(connection, name) or "", text)
+            namespace, _ = authored(name, text)
             config, registry = config_and_registry(connection)
             afresh = granted_afresh(connection, registry, namespace)
             if not afresh:
@@ -1142,50 +1344,66 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         check_builds(built, tools_dir, GRANTED)
         return afresh
 
-    def write_decomposition(namespace: str, yaml: str) -> dict[str, Any]:
+    def write_decomposition(namespace: str, yaml: Any) -> dict[str, Any]:
         """Add the decomposition *yaml* to *namespace*, or replace the one of its name."""
-        # The engine runs a reply's last <repl> block, so a cell writes [repl] instead.
-        if type(yaml) is str:
-            yaml = yaml.replace("[repl]", "<repl>").replace("[/repl]", "</repl>")
-        check_writable(namespace, yaml, key_names)
+        text = yaml_text(yaml)
+        # The engine runs a reply's last <repl> block, so a cell writes [repl] instead;
+        # a text with a real tag was read back, not typed, so its [repl] is the example's.
+        if "<repl>" not in text:
+            text = text.replace("[repl]", "<repl>").replace("[/repl]", "</repl>")
+        check_writable(namespace, text, key_names)
         with app_file(library, "rw") as connection:
             stored, before = add_decomposition(
-                connection, namespace, yaml, replace=True, allowed=may_write
+                connection, namespace, text, replace=True, allowed=may_write
             )
         done = "added" if before is None else "replaced"
         change = logged(
             done,
             before,
-            yaml,
+            text,
             what="decomposition",
             namespace=namespace,
             name=stored["name"],
         )
-        return {**change, "problems": stored["problems"]}
+        broken = code_problems(text)
+        return {**change, "problems": stored["problems"]} | (
+            {"code_problems": broken} if broken else {}
+        )
 
-    def add(name: str, yaml: str) -> dict[str, Any]:
+    def add(name: str, yaml: Any) -> dict[str, Any]:
         """Add namespace *name* with the fields *yaml* sets."""
-        check_writable(name, yaml, key_names)
-        built = built_grants(name, yaml, adding=True)
+        text = yaml_text(yaml)
+        check_writable(name, text, key_names)
+        built = built_grants(name, text, adding=True)
         with app_file(library, "rw") as connection:
             stored = add_namespace(
-                connection, name, yaml, allowed=partial(may_grant, built)
+                connection, name, text, allowed=partial(may_grant, built)
             )
         return logged(
             "added", None, stored, what="namespace", namespace=name, name=name
         )
 
-    def change(name: str, yaml: str) -> dict[str, Any]:
-        """Give namespace *name* the fields *yaml* sets in place of its own."""
-        check_writable(name, yaml, key_names)
-        built = built_grants(name, yaml, adding=False)
+    def change(name: str, yaml: Any, replace: bool = False) -> dict[str, Any]:
+        """Give namespace *name* the fields *yaml* sets, keeping the others, or with
+        *replace* in place of all its own."""
+        text = yaml_text(yaml)
+        check_writable(name, text, key_names)
+        merge = not replace
+        built = built_grants(name, text, adding=False, merge=merge)
         with app_file(library, "rw") as connection:
             before, stored = change_namespace(
-                connection, name, yaml, allowed=partial(may_grant, built)
+                connection,
+                name,
+                text,
+                allowed=partial(may_grant, built),
+                merge=merge,
             )
-        return logged(
-            "changed", before, stored, what="namespace", namespace=name, name=name
-        )
+        at = {"what": "namespace", "namespace": name, "name": name}
+        if stored == before:
+            return {"done": "unchanged", **at}
+        changed, kept = field_changes(before, stored)
+        done = logged("changed", before, stored, **at)
+        return done | {"changed": cut(changed), "kept": kept}
 
     def write_tool(
         name: str, source: str, factory: str, settings: dict[str, Any] | None = None
@@ -1218,6 +1436,8 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
 
     tool = SimpleNamespace(
         show=show,
+        tools=tools,
+        changes=changes,
         write_decomposition=write_decomposition,
         add_namespace=add,
         change_namespace=change,
