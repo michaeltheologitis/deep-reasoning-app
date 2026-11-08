@@ -16,13 +16,14 @@ tools see no chat's files or modules, in a process group of its own, and is stop
 BUILD_TIMEOUT_S. The parent names the file the verdicts go to before any tool's code
 runs; the child notes each tool's name in it before building it and its verdict after,
 and ends itself whatever happens, so a thread a tool left can't hold it up. The parent
-then kills its group before reaping it, so a process a tool started goes too, however
-the check ended (a tool's os._exit or crash included). The tools' files are in a folder
-of their own, apart from the notes, so a tool that writes a file of that name beside its
-own, or in its working folder, changes no verdict (one that seeks the notes out could
-forge one: it is the user's own code, unsandboxed in every run anyway). A tool that ends
-or hangs the check is the one blamed, and the tools after it are checked again without
-it.
+then kills its group before reaping it, so nothing in the check's process group outlives
+it, however the check ended (a tool's os._exit or crash included); a process a tool puts
+in a session or group of its own (setsid, start_new_session) isn't followed. The tools'
+files are in a folder of their own, apart from the notes, so a tool that writes a file
+of that name beside its own, or in its working folder, changes no verdict (one that
+seeks the notes out could forge one: it is the user's own code, unsandboxed in every run
+anyway). A tool that ends or hangs the check is the one blamed, and the tools after it
+are checked again without it.
 """
 
 import json
@@ -37,6 +38,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+import structlog
 import yaml
 from deep_reasoner import build_client
 from deep_reasoner.tools import ToolBuildError
@@ -56,6 +58,21 @@ TOOLS = "tools"
 # How often the caller looks whether the check has ended.
 POLL_S = 0.05
 Tools = Mapping[str, tuple[dict[str, Any], str]]
+# The run config a keyless build checks with: a client that reaches nothing, so a factory
+# that calls the model while it is built fails rather than spends, and no models presets
+# or llm_kwargs, which the Library doesn't hold.
+NOWHERE = {
+    "client": {
+        "base_url": "http://127.0.0.1:9/v1",
+        "api_key_env": "DEEP_REASONING_NO_KEY",
+        "max_retries": 0,
+    }
+}
+# Why a namespace mustn't grant a tool that doesn't build.
+STOPS_EVERY_CHAT = "granted, it would stop every chat"
+NOT_GRANTED = f"wasn't granted ({STOPS_EVERY_CHAT})"
+
+log = structlog.get_logger()
 
 
 def config_of(spec: Path) -> dict[str, Any]:
@@ -183,18 +200,36 @@ def refuse_unbuilt(
     work: Path,
     done: str | None = None,
     note: str | None = None,
+    files: Mapping[str, str | None] | None = None,
 ) -> None:
     """Raise LibraryError, in words, naming each of *tools* that doesn't build, as
-    check_tools finds: *done* says what wasn't done, and *note* follows them."""
+    check_tools finds, beside its file where *files* names one: *done* says what wasn't
+    done, and *note* follows them."""
     verdicts = check_tools(tools, config, env, work)
     so = f", so it {done}" if done else ""
+    named = {name: f" ({file})" for name, file in (files or {}).items() if file}
     failed = [
-        f"Tool {name} doesn't build{so}: {why}"
+        f"Tool {name}{named.get(name, '')} doesn't build{so}: {why}"
         for name in tools
         if (why := verdicts[name]) is not None
     ]
     if failed:
         raise LibraryError("\n".join([*failed, *([note] if note else [])]))
+
+
+def refuse_unbuilt_keyless(
+    tools: Tools,
+    env: Mapping[str, str],
+    done: str | None = None,
+    note: str | None = None,
+    files: Mapping[str, str | None] | None = None,
+) -> None:
+    """refuse_unbuilt for *tools* in a run of NOWHERE, in *env*, which holds no key, its
+    files in a folder of their own deleted after: as the panel and an import build a tool
+    no namespace grants yet."""
+    log.info("Building tools to check them", tools=list(tools))
+    with tempfile.TemporaryDirectory() as work:
+        refuse_unbuilt(tools, NOWHERE, env, Path(work), done, note, files)
 
 
 def read_notes(notes: Path) -> list[dict[str, Any]]:

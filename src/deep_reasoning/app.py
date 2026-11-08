@@ -3,6 +3,7 @@
 import asyncio
 import sqlite3
 from contextlib import asynccontextmanager, closing
+from functools import partial
 from http import HTTPStatus
 from pathlib import Path
 from typing import Annotated
@@ -42,11 +43,13 @@ from deep_reasoning.folders import (
     working_folder,
 )
 from deep_reasoning.library import (
+    NOT_OPENED,
     ROOT,
     ChangedMeanwhile,
     LibraryError,
     add_decomposition,
     add_namespace,
+    built_grants,
     change_namespace,
     check_namespace,
     config_and_registry,
@@ -62,6 +65,8 @@ from deep_reasoning.library import (
     panel,
     read_namespaces,
     reading,
+    same_grants,
+    unwritable,
 )
 from deep_reasoning.pages import page_exists, page_text
 from deep_reasoning.runs import (
@@ -82,6 +87,7 @@ from deep_reasoning.settings import (
     find_provider,
     forget_key,
     key_names,
+    keyless_environment,
     model_lists,
     provider_list,
     remember_pick,
@@ -92,12 +98,12 @@ from deep_reasoning.settings import (
     starting_model,
     update_server,
 )
+from deep_reasoning.tool_check import NOT_GRANTED, refuse_unbuilt_keyless
 
 WEB = Path(__file__).parent / "web"
 # Requests naming any other host are refused, so a web page can't reach the API by DNS rebinding.
 LOCAL_HOSTS = ["127.0.0.1", "localhost"]
 # The SQLite failures of the Library file a person can do something about; the rest are bugs.
-UNWRITABLE = ("SQLITE_READONLY", "SQLITE_FULL", "SQLITE_IOERR", "SQLITE_CANTOPEN")
 BUSY = ("SQLITE_BUSY", "SQLITE_LOCKED")
 MODEL_NAME = r"^[^\x00-\x1f\x7f]{1,200}$"
 NO_PAGE = "There is no such page: it may have been deleted with its chat."
@@ -192,14 +198,12 @@ def create_app(library, home):
 
     @app.exception_handler(sqlite3.OperationalError)
     async def unusable(request, error):
-        name = error.sqlite_errorname
-        if name.startswith(UNWRITABLE):
-            detail = f"The Library file can't be written: {error}."
-        elif name.startswith(BUSY):
+        detail = unwritable(error)
+        if not detail and error.sqlite_errorname.startswith(BUSY):
             detail = (
                 "The Library file is busy: another program is writing it. Try again."
             )
-        else:
+        if not detail:
             raise error
         return JSONResponse({"detail": detail}, status_code=HTTPStatus.BAD_REQUEST)
 
@@ -268,11 +272,25 @@ def create_app(library, home):
         names = [{"name": name, "usable": True} for name in in_chain_order(registry)]
         return {"namespaces": names, "default_namespace": config.entry_namespace}
 
+    def built_first(name, yaml, adding, was=NOT_OPENED):
+        """The write's *allowed* for namespace *name* as its YAML *yaml* makes it, once
+        the custom tools it grants afresh are built, as a run builds them but with no key
+        (built_grants())."""
+
+        def build(tools):
+            env = keyless_environment(library, home)
+            refuse_unbuilt_keyless(tools, env, NOT_GRANTED)
+
+        with closing(open_library(library)) as connection:
+            built = built_grants(connection, name, yaml, build, adding, was=was)
+        return partial(same_grants, built, None)
+
     # An imported namespace's, tool's or setting's name may hold a /, hence :path.
     @app.post("/api/namespaces", status_code=HTTPStatus.CREATED)
     def post_namespace(name: Annotated[str, Body()], yaml: Annotated[str, Body()]):
+        allowed = built_first(name, yaml, adding=True)
         with closing(open_library(library)) as connection:
-            add_namespace(connection, name, yaml)
+            add_namespace(connection, name, yaml, allowed=allowed)
             return library_panel(connection)
 
     # was is null for a namespace too long to show, which the save replaces while it is so.
@@ -280,8 +298,9 @@ def create_app(library, home):
     def put_namespace(
         name: str, yaml: Annotated[str, Body()], was: Annotated[str | None, Body()]
     ):
+        allowed = built_first(name, yaml, adding=False, was=was)
         with closing(open_library(library)) as connection:
-            change_namespace(connection, name, yaml, was=was)
+            change_namespace(connection, name, yaml, allowed=allowed, was=was)
             return library_panel(connection)
 
     @app.delete("/api/namespaces/{name:path}")
