@@ -61,9 +61,9 @@ from the next message. The librarian never changes root; asked to, it says how t
 chat's run is going stays in the box, and the hint names the chat whose run is going; Esc there stops it.
 
 **The agent's Python** runs on your computer by default, unsandboxed, in the chat's working folder, with the app's
-own Python packages: numpy, pandas and requests are there; scipy, sympy and matplotlib are not. Add packages by
-starting the app with them: `uv run --with scipy --with sympy deep-reasoning`. A module file in the chat's folder
-imports too.
+own Python packages: numpy, pandas (with tabulate, so `to_markdown()` works) and requests are there; scipy, sympy
+and matplotlib are not. Add packages by starting the app with them: `uv run --with scipy --with sympy
+deep-reasoning`. A module file in the chat's folder imports too.
 
 ## What it supports
 
