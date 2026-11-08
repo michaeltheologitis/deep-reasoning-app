@@ -108,9 +108,12 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   template is checked, never run, so whether `vars.x` holds what it reads isn't. A stored decomposition that fails
   the check, as a shared Library may hold, is marked ✗ with why.
 - A save or delete in the panel is refused if what you opened was changed meanwhile (by the librarian, another tab
-  or an import): your draft stays, beside what is stored now, and saving again replaces it. The panel reads the
-  Library again whenever you open it or come back to its window.
-- The Tools tab shows each tool, with the Python of the Library's own, and deletes one of the Library's that no
+  or an import): your draft stays, beside what is stored now, and saving again replaces it. One deleted meanwhile
+  says so, and its row goes. A delete the panel can tell would be refused (a tool a namespace grants, a namespace
+  with namespaces under it or that another's `spawn` names) says why at once, without asking first. The panel reads
+  the Library again whenever you open it or come back to its window.
+- The Tools tab shows each tool, with what agents are told it does (for one of the Library's own, as far as its
+  Python says without running it) and the Python of the Library's own, and deletes one of the Library's that no
   namespace grants. Run settings can't be changed in the panel, but one the engine doesn't read, as an import may
   bring, can be deleted.
 - In a chat in the `librarian` namespace, picked under the message box, the agent can add or edit a decomposition in

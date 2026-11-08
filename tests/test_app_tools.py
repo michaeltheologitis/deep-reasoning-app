@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from fake_model import RESEARCH_CHANGED, SPLIT_COUNT, WORD_COUNT
+from fake_model import RESEARCH_CHANGED, SPLIT_COUNT, WORD_COUNT, WORD_COUNT_DOC
 from structlog.testing import capture_logs
 
 from deep_reasoning.app_tools import (
@@ -826,6 +826,35 @@ def test_a_decomposition_written_with_repl_placeholders_is_stored_with_the_real_
     ]
 
 
+@pytest.mark.parametrize(
+    "turns",
+    [
+        (
+            "- role: user\n  content: What does tags[repl] return?\n"
+            "- role: assistant\n  content: |\n    <think>Look it up.</think>\n"
+            "    [repl]\n    FinalAnswer(tags[repl])\n    [/repl]\n"
+        ),
+        (
+            '- {role: user, content: "What does tags[repl] return?"}\n'
+            "- {role: assistant, content: "
+            '"<think>Look it up.</think>\\n[repl]\\nFinalAnswer(tags[repl])\\n[/repl]"}\n'
+        ),
+    ],
+    ids=["block", "quoted"],
+)
+def test_only_an_assistant_turns_placeholder_tags_are_written_as_real_ones(
+    fresh, turns
+):
+    tool = library_tool(fresh)
+    tool.write_decomposition("drafts", f"name: tags\nmessages:\n{turns}")
+    [stored_yaml] = [each["yaml"] for each in tool.show("drafts")["decompositions"]]
+    question, answer = yaml.safe_load(stored_yaml)["messages"]
+    assert question["content"] == "What does tags[repl] return?"
+    assert answer["content"].rstrip() == (
+        "<think>Look it up.</think>\n<repl>\nFinalAnswer(tags[repl])\n</repl>"
+    )
+
+
 class NeverEqual(str):
     """Text that compares unequal to everything, itself included."""
 
@@ -1509,7 +1538,7 @@ def test_tools_lists_every_tool_in_brief_and_gives_one_whole(fresh):
         "factory": "build",
         "settings": {"sep": ","},
         "granted_in": ["drafts"],
-        "description": "",
+        "description": WORD_COUNT_DOC,
         "source": f"{long_source[:BRIEF_CHARS]}…(+{len(long_source) - BRIEF_CHARS}"
         " chars)",
     }

@@ -306,6 +306,10 @@ BETWEEN = {
 NO_TASK = "There is no task: add a user turn holding it."
 # make_tool builds `factory: llm` with v2's own builder, the rest from TOOL_BUILDERS.
 BUILDERS = {**TOOL_BUILDERS, "llm": build_llm_tool}
+# What a custom tool's source is read for: what it defines, and the Func(...) it returns.
+DOCUMENTED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+FUNC = "Func"
+NO_DESCRIPTION = "no description found in its source"
 BUILTIN_DESCRIPTIONS = {
     "llm": _DEFAULT_LLM_DESCRIPTION,
     "rag": DEFAULT_RAG_DESCRIPTION,
@@ -389,14 +393,16 @@ then assistant turns, each <think>…</think> and one <repl>…</repl> of Python
 but the last, a user turn with the <observation>…</observation> its code printed; the \
 last calls FinalAnswer(...). The last <repl> block in your reply is the one that runs, \
 so in your cell write the example's repl tags as [repl] and [/repl], in a raw string \
-(r\"\"\"…\"\"\") so its code keeps the escapes you type; the tool writes the real tags. A \
-yaml that already holds a real <repl> tag, as one from show(name) or changes() does, is \
-written as it is, [repl] and all: to edit a stored decomposition, change its yaml in \
-your cell (with .replace(...)) rather than typing it again. It is stored even when it \
-isn't yet a worked example like that: the result's problems lists each way it isn't \
-(empty when none), and until you write it again without them the Library panel marks it \
-✗. The result's code_problems, when there are any, lists each turn whose code isn't \
-valid Python, which agents copying it would copy too.
+(r\"\"\"…\"\"\") so its code keeps the escapes you type; the tool writes them as the \
+real tags in the assistant turns, and leaves any other [repl] (a user's, or a subscript \
+such as tags[repl]) as you typed it. A yaml that already holds a real <repl> tag, as \
+one from show(name) or changes() does, is written as it is, [repl] and all: to edit a \
+stored decomposition, change its yaml in your cell (with .replace(...)) rather than \
+typing it again. It is stored even when it isn't yet a worked example like that: the \
+result's problems lists each way it isn't (empty when none), and until you write it \
+again without them the Library panel marks it ✗. The result's code_problems, when \
+there are any, lists each turn whose code isn't valid Python, which agents copying it \
+would copy too.
   library.add_namespace(name, yaml): adds namespace `name` ("research", or \
 "research.papers" under an existing research) with the fields yaml sets: system_suffix \
 (text added to its agents' system prompt), vars (names and values its agents' Python \
@@ -542,11 +548,13 @@ class ChangedMeanwhile(LibraryError):
     """A save or delete refused because what it was opened on changed since."""
 
 
+BY_WHOM = "(by the librarian, another tab or an import)"
+
+
 def changed_meanwhile(what):
     return ChangedMeanwhile(
-        f"{what} was changed after you opened it (by the librarian, another tab or an"
-        " import), so nothing was saved: saving would undo that change. Look at it as"
-        " it is now, then save again."
+        f"{what} was changed after you opened it {BY_WHOM}, so nothing was saved:"
+        " saving would undo that change. Look at it as it is now, then save again."
     )
 
 
@@ -1423,14 +1431,25 @@ def edit_decomposition(connection, namespace, name, was, text):
 
 def delete_decomposition(connection, namespace, name, was):
     """Delete *namespace*'s decomposition *name*, which the person was shown as *was*;
-    ChangedMeanwhile if it is no longer stored so."""
+    ChangedMeanwhile if it is no longer stored so, or at all."""
+    where = (namespace, name)
     with writing(connection):
-        deleted = connection.execute(
-            "DELETE FROM decompositions WHERE namespace = ? AND name = ? AND yaml = ?",
-            (namespace, name, was),
+        found = connection.execute(
+            "SELECT yaml FROM decompositions WHERE namespace = ? AND name = ?", where
+        ).fetchone()
+        if found is None:
+            raise ChangedMeanwhile(
+                f'"{name}" in {namespace} was already deleted or renamed {BY_WHOM}.'
+            )
+        if found[0] != was:
+            raise ChangedMeanwhile(
+                f'"{name}" in {namespace} was changed after you opened it {BY_WHOM}, so'
+                " it wasn't deleted. Look at it as it is now, then delete it again if"
+                " you still want to."
+            )
+        connection.execute(
+            "DELETE FROM decompositions WHERE namespace = ? AND name = ?", where
         )
-        if deleted.rowcount == 0:
-            raise changed_meanwhile(f'"{name}" in {namespace}')
 
 
 def namespace_problem(error):
@@ -1522,18 +1541,32 @@ def check_fields(connection, namespace):
     if problems:
         raise LibraryError("\n".join(problems))
     # The engine lets a spawn name no namespace, and fails only when the agent spawns there.
+    name = namespace.name
     missing = [
         each
         for each in namespace.spawn or []
-        if each != namespace.name and not has_namespace(connection, each)
+        if each != name and not has_namespace(connection, each)
     ]
     if missing:
+        adding = not has_namespace(connection, name)
         raise LibraryError(
-            "\n".join(
-                f'spawn names "{each}", which is not a namespace in the Library.'
-                for each in missing
-            )
+            "\n".join(missing_spawn(each, name, adding) for each in missing)
         )
+
+
+def missing_spawn(each, name, adding):
+    """Why namespace *name*'s spawn can't name *each*, which the Library doesn't hold, and
+    what to do; *adding*, as when *name* is new."""
+    if adding and each.startswith(f"{name}."):
+        return (
+            f'spawn names "{each}", which goes under {name} and isn\'t in the Library'
+            f" yet: add {name} without it first, then {each}, then put {each} in the"
+            f" spawn of {name}."
+        )
+    return (
+        f'spawn names "{each}", which is not a namespace in the Library: add {each}'
+        " first, or take it out of spawn."
+    )
 
 
 def write_namespace(connection, namespace, text):
@@ -1694,7 +1727,8 @@ def delete_namespace(connection, name, decompositions):
     if name == ROOT:
         raise LibraryError("root can't be deleted: every namespace inherits from it.")
     with writing(connection):
-        check_namespace(connection, name)
+        if namespace_yaml(connection, name) is None:
+            raise LibraryError(f'The Library has no namespace "{name}" to delete.')
         rows = connection.execute("SELECT name, yaml FROM namespaces")
         namespaces = {each: yaml.safe_load(text) or {} for each, text in rows}
         children = [each for each in namespaces if each.startswith(f"{name}.")]
@@ -1872,15 +1906,60 @@ def run_settings(connection):
     return rows
 
 
-def class_docstring(source):
-    """The first class's docstring: what the agent is told when a factory returns one and gives no description.
-    Empty for source that doesn't parse, as a shared file may hold, so the panel still lists the tool."""
+def source_description(source, factory):
+    """What the agent is told a custom tool does, as far as its *source* says without
+    running it: the text *factory* gives Func(...) as its description, else the docstring
+    of the function or class it wraps; failing those, the first class's docstring or the
+    first line of the factory's own. Empty when there is none, or the source doesn't
+    parse, as a shared file may hold, so the panel still lists the tool."""
     try:
-        body = parsed_python(source).body
+        module = parsed_python(source)
     except LibraryError:
         return ""
-    classes = [node for node in body if isinstance(node, ast.ClassDef)]
-    return (ast.get_docstring(classes[0]) if classes else None) or ""
+    defined = {
+        node.name: node for node in ast.walk(module) if isinstance(node, DOCUMENTED)
+    }
+    texts = {
+        target.id: node.value
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    build = defined.get(factory)
+    for call in ast.walk(build) if build else []:
+        if not isinstance(call, ast.Call) or called(call.func) != FUNC or not call.args:
+            continue
+        given = [kw.value for kw in call.keywords if kw.arg == "description"]
+        text = literal_text((given or call.args[1:2] or [None])[0], texts)
+        if text is not None:
+            return text
+        # Func(value) without a description tells the agent value's docstring.
+        wrapped = defined.get(called(call.args[0]))
+        if wrapped is not None:
+            return ast.get_docstring(wrapped) or ""
+    classes = [node for node in module.body if isinstance(node, ast.ClassDef)]
+    first_class = classes and ast.get_docstring(classes[0])
+    return first_class or (build and ast.get_docstring(build) or "").partition("\n")[0]
+
+
+def called(node):
+    """The name a call or a reference such as Func, primitives.Func or Counter() gives."""
+    if isinstance(node, ast.Call):
+        node = node.func
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def literal_text(node, texts):
+    """*node*'s text when it is a string literal, or names one the module assigns in
+    *texts*; None otherwise."""
+    if isinstance(node, ast.Name):
+        node = texts.get(node.id)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
 
 
 def origin(name, factory, block, source):
@@ -1897,7 +1976,7 @@ def origin(name, factory, block, source):
         }
         return made, BUILTIN_DESCRIPTIONS[factory]
     made = {"file": block["factory_from"], "defined_in": "the Library", "badge": None}
-    return made, class_docstring(source)
+    return made, source_description(source, factory)
 
 
 def granted_in(registry, names, tool):
@@ -1916,7 +1995,7 @@ def tool_rows(config, registry, names, sources):
             "factory": factory,
             **made,
             "granted_in": granted_in(registry, names, name),
-            "description": block.get("description") or description,
+            "description": block.get("description") or description or NO_DESCRIPTION,
             "config": dump({name: block}).rstrip() if block else None,
             # Deletable: the Library holds it, not the engine or the app.
             "stored": name in sources,

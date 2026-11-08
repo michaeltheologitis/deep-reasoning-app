@@ -818,7 +818,77 @@ def test_the_panel_lists_a_tool_whose_source_is_too_deep_to_parse(library):
     with closing(open_library(library)) as connection:
         connection.execute(UPSERT_TOOL, ("deep", block, deep))
         tools = {tool["name"]: tool for tool in panel(connection)["tools"]}
-    assert tools["deep"]["description"] == ""
+    assert tools["deep"]["description"] == "no description found in its source"
+
+
+COUNT_WORDS = '''from deep_reasoner.primitives import Func
+
+DESCRIPTION = "count_words(text) -> how many words text holds"
+
+
+class Counter:
+    """Counts what it is shown."""
+
+
+def build(client, params):
+    """Build the word counter."""
+
+    def count_words(text):
+        """Count the words in text."""
+        return len(text.split())
+
+    return {made}
+'''
+
+
+@pytest.mark.parametrize(
+    ("made", "description"),
+    [
+        ('Func(count_words, description="Counts words.")', "Counts words."),
+        ('Func(count_words, "Counts words.")', "Counts words."),
+        (
+            "Func(count_words, description=DESCRIPTION)",
+            "count_words(text) -> how many words text holds",
+        ),
+        ("Func(count_words)", "Count the words in text."),
+        ("Func(Counter(), description=None)", "Counts what it is shown."),
+        ('Func(params["made"])', "Counts what it is shown."),
+    ],
+    ids=["keyword", "positional", "constant", "function", "class", "first-class"],
+)
+def test_a_custom_tools_description_is_read_from_its_source_without_running_it(
+    library, made, description
+):
+    source = COUNT_WORDS.format(made=made)
+    block = dump({"factory": "build", "factory_from": "count_words.py"})
+    with closing(open_library(library)) as connection:
+        connection.execute(UPSERT_TOOL, ("count_words", block, source))
+        tools = {tool["name"]: tool for tool in panel(connection)["tools"]}
+    assert tools["count_words"]["description"] == description
+
+
+@pytest.mark.parametrize(
+    ("source", "description"),
+    [
+        (
+            'def build(client, params):\n    """Build a counter."""\n    return 1\n',
+            "Build a counter.",
+        ),
+        (
+            "def build(client, params):\n    return 1\n",
+            "no description found in its source",
+        ),
+    ],
+    ids=["factory", "none"],
+)
+def test_a_custom_tool_whose_source_describes_nothing_it_wraps_says_what_it_can(
+    library, source, description
+):
+    block = dump({"factory": "build", "factory_from": "counter.py"})
+    with closing(open_library(library)) as connection:
+        connection.execute(UPSERT_TOOL, ("counter", block, source))
+        tools = {tool["name"]: tool for tool in panel(connection)["tools"]}
+    assert tools["counter"]["description"] == description
 
 
 @pytest.mark.parametrize(
@@ -999,7 +1069,13 @@ def test_a_namespace_the_panel_cannot_take_is_refused_with_a_plain_message(
             "tools: [ghost]\n",
             "The engine refuses it: namespace 'research' grants unknown tool 'ghost'",
         ),
-        ("spawn: [nowhere]\n", 'spawn names "nowhere", which is not a namespace'),
+        (
+            "spawn: [nowhere]\n",
+            (
+                'spawn names "nowhere", which is not a namespace in the Library: add'
+                " nowhere first, or take it out of spawn."
+            ),
+        ),
     ],
 )
 def test_a_namespace_granting_an_unknown_tool_or_spawning_nowhere_is_not_written(
@@ -1012,6 +1088,19 @@ def test_a_namespace_granting_an_unknown_tool_or_spawning_nowhere_is_not_written
         LibraryError, match=re.escape(problem.replace("research", "router"))
     ):
         change(imported, change_namespace, "router", text)
+    assert dumped(imported) == before
+
+
+def test_a_new_namespace_spawning_one_to_go_under_it_says_in_which_order_to_add_them(
+    imported,
+):
+    before = dumped(imported)
+    refusal = (
+        'spawn names "team.a", which goes under team and isn\'t in the Library yet: add'
+        " team without it first, then team.a, then put team.a in the spawn of team."
+    )
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        change(imported, add_namespace, "team", "spawn: [team.a]\n")
     assert dumped(imported) == before
 
 
@@ -1064,7 +1153,7 @@ def test_deleting_the_default_namespace_starts_new_chats_in_root(imported):
         ("research", "Delete its namespaces first: research.papers."),
         ("course_advisor", "First take course_advisor out of the spawn of router"),
         (ROOT, "root can't be deleted"),
-        ("nowhere", 'The Library has no namespace "nowhere"'),
+        ("nowhere", 'The Library has no namespace "nowhere" to delete.'),
     ],
 )
 def test_a_refused_delete_says_why_and_changes_nothing(imported, name, problem):
@@ -1254,6 +1343,29 @@ def test_an_edit_or_delete_of_a_decomposition_changed_or_deleted_meanwhile_is_re
     with pytest.raises(ChangedMeanwhile):
         change(imported, act, "not there", text)
     assert dumped(imported) == before
+
+
+def test_a_delete_refused_for_a_change_made_meanwhile_is_worded_as_a_delete(imported):
+    [(name, text), *_] = names_and_yaml(imported, "router")
+    change(imported, add_decomposition, "router", text + "# changed\n", True)
+    refusal = (
+        f'"{name}" in router was changed after you opened it (by the librarian, another'
+        " tab or an import), so it wasn't deleted. Look at it as it is now, then delete"
+        " it again if you still want to."
+    )
+    with pytest.raises(ChangedMeanwhile, match=re.escape(refusal)):
+        change(imported, delete_decomposition, "router", name, text)
+
+
+def test_deleting_a_decomposition_deleted_meanwhile_says_it_already_was(imported):
+    [(name, text), *_] = names_and_yaml(imported, "router")
+    change(imported, delete_decomposition, "router", name, text)
+    refusal = (
+        f'"{name}" in router was already deleted or renamed (by the librarian, another'
+        " tab or an import)."
+    )
+    with pytest.raises(ChangedMeanwhile, match=re.escape(refusal)):
+        change(imported, delete_decomposition, "router", name, text)
 
 
 def test_a_namespace_saved_over_a_change_made_meanwhile_is_refused(imported):

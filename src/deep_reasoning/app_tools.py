@@ -137,6 +137,11 @@ CUT_SHORT = (
     " whole text, from show(name), tools(name) or changes()."
 )
 TOO_LONG = f"The YAML may be at most {MAX_YAML_CHARS:,} characters."
+# An example's cell tags, which a cell writes as [repl] and [/repl], as a reply's last
+# real <repl> is the one that runs. An opening one is no subscript, such as tags[repl],
+# but may follow an escape, such as \n in a quoted YAML string.
+OPENING_PLACEHOLDER = re.compile(r"(?<!(?<!\\)[\w)\]}])\[repl\]")
+CLOSING_PLACEHOLDER = "[/repl]"
 HOLDS_A_KEY = (
     "What you wrote holds a provider's key, and the Library file is shared, so keys never"
     " go in it. Take the key out."
@@ -900,6 +905,53 @@ def check_no_key(texts: list[str], key_names: list[str]) -> None:
         raise LibraryError(HOLDS_A_KEY)
 
 
+def with_real_tags(text: str) -> str:
+    """The decomposition written as YAML *text* with the placeholder tags its assistant
+    turns hold, [repl] and [/repl], written as the real ones in place, and the rest as
+    typed, a user's [repl] included."""
+    # Each real tag is as long as its placeholder, so a turn is where it is in the text
+    # with real tags everywhere, which a turn starting [repl] needs to parse.
+    everywhere = text.replace("[repl]", "<repl>").replace(
+        CLOSING_PLACEHOLDER, "</repl>"
+    )
+    try:
+        root = yaml.compose(everywhere, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        return text
+    for start, end in assistant_spans(root):
+        span = OPENING_PLACEHOLDER.sub("<repl>", text[start:end])
+        text = text[:start] + span.replace(CLOSING_PLACEHOLDER, "</repl>") + text[end:]
+    return text
+
+
+def assistant_spans(root: yaml.Node | None) -> list[tuple[int, int]]:
+    """Where each assistant turn's content is in a decomposition's YAML, given as its
+    composed *root* node."""
+    messages = node_fields(root).get("messages")
+    turns = messages.value if isinstance(messages, yaml.SequenceNode) else []
+    spans = []
+    for turn in map(node_fields, turns):
+        role, content = turn.get("role"), turn.get("content")
+        if (
+            isinstance(role, yaml.ScalarNode)
+            and role.value == "assistant"
+            and content is not None
+        ):
+            spans.append((content.start_mark.index, content.end_mark.index))
+    return spans
+
+
+def node_fields(node: yaml.Node | None) -> dict[str, yaml.Node]:
+    """A YAML mapping node's values by their keys' text; empty for any other node."""
+    if not isinstance(node, yaml.MappingNode):
+        return {}
+    return {
+        key.value: value
+        for key, value in node.value
+        if isinstance(key, yaml.ScalarNode)
+    }
+
+
 def yaml_text(value: Any) -> str:
     """*value*, YAML text or a dict of plain values, as YAML text, from its first line
     that isn't blank."""
@@ -1347,10 +1399,9 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def write_decomposition(namespace: str, yaml: Any) -> dict[str, Any]:
         """Add the decomposition *yaml* to *namespace*, or replace the one of its name."""
         text = yaml_text(yaml)
-        # The engine runs a reply's last <repl> block, so a cell writes [repl] instead;
-        # a text with a real tag was read back, not typed, so its [repl] is the example's.
+        # A text with a real tag was read back, not typed, so its [repl] is the example's.
         if "<repl>" not in text:
-            text = text.replace("[repl]", "<repl>").replace("[/repl]", "</repl>")
+            text = with_real_tags(text)
         check_writable(namespace, text, key_names)
         with app_file(library, "rw") as connection:
             stored, before = add_decomposition(
