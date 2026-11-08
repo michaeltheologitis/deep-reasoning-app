@@ -43,6 +43,7 @@ from fake_model import (
 
 from deep_reasoning.library import (
     ROOT,
+    add_decomposition,
     add_namespace,
     change_namespace,
     engine_config,
@@ -61,6 +62,13 @@ SPIN = "while True:\n    pass"
 SLEEP = "import time\ntime.sleep(60)"
 # A cell blocked in C holds up a clean stop, so the server kills the worker this soon.
 KILL_AFTER_S = 0.5
+# A worked example the save check passes that no run can render.
+DIVIDING_BY_ZERO = """\
+name: tally
+messages:
+- {role: user, content: "Tally {{ 1/0 }} votes."}
+- {role: assistant, content: "<think>Count.</think>\\n<repl>FinalAnswer(1)</repl>"}
+"""
 FAN_OUT = {
     "Summarize two courses.": [
         repl(
@@ -237,6 +245,18 @@ SCENARIOS = {
             ],
         },
     },
+    "left_out": {
+        "prompt": "Tally the votes.",
+        "namespaces": {"tallying": ""},
+        "decompositions": {"tallying": [DIVIDING_BY_ZERO]},
+        "plan": {
+            "Tally the votes.": [
+                repl("print(subagent('Count them.', namespace='tallying'))"),
+                repl("FinalAnswer('tallied')"),
+            ],
+            "Count them.": [repl("FinalAnswer(4)")],
+        },
+    },
     "tools": {
         "prompt": "Make a word counter.",
         "namespace": "librarian",
@@ -297,6 +317,9 @@ async def record(home, name, scenario):
                 change_namespace(connection, given, text)
             else:
                 add_namespace(connection, given, text)
+        for given, texts in scenario.get("decompositions", {}).items():
+            for text in texts:
+                add_decomposition(connection, given, text, replace=True)
     usage = scenario.get("usage", own_cost_usage)
     with FakeOpenAI(responder(scenario), usage=usage) as fake:
 

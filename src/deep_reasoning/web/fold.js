@@ -1,4 +1,5 @@
-// Folds a run's events into the turn the chat draws: the root's steps, each sub-agent as a row under the cell that started it, Library changes, pages, and the totals;
+// Folds a run's events into the turn the chat draws: the root's steps, each sub-agent as a row under the cell that started it, Library changes, pages,
+// worked examples left out, and the totals;
 // and words a Library change.
 
 const FIELD_CHARS = 60;
@@ -51,6 +52,8 @@ const FOLDS = {
   "cell.end": endCell,
   "library.change": addChange,
   "page.open": addPage,
+  // a worked example the agent wasn't shown, as it couldn't be rendered
+  "example.left_out": (fold, { node, name, namespace, why }) => addStep(fold, node, { kind: "left_out", name, namespace, why }),
   usage: addUsage,
   "agent.end": endAgent,
   "turn.end": endTurn,

@@ -13,13 +13,16 @@ import builtins
 import inspect
 import json
 import keyword
+import math
 import re
 import sqlite3
 import sys
+import time
 import unicodedata
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from contextlib import closing, contextmanager
-from functools import lru_cache, partial
+from functools import lru_cache, partial, update_wrapper, wraps
 from pathlib import Path
 
 import deep_reasoner.llm
@@ -57,6 +60,9 @@ from jinja2 import (
     meta,
     nodes,
 )
+from jinja2.compiler import CodeGenerator
+from jinja2.defaults import DEFAULT_FILTERS
+from jinja2.environment import Template
 from jinja2.sandbox import (
     UNSAFE_ASYNC_GENERATOR_ATTRIBUTES,
     UNSAFE_COROUTINE_ATTRIBUTES,
@@ -64,7 +70,10 @@ from jinja2.sandbox import (
     UNSAFE_GENERATOR_ATTRIBUTES,
     UNSAFE_METHOD_ATTRIBUTES,
     SandboxedEnvironment,
+    SandboxedFormatter,
+    SecurityError,
 )
+from markupsafe import EscapeFormatter, Markup
 from pydantic import ValidationError
 
 log = structlog.get_logger()
@@ -421,12 +430,14 @@ of its cells failed, its sub-agents' included).
 task, namespace, status, result, seconds (from its start to its end, to the tenth), cost \
 (its own sub-agents' included), steps (how many) and failed (how many of its cells \
 failed).
-  history.steps(turn, node=None): the thoughts, cells, Library changes and pages, in \
-order, of message `turn`'s top agent, or of the sub-agent whose node is `node`: {kind: \
-"think", text}, {kind: "cell", code, output, status ("done", "failed", "stopped", or "cut \
-off" by a run that ended otherwise), agents: the nodes of the sub-agents it started}, \
-{kind: "change", what, namespace, name, before (None when added), after} or {kind: \
-"page", page, title} (a page opened for the user), each with its drive.
+  history.steps(turn, node=None): the thoughts, cells, Library changes, pages and worked \
+examples left out, in order, of message `turn`'s top agent, or of the sub-agent whose \
+node is `node`: {kind: "think", text}, {kind: "cell", code, output, status ("done", \
+"failed", "stopped", or "cut off" by a run that ended otherwise), agents: the nodes of \
+the sub-agents it started}, {kind: "change", what, namespace, name, before (None when \
+added), after}, {kind: "page", page, title} (a page opened for the user) or {kind: \
+"left_out", name, namespace, why} (a worked example the agent wasn't shown, as it \
+couldn't be rendered), each with its drive.
   history.errors(turn=None): what went wrong anywhere in message `turn`, or in every \
 earlier message: each failed cell of any agent, the top one included, as turn, node, \
 namespace (the agent's), task, index (its place in history.steps(turn, node)), error \
@@ -661,14 +672,19 @@ ESCAPE = (
     "Write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%, or put the text between"
     " {% raw %} and {% endraw %}."
 )
+# For braces in a cell's code, as an f-string's, where writing each out is awkward.
+CELL_ESCAPE = (
+    "Put the cell's code between {% raw %} and {% endraw %}, inside <repl>…</repl>, or"
+    " write {{ '{{' }} for a literal {{ and {{ '{%' }} for {%."
+)
 NAMES_ONLY = (
     "a template may name only task, vars, funcs, coroutines and the run settings'"
     " prompt_template_variables, which the engine fills in"
 )
-# An empty loader, so an include fails as a render error the engine words.
-SANDBOXED = partial(SandboxedEnvironment, loader=DictLoader({}))
 INCLUDES = (nodes.Include, nodes.Extends, nodes.Import, nodes.FromImport)
-SCREENED = (*INCLUDES, nodes.Getattr, nodes.Getitem)
+READS = (nodes.Getattr, nodes.Getitem)
+SCREENED = (*INCLUDES, *READS)
+VAR_READS = (*READS, nodes.Call)
 # The names the sandbox refuses that don't start with _.
 UNSAFE_NAMES = frozenset(
     {"mro"}.union(
@@ -681,6 +697,34 @@ UNSAFE_NAMES = frozenset(
 )
 # Compiling a template nested too deep raises Python's own errors, not Jinja's.
 TEMPLATE_FAILURES = (TemplateError, SyntaxError, RecursionError, MemoryError)
+# A run's template makes nothing past what a stored text may hold: no text it renders,
+# and no text, list or number it makes on the way.
+MAX_RENDERED_CHARS = MAX_YAML_CHARS
+PAST_THE_LIMIT = (
+    f"a template may make no text, list or number past {MAX_RENDERED_CHARS:,}"
+    " characters, items or digits"
+)
+# The values a template makes or reads that the limit counts; a tool, say, it leaves be.
+COUNTED = (str, list, tuple, dict, set, frozenset)
+DIGITS_PER_BIT = math.log10(2)
+# A printf-style field, as % fills it in: its width and precision, each a * for one
+# taken from the values, and its kind.
+PRINTF_FIELD = re.compile(
+    r"%(?:\([^)]*\))?[-#0 +]*(\*|\d*)(?:\.(\*|\d*))?[hlL]?(.)", re.DOTALL
+)
+# A str.format spec, its own fields filled in: its width and precision.
+FORMAT_SPEC = re.compile(
+    r"(?:.?[<>=^])?[-+ ]?z?#?0?(\d*)[,_]?(?:\.(\d*))?[a-zA-Z%]?", re.DOTALL
+)
+# How long a template may render, and where Jinja's code for a template given as text is.
+RENDER_S = 3
+TOO_SLOW = f"it was still rendering after {RENDER_S} s"
+TEMPLATE_CODE = "<template>"
+# What a template reads of vars by name that is no var: its methods, as vars.get.
+DICT_METHODS = frozenset(name for name in dir(dict) if not name.startswith("_"))
+# The str methods and filters that pad, wrap or cut to a width they are given.
+WIDTH_METHODS = frozenset({"center", "ljust", "rjust", "zfill", "expandtabs"})
+WIDTH_FILTERS = frozenset({"center", "indent", "wordwrap", "truncate"})
 
 
 class LibraryError(ValueError):
@@ -1738,9 +1782,237 @@ def check_size(text, what):
         )
 
 
+def within_limit(value):
+    """*value*, unless it is a text or collection past MAX_RENDERED_CHARS."""
+    if isinstance(value, COUNTED) and len(value) > MAX_RENDERED_CHARS:
+        raise SecurityError(PAST_THE_LIMIT)
+    return value
+
+
+def refuse_past_the_limit(size):
+    if size > MAX_RENDERED_CHARS:
+        raise SecurityError(PAST_THE_LIMIT)
+
+
+def refuse_widths(values):
+    """Raise if a whole number of *values*, the arguments of a call that pads to a
+    width, is past MAX_RENDERED_CHARS, before the call makes it."""
+    refuse_past_the_limit(
+        max((each for each in values if type(each) is int), default=0)
+    )
+
+
+def digits(number):
+    return abs(number).bit_length() * DIGITS_PER_BIT
+
+
+def printf_size(text, values):
+    """How long *text* % *values* could be: the printf-style *text*'s length and each
+    field's width or precision, a * one's taken from *values*."""
+    given = iter(values if isinstance(values, tuple) else (values,))
+    size = len(text)
+    for width, precision, kind in PRINTF_FIELD.findall(text):
+        pads = [
+            next(given, 0) if each == "*" else int(each or 0)
+            for each in (width, precision)
+        ]
+        # A * width below 0 pads to its size, on the left.
+        size += max((abs(pad) for pad in pads if type(pad) is int), default=0)
+        if kind != "%":
+            next(given, None)
+    return size
+
+
+def size_made(operator, left, right):
+    """How big *left* *operator* *right*, *, ** or %, would be: a text's or list's
+    length, or a whole number's digits; 0 for any other."""
+    wholes = isinstance(left, int) and isinstance(right, int)
+    if operator == "%":
+        return printf_size(left, right) if isinstance(left, str) else 0
+    if operator == "**":
+        powers = wholes and abs(left) > 1 and right > 0
+        return right * math.log10(abs(left)) if powers else 0
+    if wholes:
+        return digits(left) + digits(right)
+    if isinstance(left, Sequence) and isinstance(right, int):
+        return len(left) * right
+    if isinstance(right, Sequence) and isinstance(left, int):
+        return len(right) * left
+    return 0
+
+
+def bounded_filter(function, widths):
+    """*function*, a filter, its result refused past MAX_RENDERED_CHARS; with *widths*,
+    one taking a width, a width past it among its arguments after the value it filters
+    is refused before it runs."""
+    after = 2 if hasattr(function, "jinja_pass_arg") else 1
+
+    @wraps(function)
+    def filtered(*args, **kwargs):
+        if widths:
+            refuse_widths((*args[after:], *kwargs.values()))
+        return within_limit(function(*args, **kwargs))
+
+    return filtered
+
+
+def pads(function):
+    """Whether *function* is a str's method that pads to a width it is given."""
+    owner = getattr(function, "__self__", None)
+    return (
+        isinstance(owner, str) and getattr(function, "__name__", None) in WIDTH_METHODS
+    )
+
+
+def bounded_format(value, *args, **kwargs):
+    """Jinja's format filter, refusing a printf field past MAX_RENDERED_CHARS before it
+    formats, whatever number it formats."""
+    refuse_past_the_limit(printf_size(str(value), kwargs or args))
+    return within_limit(DEFAULT_FILTERS["format"](value, *args, **kwargs))
+
+
+BOUNDED_FILTERS = {
+    name: bounded_filter(each, name in WIDTH_FILTERS)
+    for name, each in DEFAULT_FILTERS.items()
+} | {"format": bounded_format}
+
+
+class BoundedFormatter(SandboxedFormatter):
+    """Jinja's formatter for a str's format method in the sandbox, refusing what its
+    fields would pad to, together, past MAX_RENDERED_CHARS, before it formats each."""
+
+    padded = 0
+
+    def format_field(self, value, format_spec):
+        spec = FORMAT_SPEC.fullmatch(format_spec)
+        self.padded += max(int(each or 0) for each in spec.groups()) if spec else 0
+        refuse_past_the_limit(self.padded)
+        return super().format_field(value, format_spec)
+
+
+class BoundedEscapeFormatter(BoundedFormatter, EscapeFormatter):
+    """BoundedFormatter, escaping what it fills in, for a Markup's format method."""
+
+
+def timing_until(ends):
+    """A tracer that raises TimeoutError at a line of a template's own code run past
+    *ends*, the time.monotonic() its render must end by, and nowhere else."""
+
+    def timing(frame, event, arg):
+        if frame.f_code.co_filename != TEMPLATE_CODE:
+            return None
+        if event == "line" and time.monotonic() > ends:
+            raise TimeoutError(TOO_SLOW)
+        return timing
+
+    return timing
+
+
+class TimedTemplate(Template):
+    """A template whose render stops past RENDER_S: a tracer on the rendering thread
+    times the template's lines, as no signal reaches a sub-agent's, which renders on a
+    cell's thread. The thread's own tracer is put back however it ends."""
+
+    def render(self, *args, **kwargs):
+        tracer = sys.gettrace()
+        sys.settrace(timing_until(time.monotonic() + RENDER_S))
+        try:
+            return super().render(*args, **kwargs)
+        finally:
+            sys.settrace(tracer)
+
+
+class Rendered(list):
+    """A template's text as Jinja collects it, piece by piece, refused as it passes
+    MAX_RENDERED_CHARS, so a loop rendering billions of pieces stops."""
+
+    chars = 0
+
+    def append(self, piece):
+        self.chars += len(piece)
+        refuse_past_the_limit(self.chars)
+        super().append(piece)
+
+    def extend(self, pieces):
+        for piece in pieces:
+            self.append(piece)
+
+
+class RenderedCodeGenerator(CodeGenerator):
+    """Jinja's, collecting a macro's or block's text in a Rendered, not a list."""
+
+    def buffer(self, frame):
+        super().buffer(frame)
+        self.writeline(f"{frame.buffer} = environment.rendered()")
+
+
+class BoundedSandbox(SandboxedEnvironment):
+    """Jinja's sandbox, refusing what would make a template stand for more than a stored
+    text may hold (PAST_THE_LIMIT): *, ** and %, a width or a str's format fields before
+    they make it; a value read, passed to or got back from a call or a filter, as it
+    comes; and its text as it renders, which stops past RENDER_S."""
+
+    intercepted_binops = frozenset({"*", "**", "%"})
+    code_generator_class = RenderedCodeGenerator
+    template_class = TimedTemplate
+    rendered = Rendered
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.filters = dict(BOUNDED_FILTERS)
+
+    def call_binop(self, context, operator, left, right):
+        refuse_past_the_limit(size_made(operator, left, right))
+        return within_limit(super().call_binop(context, operator, left, right))
+
+    def getattr(self, obj, attribute):
+        return within_limit(super().getattr(obj, attribute))
+
+    def getitem(self, obj, argument):
+        return within_limit(super().getitem(obj, argument))
+
+    def call(self, context, obj, /, *args, **kwargs):
+        given = (*args, *kwargs.values())
+        for each in given:
+            within_limit(each)
+        if pads(obj):
+            refuse_widths(given)
+        return within_limit(super().call(context, obj, *args, **kwargs))
+
+    def wrap_str_format(self, value):
+        """Jinja's wrapper of a str's format or format_map method, formatting with a
+        BoundedFormatter."""
+        if super().wrap_str_format(value) is None:
+            return None
+        text, mapping = value.__self__, value.__name__ == "format_map"
+
+        def formatted(*args, **kwargs):
+            if mapping and (kwargs or len(args) != 1):
+                raise TypeError("format_map() takes exactly one argument")
+            if mapping:
+                args, kwargs = (), args[0]
+            formatter = (
+                BoundedEscapeFormatter(self, escape=text.escape)
+                if isinstance(text, Markup)
+                else BoundedFormatter(self)
+            )
+            return type(text)(formatter.vformat(text, args, kwargs))
+
+        return update_wrapper(formatted, value)
+
+    def concat(self, pieces):
+        text = Rendered()
+        text.extend(pieces)
+        return "".join(text)
+
+
+# An empty loader, so an include fails as a render error the engine words.
+SANDBOXED = partial(BoundedSandbox, loader=DictLoader({}))
+
+
 def sandbox_templates():
-    """Make every Jinja render the engine does in this process sandboxed: each process
-    that runs the engine calls it first."""
+    """Make every Jinja render the engine does in this process sandboxed and bounded:
+    each process that runs the engine calls it first."""
     deep_reasoner.llm._JinjaEnv = SANDBOXED
 
 
@@ -1795,23 +2067,24 @@ def template_problem(label, text, names):
     this runs none of its code."""
     if not _has_jinja(text):
         return None
+    escape = CELL_ESCAPE if _has_jinja(running_code(text)) else ESCAPE
     try:
         template = JINJA.parse(text)
         if found := first_refused(template):
             line, why = found
-            return f"{label}, line {line}: {TEMPLATE}, and this one {why}. {ESCAPE}"
+            return f"{label}, line {line}: {TEMPLATE}, and this one {why}. {escape}"
         missing = sorted(meta.find_undeclared_variables(template) - names)
         if missing:
             line = first_use(template, missing[0])
-            return f'{label}, line {line}: {TEMPLATE}, and this one names "{missing[0]}"; {NAMES_ONLY}. {ESCAPE}'
+            return f'{label}, line {line}: {TEMPLATE}, and this one names "{missing[0]}"; {NAMES_ONLY}. {escape}'
         JINJA.compile(template)
     except TemplateSyntaxError as error:
-        return f"{label}, line {error.lineno}: {TEMPLATE}, and this one doesn't parse ({error.message}). {ESCAPE}"
+        return f"{label}, line {error.lineno}: {TEMPLATE}, and this one doesn't parse ({error.message}). {escape}"
     except TEMPLATE_FAILURES as error:
         # A SyntaxError's own line is in the Python Jinja generates, not in the turn.
         reason = getattr(error, "msg", None) or str(error) or type(error).__name__
         return (
-            f"{label}: {TEMPLATE}, and this one can't be compiled ({reason}). {ESCAPE}"
+            f"{label}: {TEMPLATE}, and this one can't be compiled ({reason}). {escape}"
         )
     return None
 
@@ -2187,19 +2460,22 @@ def missing_spawn(spawned, name, adding):
     )
 
 
-def write_namespace(connection, name, text, adding):
+def write_namespace(connection, name, text, adding, vars_before):
     """Store namespace *name* as its YAML *text*, inside the caller's transaction, which
-    keeps it only if it passes check_written; *adding*, as when it is new."""
+    keeps it only if it passes check_written; *adding*, as when it is new, and
+    *vars_before*, the vars it set itself."""
     connection.execute(UPSERT_NAMESPACE, (name, text))
-    check_written(connection, name, adding)
+    check_written(connection, name, adding, vars_before)
 
 
-def check_written(connection, name, adding):
+def check_written(connection, name, adding, vars_before):
     """Raise unless namespace *name*, as just written (new, with *adding*), is one the
     panel saves: the engine accepts the Library and reads it; its fields pass
-    check_fields; and there and below, each backbone is one the engine builds and no tool
-    takes a var's place. A namespace elsewhere is not its to answer for. The panel's
-    saves and an import each call it, so a check added here reaches both."""
+    check_fields; and there and below, each backbone is one the engine builds, no tool
+    takes a var's place, and no worked example reads a var of *vars_before*, those it
+    set itself, that is gone. A namespace elsewhere is not its to answer for. The panel's
+    saves, the library tool's and an import each call it, so a check added here reaches
+    all three."""
     _, registry = accepted(connection)
     if name not in registry.names:
         raise LibraryError(read_namespaces(connection)[1][name])
@@ -2207,6 +2483,74 @@ def check_written(connection, name, adding):
     below = [each for each in registry.names if name in registry.chain(each)]
     check_backbones(registry, below)
     hidden_vars(registry, below)
+    removed = set(vars_before) - registry.config(name).vars.keys()
+    if removed:
+        check_vars_kept(registry, removed, below)
+
+
+def check_vars_kept(registry, removed, below):
+    """Raise if, in one of the namespaces *below*, a worked example its agents are shown
+    reads by name a var of *removed* that the namespace has no longer."""
+    losing = defaultdict(list)
+    for each in sorted(below, key=chain_of):
+        resolved = registry.resolve(each)
+        gone = removed - resolved.vars.keys()
+        for example in resolved.decompositions:
+            for var in sorted(gone & vars_read(example)):
+                losing[example.name, var].append(each)
+    if losing:
+        raise LibraryError(
+            "\n".join(
+                f'Worked example "{name}" reads vars.{var}, which this takes away from'
+                f" {', '.join(namespaces)}: keep {var} in vars, or change the worked"
+                " example first."
+                for (name, var), namespaces in losing.items()
+            )
+        )
+
+
+def vars_read(decomposition):
+    """The vars *decomposition*'s templates read by name: vars.rate, vars["rate"] or
+    vars.get("rate"), never a method such as vars.items; a turn that doesn't parse reads
+    none."""
+    found = set()
+    for turn in decomposition.messages:
+        if not _has_jinja(turn.content):
+            continue
+        try:
+            template = JINJA.parse(turn.content)
+        except TEMPLATE_FAILURES:
+            continue
+        found |= {each for each in map(var_named, template.find_all(VAR_READS)) if each}
+    return found
+
+
+def var_named(node):
+    """The var *node*, an attribute or item read or a call, reads from vars by name;
+    None for none."""
+    if isinstance(node, nodes.Call):
+        called = node.node
+        # vars.get("x") alone: with a default, it does without x
+        gets = isinstance(called, nodes.Getattr) and called.attr == "get"
+        alone = len(node.args) == 1 and not node.kwargs
+        return text_of(node.args[0]) if gets and alone and of_vars(called) else None
+    if not of_vars(node):
+        return None
+    if isinstance(node, nodes.Getattr):
+        return None if node.attr in DICT_METHODS else node.attr
+    return text_of(node.arg)
+
+
+def of_vars(node):
+    return isinstance(node.node, nodes.Name) and node.node.name == "vars"
+
+
+def text_of(node):
+    return (
+        node.value
+        if isinstance(node, nodes.Const) and type(node.value) is str
+        else None
+    )
 
 
 def add_namespace(connection, name, text, allowed=None):
@@ -2220,7 +2564,7 @@ def add_namespace(connection, name, text, allowed=None):
         if allowed is not None:
             allowed(connection, namespace)
         check_place(connection, name)
-        write_namespace(connection, name, stored, adding=True)
+        write_namespace(connection, name, stored, adding=True, vars_before={})
     return stored
 
 
@@ -2316,20 +2660,21 @@ def change_namespace(connection, name, text, allowed=None, was=NOT_OPENED, merge
         namespace, stored = authored(name, text)
         if allowed is not None:
             allowed(connection, namespace)
-        before = check_unchanged(connection, name, was)
-        write_namespace(connection, name, stored, adding=False)
+        before, vars_before = check_unchanged(connection, name, was)
+        write_namespace(connection, name, stored, False, vars_before)
     return before, stored
 
 
 def check_unchanged(connection, name, was):
-    """Namespace *name*'s own YAML, as namespace_yaml() gives it; raise if the Library
-    has none of that name, or, given *was*, the YAML the person opened it on,
-    ChangedMeanwhile unless it is still stored so."""
+    """Namespace *name*'s own YAML, as namespace_yaml() gives it, and the vars it sets
+    itself as it is read (none for one left out); raise if the Library has none of that
+    name, or, given *was*, the YAML the person opened it on, ChangedMeanwhile unless it
+    is still stored so."""
     before = check_namespace(connection, name)
-    shown = read_namespaces(connection)[2][name]
-    if was is not NOT_OPENED and own_yaml(shown) != was:
+    namespaces, _, shown = read_namespaces(connection)
+    if was is not NOT_OPENED and own_yaml(shown[name]) != was:
         raise changed_meanwhile(f"Namespace {name}")
-    return before
+    return before, namespaces.get(name, {}).get("vars", {})
 
 
 def granted_afresh(connection, namespace):
