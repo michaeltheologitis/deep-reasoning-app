@@ -1,8 +1,8 @@
 import json
 import re
-import signal
 import socket
 import sqlite3
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -2362,14 +2362,23 @@ def test_a_number_past_the_limit_that_pads_nothing_renders(template, rendered):
     assert SANDBOXED().from_string(template).render() == rendered
 
 
-def test_a_template_still_rendering_past_its_time_on_the_main_thread_stops():
+def rendering_forever():
+    """How rendering a template that loops for hours, outputting nothing, ends: what it
+    raised, after how long, and whether the thread's tracer is as it was."""
     looping = LOOPING.replace("3000", "99999").format(body="")
-    started = time.monotonic()
-    with pytest.raises(TimeoutError, match=re.escape(TOO_SLOW)):
+    tracer, started = sys.gettrace(), time.monotonic()
+    with pytest.raises(TimeoutError) as raised:
         SANDBOXED().from_string(looping).render()
-    assert time.monotonic() - started < RENDER_S + REFUSED_S
-    assert signal.getsignal(signal.SIGALRM) is signal.SIG_DFL
-    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    return str(raised.value), time.monotonic() - started, sys.gettrace() is tracer
+
+
+def test_a_template_still_rendering_past_its_time_stops_on_any_thread():
+    with ThreadPoolExecutor() as cells:
+        ended = [rendering_forever(), cells.submit(rendering_forever).result()]
+    for why, seconds, tracer_kept in ended:
+        assert why == TOO_SLOW
+        assert RENDER_S <= seconds < RENDER_S + REFUSED_S
+        assert tracer_kept
 
 
 def test_a_template_making_as_much_as_the_limit_renders():

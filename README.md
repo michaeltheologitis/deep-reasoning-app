@@ -158,8 +158,8 @@ imports too.
   keyword or built-in, or is a tool's, or taking away a var a worked example there or below reads (`{{ vars.rate }}`);
   and a namespace granting a tool of yours that no namespace granted yet, if it doesn't build (built first, up to a
   minute).
-- A worked example that still fails as a run renders it (`{{ task.votes.total }}`, `{{ 1/0 }}`), or that a chat's top
-  agent is still rendering after 3 seconds, is left out of that agent's prompt, whole, and the run goes on: the
+- A worked example that still fails as a run renders it (`{{ task.votes.total }}`, `{{ 1/0 }}`), or that is still
+  rendering after 3 seconds, is left out of that agent's prompt, whole, and the run goes on: the
   agent's steps start with a "Left out" line naming the example, its namespace and why. A template may make no text,
   list or number past 1,000,000 characters, items or digits, nor pad a field (`center`, `ljust`, `%05d`, `{:>5}`)
   past that; a suffix or system prompt that would, or that fails otherwise, is sent as written.

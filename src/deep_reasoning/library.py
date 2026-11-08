@@ -15,10 +15,9 @@ import json
 import keyword
 import math
 import re
-import signal
 import sqlite3
 import sys
-import threading
+import time
 import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Sequence
@@ -716,9 +715,10 @@ PRINTF_FIELD = re.compile(
 FORMAT_SPEC = re.compile(
     r"(?:.?[<>=^])?[-+ ]?z?#?0?(\d*)[,_]?(?:\.(\d*))?[a-zA-Z%]?", re.DOTALL
 )
-# How long a template may render on the main thread, where a signal can stop it.
+# How long a template may render, and where Jinja's code for a template given as text is.
 RENDER_S = 3
 TOO_SLOW = f"it was still rendering after {RENDER_S} s"
+TEMPLATE_CODE = "<template>"
 # What a template reads of vars by name that is no var: its methods, as vars.get.
 DICT_METHODS = frozenset(name for name in dir(dict) if not name.startswith("_"))
 
@@ -1881,26 +1881,26 @@ class BoundedEscapeFormatter(BoundedFormatter, EscapeFormatter):
 
 @contextmanager
 def deadline():
-    """Raise TimeoutError in what runs within, past RENDER_S, on the main thread, as a
-    signal can stop only that; elsewhere, set none."""
-    if threading.current_thread() is not threading.main_thread():
-        yield
-        return
+    """Raise TimeoutError in a template rendering within, past RENDER_S: a tracer on this
+    thread looks at the time at each of its lines and at each call, as no signal
+    reaches a sub-agent's, which renders on a cell's thread."""
+    ends = time.monotonic() + RENDER_S
 
-    def too_slow(signum, frame):
-        raise TimeoutError(TOO_SLOW)
+    def timing(frame, event, arg):
+        if time.monotonic() > ends:
+            raise TimeoutError(TOO_SLOW)
+        return timing if frame.f_code.co_filename == TEMPLATE_CODE else None
 
-    handler = signal.signal(signal.SIGALRM, too_slow)
-    timer = signal.setitimer(signal.ITIMER_REAL, RENDER_S)
+    tracer = sys.gettrace()
+    sys.settrace(timing)
     try:
         yield
     finally:
-        signal.setitimer(signal.ITIMER_REAL, *timer)
-        signal.signal(signal.SIGALRM, handler)
+        sys.settrace(tracer)
 
 
 class TimedTemplate(Template):
-    """A template whose render stops past RENDER_S, on the main thread (deadline())."""
+    """A template whose render stops past RENDER_S (deadline())."""
 
     def render(self, *args, **kwargs):
         with deadline():
@@ -1935,7 +1935,7 @@ class BoundedSandbox(SandboxedEnvironment):
     """Jinja's sandbox, refusing what would make a template stand for more than a stored
     text may hold (PAST_THE_LIMIT): *, ** and %, a width or a str's format fields before
     they make it; a value read, passed to or got back from a call or a filter, as it
-    comes; and its text as it renders, which stops past RENDER_S on the main thread."""
+    comes; and its text as it renders, which stops past RENDER_S."""
 
     intercepted_binops = frozenset({"*", "**", "%"})
     code_generator_class = RenderedCodeGenerator

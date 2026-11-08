@@ -984,8 +984,16 @@ async def test_a_worked_example_that_renders_is_shown_with_no_note(library_on, c
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("template", "why"),
+    [
+        FAILING_AS_RENDERED["a division by zero"],
+        FAILING_AS_RENDERED["loops rendering nothing past its time"],
+    ],
+    ids=["failing", "past-its-time"],
+)
 async def test_a_sub_agent_is_told_which_of_its_own_worked_examples_it_wasnt_shown(
-    library_on, connect
+    template, why, library_on, connect
 ):
     plan = {
         "Ask stats.": [repl("FinalAnswer(subagent('Tally them.', namespace='stats'))")],
@@ -994,12 +1002,13 @@ async def test_a_sub_agent_is_told_which_of_its_own_worked_examples_it_wasnt_sho
     with FakeOpenAI(scripted(plan)) as fake:
         library = library_on(fake)
         stored(library, UPSERT_NAMESPACE, "stats", "")
-        stored(library, UPSERT_DECOMPOSITION, "stats", "tally", tallying("{{ 1/0 }}"))
+        stored(library, UPSERT_DECOMPOSITION, "stats", "tally", tallying(template))
         events = await ask_plainly_to(library, connect, "Ask stats.")
     assert [events[-1]["outcome"], events[-1]["answer"]] == ["answered", "4"]
     _, stats = kinds(events, "agent.start")
     [left_out] = kinds(events, LEFT_OUT)
     assert [left_out["node"], left_out["namespace"]] == [stats["node"], "stats"]
+    assert left_out["why"].startswith(why)
     [asked_stats] = [call for call in fake.calls if "Tally them." in str(call.messages)]
     assert not any(SAMPLE_TALLY in each["content"] for each in asked_stats.messages)
 
