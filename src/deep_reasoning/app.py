@@ -33,6 +33,7 @@ from deep_reasoning.folders import (
     FolderError,
     chosen_folder,
     data_folder,
+    holds_files,
     list_folders,
     remove_unless_kept,
     scratch_folder,
@@ -47,6 +48,7 @@ from deep_reasoning.library import (
     add_namespace,
     change_namespace,
     check_namespace,
+    config_and_registry,
     default_namespace,
     delete_decomposition,
     delete_namespace,
@@ -55,8 +57,10 @@ from deep_reasoning.library import (
     edit_decomposition,
     engine_config,
     has_namespace,
+    in_chain_order,
     open_library,
     panel,
+    reading,
 )
 from deep_reasoning.pages import page_exists, page_text
 from deep_reasoning.runs import (
@@ -253,6 +257,14 @@ def create_app(library, home):
             delete_decomposition(connection, namespace, name, was)
             return library_panel(connection)
 
+    # What the namespace menu under the message box lists, lighter than the whole panel.
+    @app.get("/api/namespaces")
+    def read_namespaces():
+        with closing(open_library(library)) as connection, reading(connection):
+            config, registry = config_and_registry(connection)
+        names = [{"name": name} for name in in_chain_order(registry)]
+        return {"namespaces": names, "default_namespace": config.entry_namespace}
+
     # An imported namespace's, tool's or setting's name may hold a /, hence :path.
     @app.post("/api/namespaces", status_code=HTTPStatus.CREATED)
     def post_namespace(name: Annotated[str, Body()], yaml: Annotated[str, Body()]):
@@ -351,9 +363,12 @@ def create_app(library, home):
     def read_folders(path: str = "~"):
         return list_folders(path)
 
+    # A default folder that isn't on this computer is marked: new chats get their scratch folder.
     @app.get("/api/default-folder")
     async def read_default_folder():
-        return {"folder": shown_folder(default_folder(library))}
+        folder = default_folder(library)
+        missing = folder is not None and starting_folder(folder) is None
+        return {"folder": shown_folder(folder), "missing": missing}
 
     @app.put("/api/default-folder")
     async def put_default_folder(folder: Annotated[str | None, Body(embed=True)]):
@@ -366,8 +381,8 @@ def create_app(library, home):
         return default_namespace(library), starting_model(home, library)
 
     def shown(chat, starts):
-        """A chat as the API gives it: with the id of its run that is going, if one is, and
-        the namespace and model its next message runs on."""
+        """A chat as the API gives it: with the id of its run that is going, if one is, its
+        latest run's, and the namespace and model its next message runs on."""
         namespace, model = starts
         if chat["model"] is not None:
             model = {"provider": chat["provider"], "name": chat["model"]}
@@ -376,6 +391,7 @@ def create_app(library, home):
             "title": chat["title"],
             "created": chat["created"],
             "live": runs.live(chat["id"]),
+            "last_run": chat["last_run"],
             "namespace": chat["namespace"] or namespace,
             "model": model,
             "folder": shown_folder(chat["folder"]),
@@ -408,6 +424,11 @@ def create_app(library, home):
         with closing(open_library(library)) as connection:
             turns = chat_turns(connection, chat["id"], going)
         return shown(chat, starting_points()) | {"turns": turns}
+
+    # Asked as the delete confirm opens: the scratch folder goes with the chat.
+    @app.get("/api/chats/{chat}/scratch")
+    async def read_scratch(chat: KnownChat):
+        return {"files": holds_files(scratch_folder(data, chat["id"]))}
 
     @app.patch("/api/chats/{chat}")
     async def patch_chat(chat: KnownChat, change: ChatChange):
@@ -493,9 +514,8 @@ def create_app(library, home):
             names,
         )
         choose(library, chat["id"], namespace, provider.name, model["name"])
-        if not earlier:
-            title_new_chat(library, chat["id"], prompt)
-        return {"run": run}
+        titled = None if earlier else title_new_chat(library, chat["id"], prompt)
+        return {"run": run, "title": titled or chat["title"]}
 
     def known_run(run: Annotated[str, InPath(pattern=RUN_ID)]):
         if not runs.exists(run):

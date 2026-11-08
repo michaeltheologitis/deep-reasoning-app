@@ -10,16 +10,16 @@
 </head>
 <body>
 <div class="app" id="app">
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar" aria-label="Chats">
     <div class="brand"><span aria-hidden="true">✻</span> Deep Reasoning</div>
-    <div class="label">Chats</div>
-    <ul class="chats" id="chats"></ul>
     <button type="button" class="new-chat" id="new-chat">+ New chat</button>
+    <div class="label" id="chats-label">Chats</div>
+    <ul class="chats" id="chats" aria-labelledby="chats-label"></ul>
     <button type="button" class="settings-toggle" id="settings-toggle" aria-expanded="false" aria-controls="settings">settings</button>
   </aside>
   <main class="main">
     <header class="topbar">
-      <button type="button" class="menu" id="menu" aria-label="Show chats">☰</button>
+      <button type="button" class="menu" id="menu" aria-label="Chats" aria-expanded="false" aria-controls="sidebar">☰</button>
       <h1 class="title" id="title"></h1>
       <button type="button" class="library-toggle" id="library-toggle" aria-expanded="false" aria-controls="library">library</button>
       <button type="button" class="theme" id="theme"></button>
