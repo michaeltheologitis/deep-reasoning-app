@@ -28,6 +28,7 @@ from deep_reasoning.library import (
     open_library,
 )
 from deep_reasoning.runs import (
+    CHAT_DELETED,
     EARLIER_TURNS_NOTE,
     LOST,
     TOO_LONG,
@@ -665,7 +666,7 @@ async def test_a_chat_takes_its_next_message_once_its_turn_has_ended(
     assert events[-1]["outcome"] == "answered"
 
 
-async def test_remove_stops_the_chats_run_and_deletes_its_folder_once_it_ended(
+async def test_remove_ends_the_chats_run_as_deleted_and_deletes_its_folder_once_ended(
     home, library, fake_config
 ):
     spin = "while True:\n    pass"
@@ -679,7 +680,8 @@ async def test_remove_stops_the_chats_run_and_deletes_its_folder_once_it_ended(
         rest = [event async for event in watching]
     with pytest.raises(ProcessLookupError):
         os.killpg(group_of(events), 0)
-    assert rest[-1]["kind"] == "turn.end" and rest[-1]["outcome"] == "stopped"
+    assert rest[-1]["kind"] == "turn.end"
+    assert (rest[-1]["outcome"], rest[-1]["detail"]) == ("deleted", CHAT_DELETED)
     assert not (home / "runs" / run).exists()
     assert saved(library, run) == [] and not runs.exists(run)
 

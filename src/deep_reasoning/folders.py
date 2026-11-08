@@ -134,6 +134,14 @@ def working_folder(data: Path, chat: dict[str, Any]) -> Path:
     return scratch
 
 
+def holds_files(folder: Path) -> bool:
+    """Whether *folder* is there and not empty, as a scratch folder an agent wrote in."""
+    try:
+        return any(folder.iterdir())
+    except OSError:
+        return False
+
+
 def holds_any(folder: Path, folders: Iterable[str]) -> bool:
     """Whether *folder* is or holds one of *folders*, each where it really is."""
     # realpath, as Path.resolve raises on a symlink loop
