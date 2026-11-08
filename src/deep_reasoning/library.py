@@ -676,6 +676,9 @@ UNWRITABLE = ("SQLITE_READONLY", "SQLITE_FULL", "SQLITE_IOERR", "SQLITE_CANTOPEN
 
 
 BY_WHOM = "(by the librarian, another tab or an import)"
+# Half of a character, which a YAML escape can make (PyYAML reads an emoji's escaped pair
+# as two halves) but no text written as UTF-8, so no response or run's spec, can hold.
+SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def unwritable(error):
@@ -763,9 +766,16 @@ def open_library(path):
 
 
 def distrust(connection):
-    """Never run the file's own triggers and views: a shared file's could keep what is deleted."""
+    """Never run the file's own triggers and views: a shared file's could keep what is
+    deleted. Read text that isn't UTF-8, as a shared file's may be, with U+FFFD for each
+    byte that can't be read, never as an error."""
     connection.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER, False)
     connection.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_VIEW, False)
+    connection.text_factory = readable
+
+
+def readable(data):
+    return data.decode(errors="replace")
 
 
 def lay_out(connection, path):
@@ -1607,9 +1617,10 @@ def problem(error):
 
 
 def loaded(text):
-    """The YAML *text* as data, or a LibraryError saying where it doesn't parse."""
+    """The YAML *text* as data, or a LibraryError saying where it doesn't parse or why it
+    holds what no text can."""
     try:
-        return yaml.safe_load(text)
+        data = yaml.safe_load(text)
     except yaml.YAMLError as error:
         mark = getattr(error, "problem_mark", None)
         where = f"line {mark.line + 1}: " if mark else ""
@@ -1619,6 +1630,13 @@ def loaded(text):
         ) from error
     except RecursionError as error:
         raise LibraryError("The YAML is nested too deeply to read.") from error
+    half = next(filter(None, map(SURROGATE.search, texts_in(data))), None)
+    if half:
+        raise LibraryError(
+            f"The YAML escapes half of a character (U+{ord(half[0]):04X}), which no text"
+            " can hold; write the whole character instead."
+        )
+    return data
 
 
 def fields_in(text):

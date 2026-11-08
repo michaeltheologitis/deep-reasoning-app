@@ -2837,6 +2837,124 @@ async def test_the_page_and_a_follow_ups_turns_agree_on_how_each_run_started_and
     ]
 
 
+LONE_SURROGATE = "\ud800"
+FOLLOW_UP = {"What did I ask?": [repl("FinalAnswer('to count')")]}
+
+
+def test_an_event_holding_a_lone_surrogate_is_left_out_so_its_chat_still_reads(
+    client,
+):
+    chat = client.post("/api/chats").json()["id"]
+    rows = [
+        STARTED,
+        row(2, "think", node=1, text=f"Half a character: {LONE_SURROGATE}"),
+        row(3, "think", node=1, text="An emoji, escaped as a pair: \U0001f600"),
+        answered(4, "2"),
+    ]
+    plant(client.app.state.runs.library, chat, GOOD, rows)
+    read = client.get(f"/api/chats/{chat}")
+    assert read.status_code == 200
+    events = read.json()["turns"][0]["events"]
+    assert [event["seq"] for event in events] == [1, 3, 4]
+    assert events[1]["text"].endswith("\U0001f600")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("rows", "told"),
+    [
+        pytest.param(
+            [row(1, "turn.start", prompt=f"Again{LONE_SURROGATE}"), answered(2, "3")],
+            [],
+            id="in its message",
+        ),
+        pytest.param(
+            [row(1, "turn.start", prompt="Again."), answered(2, LONE_SURROGATE)],
+            [("user", "Again."), ("assistant", f"(No answer: the run failed: {LOST})")],
+            id="in its answer",
+        ),
+        pytest.param(
+            [
+                row(1, "turn.start", prompt="Again."),
+                row(2, "turn.end", outcome="failed", detail=LONE_SURROGATE),
+            ],
+            [("user", "Again."), ("assistant", f"(No answer: the run failed: {LOST})")],
+            id="in why it failed",
+        ),
+    ],
+)
+async def test_a_run_holding_a_lone_surrogate_is_read_without_it_so_follow_ups_run(
+    library_on, connect, rows, told
+):
+    with FakeOpenAI(scripted(FOLLOW_UP)) as fake:
+        library = library_on(fake)
+        async with connect(library) as api:
+            chat = await new_chat(api)
+            counted = [row(1, "turn.start", prompt="Count to two."), answered(2, "2")]
+            plant(library, chat, GOOD, counted)
+            plant(library, chat, BROKEN, rows)
+            read = await api.get(f"/api/chats/{chat}")
+            events = await run_events(api, await send(api, chat, "What did I ask?"))
+    assert read.status_code == 200 and events[-1]["outcome"] == "answered"
+    messages = fake.calls[-1].messages[-(4 + len(told)) :]
+    assert [(message["role"], message["content"]) for message in messages] == [
+        ("system", EARLIER_TURNS_NOTE),
+        ("user", "Count to two."),
+        ("assistant", folded_answer("'2'")),
+        *told,
+        ("user", "What did I ask?"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_the_history_tool_reads_a_run_without_the_steps_holding_a_lone_surrogate(
+    library_on, connect
+):
+    printed = (
+        "print('\\n'.join(s.get('text') or s['output'] for s in history.steps(1)))"
+    )
+    plan = {"How did you count?": [repl(printed), repl("FinalAnswer('by printing')")]}
+    rows = [
+        row(1, "turn.start", prompt="Count to two."),
+        row(2, "agent.start", node=1, parent=None, cell=None, task="Count to two."),
+        row(3, "think", node=1, text=f"Counting{LONE_SURROGATE}"),
+        row(4, "cell.start", node=1, cell=1, code="print(2)"),
+        row(5, "cell.end", node=1, cell=1, code="print(2)", output="2", status="done"),
+        row(6, "agent.end", node=1, status="done", result="2", detail=None),
+        answered(7, "2"),
+    ]
+    with FakeOpenAI(scripted(plan)) as fake:
+        library = library_on(fake)
+        async with connect(library) as api:
+            chat = await chat_in(api, HISTORIAN)
+            plant(library, chat, GOOD, rows)
+            events = await run_events(api, await send(api, chat, "How did you count?"))
+    # The cell's output ends with what it printed, after the left-out step's warning.
+    assert kinds(events, "cell.end")[0]["output"].splitlines()[-1] == "2"
+    assert events[-1]["outcome"] == "answered", events[-1]
+
+
+@pytest.mark.anyio
+async def test_a_cell_printing_a_name_that_isnt_utf_8_is_saved_and_sent_escaped(
+    library_on, connect
+):
+    # A file name that isn't UTF-8 decodes with a lone surrogate standing for each byte.
+    listing = repl("import os", "print(os.fsdecode(b'caf\\xe9'))")
+    plan = {"List it.": [listing, repl("FinalAnswer('listed')")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        async with connect(library_on(fake)) as api:
+            chat = await new_chat(api)
+            streamed = await run_events(api, await send(api, chat, "List it."))
+            read = await api.get(f"/api/chats/{chat}")
+    assert read.status_code == 200
+    [turn] = read.json()["turns"]
+    assert turn["events"] == streamed
+    assert kinds(streamed, "cell.end")[0]["output"] == "caf\\udce9"
+    # The model is shown the output as saved, and the run goes on to answer.
+    assert "caf\\udce9" in fake.calls[-1].messages[-1]["content"]
+    assert (streamed[-1]["outcome"], streamed[-1]["answer"]) == ("answered", "listed")
+
+
 TEXT_ONLY = [{"type": "text", "text": "It **counted**."}]
 
 
@@ -3064,6 +3182,50 @@ def test_a_library_file_that_cannot_be_written_is_refused_in_plain_words(
         "detail": "The Library file can't be written: attempt to write a readonly database."
     }
     assert client.get("/api/chats").json() == [chat]
+
+
+def test_a_shared_files_chats_table_that_refuses_new_chats_answers_in_plain_words(
+    client, library
+):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute("DROP TABLE chats")
+        connection.execute(
+            "CREATE TABLE chats (id TEXT PRIMARY KEY, title TEXT NOT NULL,"
+            " created REAL NOT NULL, namespace TEXT, provider TEXT, model TEXT,"
+            " folder TEXT, CHECK (0))"
+        )
+    added = client.post("/api/chats")
+    assert added.status_code == 400
+    assert added.json() == {
+        "detail": "The Library file refused the new chat: CHECK constraint failed: 0."
+    }
+
+
+def test_a_shared_files_app_settings_table_that_refuses_a_setting_answers_in_words(
+    client, library
+):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute("DROP TABLE app_settings")
+        connection.execute(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, json TEXT NOT NULL,"
+            " CHECK (0))"
+        )
+    saved = client.put("/api/default-folder", json={"folder": None})
+    assert saved.status_code == 400
+    assert saved.json() == {
+        "detail": "The Library file refused the setting: CHECK constraint failed: 0."
+    }
+
+
+def test_a_title_that_isnt_utf_8_reads_with_a_replacement_character(client, library):
+    chat = client.post("/api/chats").json()["id"]
+    with closing(open_library(library)) as connection:
+        connection.execute(
+            "UPDATE chats SET title = CAST(X'6361FF' AS TEXT) WHERE id = ?", (chat,)
+        )
+    listed = client.get("/api/chats")
+    assert listed.status_code == 200
+    assert [each["title"] for each in listed.json()] == ["ca�"]
 
 
 def test_a_broken_library_file_is_not_passed_off_as_one_that_cannot_be_written(
@@ -3745,10 +3907,20 @@ UNREADABLE_ROWS = {
         (ROOT, "bytes", b"name: bytes\nmessages: [{role: user, content: hi}]\n"),
         YAML_NOT_TEXT,
     ),
+    "a-decomposition-escaping-half-a-character": (
+        "decompositions",
+        (ROOT, "half", 'name: half\nmessages: [{role: user, content: "\\uD800"}]\n'),
+        "half of a character (U+D800)",
+    ),
     "a-namespace-the-engine-refuses": (
         "namespaces",
         ("coder", "reasoner: claude_code\n"),
         "reasoner should be a mapping",
+    ),
+    "a-namespace-escaping-half-a-character": (
+        "namespaces",
+        ("drafts", 'system_suffix: "Be brief. \\uDE00"\n'),
+        "half of a character (U+DE00)",
     ),
     "a-namespace-under-none-there": (
         "namespaces",
