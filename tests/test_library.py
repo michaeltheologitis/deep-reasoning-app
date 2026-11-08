@@ -58,10 +58,12 @@ from deep_reasoning.library import (
     edit_decomposition,
     engine_config,
     hand_off,
+    handed_to,
     import_config,
     open_library,
     panel,
     parsed,
+    running_code,
     store_tool,
     stored_config,
     turn_problems,
@@ -118,6 +120,7 @@ messages:
 HISTORIANS = [parsed(text) for text in HISTORIANS_EXAMPLES]
 HAND_OFFS = [parsed(hand_off(text)) for text in HISTORIANS_EXAMPLES]
 SEEDED_ROWS = [(each.name, []) for each in HAND_OFFS]
+ROUTER_SHOWN = ROUTER_DECOMPOSITIONS + [each.name for each in HAND_OFFS]
 # Root spawns a sub-agent into historian, with the user's message and this conversation.
 HAND_OFF = 'FinalAnswer(subagent(ctx.task, namespace="historian", history=ctx.history))'
 # What the app puts in for a chat on OpenAI's gpt-6-luna.
@@ -203,6 +206,211 @@ def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_mess
     for example in HAND_OFFS:
         assert example.messages[-1].content.endswith(f"<repl>\n{HAND_OFF}\n</repl>\n")
         assert "as written (ctx.task, never reworded)" in example.messages[-1].content
+
+
+def last_turns(library, tmp_path):
+    """Each namespace's worked examples as a run of it sees them: for each, its last
+    turn."""
+    registry = registry_of(library, tmp_path)
+    return {
+        name: {
+            each.name: each.messages[-1].content
+            for each in registry.resolve(name).decompositions
+        }
+        for name in registry.names
+    }
+
+
+def shown_hand_offs(library, tmp_path):
+    """last_turns(), each as the code the engine runs from it."""
+    return {
+        name: {example: running_code(turn) for example, turn in turns.items()}
+        for name, turns in last_turns(library, tmp_path).items()
+    }
+
+
+def panel_rows(library):
+    return {row["name"]: row for row in panel_of(library)["namespaces"]}
+
+
+def hand_offs_field(row):
+    found = [field["items"] for field in row["fields"] if field["label"] == "Hand-offs"]
+    return found[0] if found else None
+
+
+CANT = "historian namespace, and this namespace's spawn list leaves it out"
+
+
+def test_a_namespace_that_may_not_spawn_into_the_historian_says_it_cant_in_place_of_handing_off(
+    library, tmp_path
+):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "trips", "spawn: [trips]\n")
+        add_namespace(connection, "trips.hotels", "")
+        add_namespace(connection, "trips.anywhere", "spawn: null\n")
+        add_namespace(connection, "trips.with_history", "spawn: [historian]\n")
+    shown = shown_hand_offs(library, tmp_path)
+    for name in (ROOT, LIBRARIAN, "trips.with_history"):
+        assert set(shown[name].values()) == {HAND_OFF}, name
+    for name in ("trips", "trips.hotels"):
+        assert list(shown[name]) == [each.name for each in HAND_OFFS]
+        for code in shown[name].values():
+            assert "subagent" not in code and CANT in code
+    # spawn: null sets nothing, so trips.anywhere inherits trips's spawn list.
+    assert shown["trips.anywhere"] == shown["trips"]
+    # What is stored is left as it is, and the panel says what trips can't hand off.
+    rows = panel_rows(library)
+    assert rows["trips"]["decompositions"] == []
+    assert hand_offs_field(rows["trips"]) == [
+        {
+            "value": "none to historian: this namespace's spawn list leaves it out. Its"
+            f" agents say they can't answer what {len(HAND_OFFS)} worked examples would"
+            " hand there.",
+            "source": "set here",
+            "here": True,
+        }
+    ]
+    assert hand_offs_field(rows["trips.hotels"])[0]["source"] == "inherited from trips"
+    for name in (ROOT, LIBRARIAN, "trips.with_history"):
+        assert hand_offs_field(rows[name]) is None
+
+
+def test_a_historian_with_no_examples_of_its_own_reads_the_record_in_place_of_handing_off(
+    library, tmp_path
+):
+    # As a Library whose historian was added without them may be: its spawn: [] refuses
+    # a spawn into itself too, and it is where the questions go.
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(
+            "DELETE FROM decompositions WHERE namespace = ?", (HISTORIAN,)
+        )
+    turns = last_turns(library, tmp_path)[HISTORIAN]
+    assert list(turns) == [each.name for each in HAND_OFFS]
+    for turn in turns.values():
+        assert running_code(turn) == "print(history.turns())"
+        assert "I answer it here and never hand it on" in turn
+    [item] = hand_offs_field(panel_rows(library)[HISTORIAN])
+    instead = f"Its agents answer themselves what {len(HAND_OFFS)} worked examples"
+    assert instead in item["value"]
+
+
+def test_with_the_historian_deleted_no_namespace_hands_off_to_it(library, tmp_path):
+    with closing(open_library(library)) as connection:
+        delete_namespace(connection, HISTORIAN, len(HISTORIANS))
+    shown = shown_hand_offs(library, tmp_path)
+    for name in (ROOT, LIBRARIAN):
+        assert list(shown[name]) == [each.name for each in HAND_OFFS]
+        for code in shown[name].values():
+            assert "subagent" not in code
+            assert "there is no historian namespace" in code
+    [item] = hand_offs_field(panel_rows(library)[ROOT])
+    assert item["value"].startswith(
+        "none to historian: there is no historian namespace"
+    )
+    assert item["source"] == "not in the Library"
+
+
+def ending_in(name, code):
+    """A worked example whose one reply runs *code*."""
+    reply = f"<think>Hand it on.</think>\n<repl>\n{code}\n</repl>\n"
+    return dump(
+        {
+            "name": name,
+            "messages": [
+                {"role": "user", "content": "Do it."},
+                {"role": "assistant", "content": reply},
+            ],
+        }
+    )
+
+
+SWITCHING = 'switch_namespace("law", ctx.task)'
+PARTIAL = "r = subagent('Solve x.', namespace='law')\nFinalAnswer(r + ' done')"
+# Each ending, as a worked example's last cell, and the namespace it hands the whole
+# question to: one that delegates a part, or names no namespace a name could be, hands
+# off nothing.
+ENDINGS = [
+    ('FinalAnswer(subagent(ctx.task, namespace="law"))', "law"),
+    (SWITCHING, "law"),
+    ('switch_namespace(namespace="law")', "law"),
+    (
+        (
+            "x = [subagent('a', namespace='math')]\n"
+            "FinalAnswer(subagent(ctx.task, namespace='law'))"
+        ),
+        "law",
+    ),
+    (PARTIAL, None),
+    ("FinalAnswer(len(subagent('Solve x.', namespace='law')))", None),
+    ("FinalAnswer(subagent(ctx.task))", None),
+    ('FinalAnswer(subagent(ctx.task, namespace="no such {{ place }}"))', None),
+    ("FinalAnswer(subagent(ctx.task, namespace=where))", None),
+]
+
+
+@pytest.mark.parametrize(("code", "target"), ENDINGS)
+def test_a_worked_example_hands_off_only_the_whole_question_to_a_named_namespace(
+    code, target
+):
+    assert handed_to(parsed(ending_in("ending", code))) == target
+
+
+def test_a_namespace_that_may_not_switch_to_another_answers_itself_and_a_partial_delegation_stays(
+    library, tmp_path
+):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "law", "")
+        add_namespace(connection, "trips", "spawn: []\n")
+        add_decomposition(connection, ROOT, ending_in("switching", SWITCHING))
+        add_decomposition(connection, ROOT, ending_in("partial", PARTIAL))
+    turns = last_turns(library, tmp_path)
+    assert running_code(turns[ROOT]["switching"]) == SWITCHING
+    # law doesn't read the record, so trips answers what it can itself.
+    switching = turns["trips"]["switching"]
+    assert running_code(switching) == "print(ctx.task)"
+    assert "I answer it myself if I can, and say so if I can't" in switching
+    assert turns["trips"]["partial"] == turns[ROOT]["partial"]
+
+
+def test_a_run_config_holds_an_example_only_where_what_a_namespace_inherits_differs(
+    library, tmp_path
+):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "trips", "spawn: [trips]\n")
+        add_namespace(connection, "trips.hotels", "")
+        add_namespace(connection, "trips.with_history", "spawn: [historian]\n")
+    namespaces = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)[
+        "namespaces"
+    ]
+    held = {
+        name: [each["name"] for each in fields["decompositions"]]
+        for name, fields in namespaces.items()
+    }
+    hand_offs = [each.name for each in HAND_OFFS]
+    # root holds its own; trips the replacements, which trips.hotels inherits as they
+    # are; trips.with_history, which can hand off, the originals back.
+    assert held == {
+        ROOT: hand_offs,
+        HISTORIAN: [each.name for each in HISTORIANS],
+        LIBRARIAN: [],
+        "trips": hand_offs,
+        "trips.hotels": [],
+        "trips.with_history": hand_offs,
+    }
+    assert namespaces["trips.with_history"]["decompositions"] == [
+        each.model_dump() for each in HAND_OFFS
+    ]
+
+
+def test_deleting_a_namespace_warns_of_the_hand_offs_to_it_that_could_be_made(library):
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "trips", "spawn: [trips]\n")
+        add_namespace(connection, "historian.deep", "")
+        for namespace in ("trips", "historian.deep", LIBRARIAN):
+            text = ending_in(f"from {namespace}", HAND_OFF)
+            add_decomposition(connection, namespace, text)
+    # root's, and the librarian's own; not trips's, which can't, or one under historian.
+    assert panel_rows(library)[HISTORIAN]["handed_to"] == len(HAND_OFFS) + 1
 
 
 def test_root_is_told_to_pass_the_message_as_written_only_in_its_examples(
@@ -350,7 +558,8 @@ def test_import_brings_the_configs_namespaces_decompositions_and_prompt(
     config = run_config(imported, tmp_path)
     router = config.namespaces["router"]
     assert set(config.namespaces) == IMPORTED_NAMESPACES
-    assert [each.name for each in router.decompositions] == ROUTER_DECOMPOSITIONS
+    # Its spawn list leaves the historian out, so it is shown root's hand-offs saying so.
+    assert [each.name for each in router.decompositions] == ROUTER_SHOWN
     assert router.spawn == ["course_advisor", "health_advisor"]
     assert config.namespaces["course_advisor"].vars["catalog"]["CS201"]["prereqs"] == [
         "CS101"
@@ -461,8 +670,11 @@ def test_import_replaces_same_named_items_and_keeps_the_rest(imported, tmp_path)
     config = run_config(imported, tmp_path)
     router = config.namespaces["router"]
     assert router.spawn == ["course_advisor"]
-    assert [each.name for each in router.decompositions] == ROUTER_DECOMPOSITIONS
-    assert router.decompositions[-1].messages[0].content == "Only courses, please."
+    assert [each.name for each in router.decompositions] == ROUTER_SHOWN
+    declining = router.decompositions[
+        ROUTER_DECOMPOSITIONS.index("decline anything else")
+    ]
+    assert declining.messages[0].content == "Only courses, please."
     assert config.max_iter == 3
     assert config.namespaces[ROOT].tools == ["llm"]
     assert set(config.namespaces) == IMPORTED_NAMESPACES

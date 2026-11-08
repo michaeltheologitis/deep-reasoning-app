@@ -1,3 +1,4 @@
+import itertools
 import json
 import re
 import shutil
@@ -806,6 +807,48 @@ async def test_a_historian_that_copies_roots_hand_off_nests_no_historian(
     assert copied["status"] == "failed"
     assert "may not spawn a sub-agent in 'historian'" in copied["output"]
     assert events[-1]["answer"] == "by printing 1"
+
+
+def copying_its_first_example(others):
+    """A model that answers ASKED_HOW by copying its first worked example's reply, as models
+    do, and answers the rest as *others* does."""
+    question = parsed(HISTORIANS_EXAMPLES[0]).messages[0].content
+
+    def respond(messages):
+        if messages[-1]["content"] != ASKED_HOW:
+            return others(messages)
+        for asked, reply in itertools.pairwise(messages):
+            if asked["content"] == question and reply["role"] == "assistant":
+                return reply["content"]
+        raise AssertionError("no worked example asks the question")
+
+    return respond
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("spawn", ["spawn: [trips]\n", "spawn: []\n"])
+async def test_a_namespace_that_may_not_hand_off_to_the_historian_says_it_cant(
+    library_on, connect, spawn
+):
+    # Copying root's hand-off, its agent was refused, then handed the question to another
+    # namespace, which inherits the same example, until the depth ran out.
+    plan = {"Count to two.": [repl("print(1)"), repl("FinalAnswer(2)")]}
+    with FakeOpenAI(copying_its_first_example(scripted(plan))) as fake:
+        async with connect(library_on(fake)) as api:
+            added = await api.post(
+                "/api/namespaces", json={"name": "trips", "yaml": spawn}
+            )
+            assert added.status_code == 201, added.text
+            chat = await chat_in(api, "trips")
+            await run_events(api, await send(api, chat, "Count to two."))
+            events = await run_events(api, await send(api, chat, ASKED_HOW))
+    assert [each["namespace"] for each in kinds(events, "agent.start")] == ["trips"]
+    [cell] = kinds(events, "cell.end")
+    assert cell["status"] == "done"
+    assert events[-1]["answer"] == (
+        "I can't answer that here: questions like it go to the historian namespace,"
+        " and this namespace's spawn list leaves it out."
+    )
 
 
 # Message 1 of the examples that read sub-agents, as the fake answers it.

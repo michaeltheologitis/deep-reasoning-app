@@ -35,10 +35,13 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   worked examples, which every namespace inherits, show the hand-off, and the historian's show reading `history`
   before answering. `history` lists what went wrong anywhere in a message, the top agent's own cells included
   (`errors`), finds any text you name (`find`), and cuts each text past 2,000 characters, so a huge output can't
-  swamp the model (`full` reads one step whole). A namespace with a `spawn` list hands off only if it lists
-  `historian`. If you delete `historian` or take `history` out of it, delete root's five hand-off examples in the
-  panel too (open each in the Decompositions tab and Delete it): they send questions where nothing can read the
-  history. If you take `page` out of it, delete `show it
+  swamp the model (`full` reads one step whole). A namespace whose `spawn` list leaves `historian` out can't hand
+  off, nor can any once `historian` is deleted: a run there is shown, in each hand-off's place, the same question
+  answered by saying it can't, so the agent says so rather than guess or pass the question to another namespace; a
+  hand-off of your own to a namespace it can't reach is shown answered there as best it can.
+  The Library is left as it is; the panel says so under the namespace's Hand-offs, and deleting `historian` warns of
+  it. If you take `history` out of it, delete root's hand-off examples (open each in the Decompositions tab and
+  Delete it): they send questions where nothing can read the history. If you take `page` out of it, delete `show it
   on a page` and `find where it really went wrong` from root and historian.
 - An older Library keeps what it has: one made since `history` came reads it at root, with a worked example there,
   and needs nothing. For the historian, run `reset`, which deletes the Library and every chat, or add `historian` in
