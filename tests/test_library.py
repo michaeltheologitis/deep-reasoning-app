@@ -36,6 +36,8 @@ from deep_reasoning.library import (
     HISTORIANS_EXAMPLES,
     HISTORY_DESCRIPTION,
     LIBRARIAN,
+    LIBRARIAN_SUFFIX,
+    LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
     LIBRARY_ONLY,
     PAGE_DESCRIPTION,
@@ -119,6 +121,7 @@ messages:
 # A fresh Library's worked examples: the historian's, and root's hand-offs of the same names.
 HISTORIANS = [parsed(text) for text in HISTORIANS_EXAMPLES]
 HAND_OFFS = [parsed(hand_off(text)) for text in HISTORIANS_EXAMPLES]
+LIBRARIANS = [parsed(text) for text in LIBRARIANS_EXAMPLES]
 SEEDED_ROWS = [(each.name, []) for each in HAND_OFFS]
 ROUTER_SHOWN = ROUTER_DECOMPOSITIONS + [each.name for each in HAND_OFFS]
 # Root spawns a sub-agent into historian, with the user's message and this conversation.
@@ -188,6 +191,9 @@ def test_a_fresh_library_grants_llm_at_root_history_and_page_to_the_historian_an
     assert config.namespaces[HISTORIAN].spawn == []
     assert config.namespaces[HISTORIAN].system_suffix == HISTORIAN_SUFFIX
     assert config.namespaces[LIBRARIAN].tools == ["library"]
+    # It may ask the historian about earlier messages, but never spawn itself.
+    assert config.namespaces[LIBRARIAN].spawn == [HISTORIAN]
+    assert config.namespaces[LIBRARIAN].system_suffix == LIBRARIAN_SUFFIX
 
 
 def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_messages(
@@ -195,7 +201,11 @@ def test_every_namespace_but_the_historian_hands_it_questions_about_earlier_mess
 ):
     registry = registry_of(library, tmp_path)
     shown = {name: registry.resolve(name).decompositions for name in registry.names}
-    assert shown == {ROOT: HAND_OFFS, HISTORIAN: HISTORIANS, LIBRARIAN: HAND_OFFS}
+    assert shown == {
+        ROOT: HAND_OFFS,
+        HISTORIAN: HISTORIANS,
+        LIBRARIAN: [*HAND_OFFS, *LIBRARIANS],
+    }
     assert [each.name for each in HAND_OFFS] == [
         "explain an earlier answer",
         "tell a typed answer from a computed one",
@@ -252,8 +262,9 @@ def test_a_namespace_that_may_not_spawn_into_the_historian_says_it_cant_in_place
         add_namespace(connection, "trips.anywhere", "spawn: null\n")
         add_namespace(connection, "trips.with_history", "spawn: [historian]\n")
     shown = shown_hand_offs(library, tmp_path)
+    # The librarian's spawn list names the historian, so it keeps the hand-offs as they are.
     for name in (ROOT, LIBRARIAN, "trips.with_history"):
-        assert set(shown[name].values()) == {HAND_OFF}, name
+        assert {shown[name][each.name] for each in HAND_OFFS} == {HAND_OFF}, name
     for name in ("trips", "trips.hotels"):
         assert list(shown[name]) == [each.name for each in HAND_OFFS]
         for code in shown[name].values():
@@ -298,11 +309,16 @@ def test_a_historian_with_no_examples_of_its_own_reads_the_record_in_place_of_ha
 
 def test_with_the_historian_deleted_no_namespace_hands_off_to_it(library, tmp_path):
     with closing(open_library(library)) as connection:
+        # The librarian's spawn list names the historian: it goes first.
+        with pytest.raises(LibraryError, match="First take historian out of the spawn"):
+            delete_namespace(connection, HISTORIAN, len(HISTORIANS))
+        change_namespace(connection, LIBRARIAN, "tools: [library]\n")
         delete_namespace(connection, HISTORIAN, len(HISTORIANS))
     shown = shown_hand_offs(library, tmp_path)
     for name in (ROOT, LIBRARIAN):
-        assert list(shown[name]) == [each.name for each in HAND_OFFS]
-        for code in shown[name].values():
+        hand_offs = {each.name: shown[name][each.name] for each in HAND_OFFS}
+        assert list(hand_offs) == [each.name for each in HAND_OFFS]
+        for code in hand_offs.values():
             assert "subagent" not in code
             assert "there is no historian namespace" in code
     [item] = hand_offs_field(panel_rows(library)[ROOT])
@@ -394,7 +410,7 @@ def test_a_run_config_holds_an_example_only_where_what_a_namespace_inherits_diff
     assert held == {
         ROOT: hand_offs,
         HISTORIAN: [each.name for each in HISTORIANS],
-        LIBRARIAN: [],
+        LIBRARIAN: [each.name for each in LIBRARIANS],
         "trips": hand_offs,
         "trips.hotels": [],
         "trips.with_history": hand_offs,
@@ -551,7 +567,7 @@ def test_an_open_reader_does_not_hold_up_a_write(library):
         assert [
             each["name"]
             for each in stored_config(reader)["namespaces"][LIBRARIAN]["decompositions"]
-        ] == ["added"]
+        ] == [*(each.name for each in LIBRARIANS), "added"]
 
 
 def test_import_brings_the_configs_namespaces_decompositions_and_prompt(
@@ -1105,8 +1121,8 @@ def test_the_seeded_examples_and_the_engines_own_namespace_examples_pass(library
         for row in namespaces
         for each in row["decompositions"]
     ]
-    # the fourteen seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
-    assert len(rows) == 21
+    # the sixteen seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
+    assert len(rows) == 23
     assert rows == [(name, []) for name, _ in rows]
 
 

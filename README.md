@@ -115,10 +115,13 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 - In a chat in the `librarian` namespace, picked under the message box, the agent can add or edit a decomposition in
   a namespace you name, add a namespace or change one's own fields (its system suffix, vars, tools and spawn), and
   write a new tool of its own in Python (or replace one) that it then grants to a namespace, with the app's own
-  `library` tool; a chat in a namespace without it can't, even through a sub-agent. A tool it writes, or a tool of
-  yours it grants that no namespace granted yet, is built first to check it, as another chat would build it (in a
-  process of its own, from an empty
-  folder), and one that doesn't build there is refused: granted, it would stop every chat. That works only in a chat
+  `library` tool; a chat in a namespace without it can't, even through a sub-agent. It reads the namespaces (in brief,
+  or one whole), the tools with their Python, and what this chat changed; a change touches only the fields it names,
+  and says what changed. A new Library's `librarian` knows what it is for, has worked examples of writing a worked
+  example and of undoing a change, and may hand questions about earlier messages to the historian but not delegate to
+  itself (its `spawn`, which you may widen in the panel). A tool it writes, or a tool of yours it grants that no
+  namespace granted yet, is built first to check it, as another chat would build it (in a process of its own, from an
+  empty folder), and one that doesn't build there is refused: granted, it would stop every chat. That works only in a chat
   whose namespace runs the local REPL. A tool it writes can't take a built-in's or the app's name or replace a tool
   root grants or one built into the engine. The tool never
   changes root, a namespace's REPL or backbone (`repl`, `reasoner`), which namespaces grant `library`, `history` or `page`,
@@ -127,7 +130,8 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
   writes a key. A change applies from your next message. These limits guard the tool, not the file: the agent's Python isn't sandboxed, and could open the file
   itself. A new Library has `librarian`; in an older one, add a namespace with `tools: [library]`.
 - Each Library change the agent makes shows in the chat, under its answer and where it was made in the tree, and opens
-  onto its YAML (or a tool's block and Python) before and after; ask the agent to write the before back to undo it. The decompositions panel and the
+  onto its YAML (or a tool's block and Python) before and after; ask the librarian to undo it, and it writes the
+  before back from the record. The decompositions panel and the
   namespace menu under the message box show the change at once.
 - `uv run deep-reasoning import CONFIG.yaml` brings in a `deep_reasoner` config, replacing items with the same name.
 - `uv run deep-reasoning reset` starts afresh: it deletes the Library file (`--library PATH` for another), with its
