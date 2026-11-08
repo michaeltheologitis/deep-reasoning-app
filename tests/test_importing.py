@@ -21,16 +21,14 @@ from structlog.testing import capture_logs
 from deep_reasoning.importing import NOT_CARRIED, import_config
 from deep_reasoning.library import (
     HISTORIAN,
-    HISTORIANS_EXAMPLES,
     LIBRARIAN,
-    LIBRARIAN_HAND_OFFS,
     MAX_YAML_CHARS,
+    ROOTS_EXAMPLES,
     UPSERT_NAMESPACE,
     LibraryError,
     add_namespace,
     default_namespace,
     engine_config,
-    hand_off,
     open_library,
     parsed,
     stored_config,
@@ -91,10 +89,7 @@ CONFIGS = Path(__file__).parent / "configs"
 
 
 # A fresh root's worked examples: its hand-offs to the librarian, then to the historian.
-ROOTS = [
-    *(parsed(text) for text in LIBRARIAN_HAND_OFFS),
-    *(parsed(hand_off(text)) for text in HISTORIANS_EXAMPLES),
-]
+ROOTS = [parsed(text) for text in ROOTS_EXAMPLES]
 
 
 # What the app puts in for a chat on OpenAI's gpt-6-luna.
@@ -288,11 +283,6 @@ def test_import_replaces_same_named_items_and_keeps_the_rest(imported, tmp_path)
             "  router / decline anything else: It ends on turn 1 (user); end with the"
             " assistant's turn that calls FinalAnswer(...)."
         ),
-        "What this changes in the app:",
-        (
-            "  router's spawn leaves out historian and librarian, so its agents can't"
-            " hand them questions about earlier messages or the Library."
-        ),
     ]
     config = run_config(imported, tmp_path)
     router = config.namespaces["router"]
@@ -383,7 +373,6 @@ def test_import_says_where_new_chats_start_and_which_namespaces_it_added(
     library, advisors
 ):
     said = import_into(library, advisors)
-    assert ('  entry_namespace: "root" (the engine\'s default) → "router"') in said
     assert said[said.index("Namespaces:") + 1 :][:3] == [
         '  course_advisor: added, with decompositions "catalog lookup"',
         '  health_advisor: added, with decompositions "answer then sanitize"',
@@ -392,7 +381,7 @@ def test_import_says_where_new_chats_start_and_which_namespaces_it_added(
             ' wellbeing question", "decline anything else"'
         ),
     ]
-    assert "  New chats start in router." in said
+    assert "  New chats start in router, not root." in said
 
 
 @pytest.mark.parametrize(
@@ -727,10 +716,11 @@ def test_an_import_of_what_the_library_holds_changes_nothing_and_keeps_its_text(
         (
             "{spawn: [helper]}",
             [
+                "  Root's spawn reaches only the namespaces that set none: helper.",
                 (
-                    "  Root's spawn reaches only the namespaces that set none: helper; it"
-                    " leaves out historian and librarian, so their agents can't hand them"
-                    " questions about earlier messages or the Library."
+                    "  Agents in root (where new chats start) and helper can't hand"
+                    " questions about earlier messages or the Library to the historian and"
+                    " librarian now: their spawn leaves them out."
                 ),
             ],
         ),
@@ -739,20 +729,18 @@ def test_an_import_of_what_the_library_holds_changes_nothing_and_keeps_its_text(
             [
                 (
                     "  Root's reasoner reaches only the namespaces that set none: helper,"
-                    " historian, librarian."
+                    " historian and librarian."
                 ),
                 (
-                    "  Root's reasoner is claude_code, which runs each of them on Claude"
-                    " Code, billed to your subscription."
+                    "  Agents in root, helper, historian and librarian now run Claude Code,"
+                    " billed to your subscription."
                 ),
             ],
         ),
     ],
     ids=["fields", "a spawn without the app's own", "a reasoner that bills"],
 )
-def test_import_says_what_of_root_reaches_the_apps_own_namespaces_too(
-    library, tmp_path, root, said
-):
+def test_import_says_which_namespaces_roots_fields_reach(library, tmp_path, root, said):
     config = config_file(tmp_path, f"namespaces:\n  root: {root}\n  helper: {{}}\n")
     assert import_into(library, config)[-len(said) :] == said
 
@@ -888,7 +876,7 @@ READS_AS_ROOT = "reads as root, which every namespace goes under already"
     ("name", "said"),
     [
         ("''", 'Namespace "": Name the namespace'),
-        ('"a\\nb"', f'Namespace "a\\nb": {SHAPE}'),
+        ('"a\\nb"', f'Namespace "a⏎b": {SHAPE}'),
         ('"a\\u200bb"', f'Namespace "a\\u200bb": {SHAPE}'),
         ("a/b", f'Namespace "a/b": {SHAPE}'),
         ('"a\\U0001F600"', f'Namespace "a\U0001f600": {SHAPE}'),
@@ -1124,6 +1112,27 @@ def test_a_mappings_change_is_said_key_by_key_and_cut_after_a_few(library, tmp_p
     )
 
 
+def test_a_settings_change_cut_after_a_few_keys_stays_under_its_section(
+    library, tmp_path
+):
+    variables = ", ".join(f"v{number}: {number}" for number in range(5))
+    config = config_file(tmp_path, f"prompt_template_variables: {{{variables}}}\n")
+    assert import_into(library, config) == [
+        "Run settings, for every chat:",
+        "  prompt_template_variables.v0: (unset) → 0",
+        "  prompt_template_variables.v1: (unset) → 1",
+        "  prompt_template_variables.v2: (unset) → 2",
+        "  and 2 more in prompt_template_variables",
+    ]
+
+
+def test_a_control_character_in_a_config_is_shown_escaped(library, tmp_path):
+    config = config_file(tmp_path, 'system_prompt: "Solve it.\\e[2J\\rDone."\n')
+    said = import_into(library, config)[1]
+    assert said.endswith('→ "Solve it.\\x1b[2J\\rDone."')
+    assert "\x1b" not in said and "\r" not in said
+
+
 def test_a_long_text_is_shown_from_just_before_where_it_changed(library, tmp_path):
     opening = "You answer questions about a course catalog by writing Python. "
     import_into(
@@ -1208,59 +1217,132 @@ def test_a_changed_llm_prompt_says_every_namespace_has_it(library, tmp_path):
     ]
 
 
-def app_says(library, config):
-    """What an import of *config* says it changes in the app."""
-    said = import_into(library, config)
-    return said[said.index("What this changes in the app:") + 1 :]
+def app_says(library, config, environment=None):
+    """What an import of *config* says it changes in the app, run with *environment*."""
+    with closing(open_library(library)) as connection:
+        said = import_config(connection, config, environment=environment)["changes"]
+    title = "What this changes in the app:"
+    return said[said.index(title) + 1 :] if title in said else []
 
 
-def test_a_repl_but_the_local_one_says_the_librarian_cant_write_tools(
+DAYTONA = (
+    "namespaces:\n  sandboxed:\n"
+    "    repl: {type: daytona_sandbox, snapshot_name: dr, api_key_env: DAYTONA_API_KEY}\n"
+)
+SPAWNS_ALL = (
+    "namespaces:\n  root: {spawn: [helper, historian, librarian]}\n  helper: {}\n"
+)
+# Each: a config imported first, if any; the config; what runs get of the environment;
+# and what the import says it changes in the app.
+APP_CHANGES = {
+    "a repl but the local one": (
+        None,
+        "repl: {type: restricted, allowed_modules: [math]}\n",
+        {},
+        [
+            (
+                "The librarian now runs code in the restricted REPL, so it can't write tools:"
+                " that needs the local REPL."
+            )
+        ],
+    ),
+    "a repl changed off it already": (
+        "repl: {type: restricted, allowed_modules: [math]}\n",
+        "repl: {type: restricted, allowed_modules: [math, json]}\n",
+        {},
+        [],
+    ),
+    "where new chats start": (
+        None,
+        "entry_namespace: helper\nnamespaces:\n  helper: {vars: {a: 1}}\n",
+        {},
+        ["New chats start in helper, not root."],
+    ),
+    "a spawn leaving out one": (
+        None,
+        "namespaces:\n  helper: {spawn: [librarian]}\n  other: {spawn: [historian, librarian]}\n",
+        {},
+        [
+            (
+                "Agents in helper can't hand questions about earlier messages to the"
+                " historian now: their spawn leaves it out."
+            )
+        ],
+    ),
+    "a spawn inherited": (
+        None,
+        "namespaces:\n  team: {spawn: [team]}\n  team.sub: {vars: {a: 1}}\n",
+        {},
+        [
+            (
+                "Agents in team and team.sub can't hand questions about earlier messages or"
+                " the Library to the historian and librarian now: their spawn leaves them out."
+            )
+        ],
+    ),
+    "root's spawn cleared": (
+        SPAWNS_ALL,
+        "namespaces:\n  root: {spawn: null}\n",
+        {},
+        ["Root sets no spawn now, so root and helper may spawn into any namespace."],
+    ),
+    "a key not set": (
+        None,
+        DAYTONA,
+        {},
+        [
+            (
+                "sandboxed needs DAYTONA_API_KEY to run code, and it isn't set here: set it in"
+                " the shell you start the app from, or runs there fail."
+            )
+        ],
+    ),
+    "a key set": (None, DAYTONA, {"DAYTONA_API_KEY": "dtn-not-a-real-key"}, []),
+    "a namespace on Claude Code": (
+        None,
+        "namespaces:\n  coder: {reasoner: {type: claude_code}}\n",
+        {},
+        ["Agents in coder now run Claude Code, billed to your subscription."],
+    ),
+    "a tool that runs Claude Code": (
+        None,
+        "tools:\n  coding: {factory: claude_code}\nnamespaces:\n  helper: {tools: [coding]}\n",
+        {},
+        ["Agents in helper now run Claude Code, billed to your subscription."],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", APP_CHANGES)
+def test_import_says_what_it_changes_in_the_app_only_where_it_applies(
+    library, tmp_path, case
+):
+    first, config, environment, said = APP_CHANGES[case]
+    if first:
+        import_into(library, config_file(tmp_path, first))
+    written = config_file(tmp_path, config)
+    assert app_says(library, written, environment) == [f"  {line}" for line in said]
+
+
+def test_replacing_a_seeded_example_says_so_only_while_it_is_as_seeded(
     library, tmp_path
 ):
-    config = config_file(
-        tmp_path, "repl: {type: restricted, allowed_modules: [math]}\n"
-    )
-    assert app_says(library, config) == [
+    seeded = ROOTS[0].name
+
+    def replacing(content):
+        return config_file(
+            tmp_path,
+            "namespaces:\n  root:\n    decompositions:\n"
+            f"      - {{name: {seeded}, messages: [{{role: user, content: {content}}}]}}\n",
+        )
+
+    assert app_says(library, replacing("Hi.")) == [
         (
-            "  The librarian now runs code in the restricted REPL, so it can't write"
-            " tools: that needs the local REPL."
+            f"  Root's \"{seeded}\" replaces the app's own example of handing questions about"
+            " the Library to the librarian, so agents learn it from yours."
         )
     ]
-
-
-def test_a_new_entry_namespace_says_where_new_chats_start(library, tmp_path):
-    config = config_file(
-        tmp_path, "entry_namespace: helper\nnamespaces:\n  helper: {vars: {a: 1}}\n"
-    )
-    assert app_says(library, config) == ["  New chats start in helper."]
-
-
-def test_a_namespace_whose_spawn_leaves_out_the_historian_says_so(library, tmp_path):
-    config = config_file(
-        tmp_path,
-        "namespaces:\n  helper: {spawn: [librarian]}\n  other: {spawn: [historian, librarian]}\n",
-    )
-    assert app_says(library, config) == [
-        (
-            "  helper's spawn leaves out historian, so its agents can't hand them"
-            " questions about earlier messages."
-        )
-    ]
-
-
-def test_a_repl_needing_a_key_that_isnt_set_says_so(library, tmp_path, monkeypatch):
-    monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
-    config = config_file(
-        tmp_path,
-        "namespaces:\n  sandboxed:\n"
-        "    repl: {type: daytona_sandbox, snapshot_name: dr, api_key_env: DAYTONA_API_KEY}\n",
-    )
-    assert app_says(library, config) == [
-        (
-            "  sandboxed need DAYTONA_API_KEY for the REPL they run code in, and it isn't"
-            " set here: set it in the shell you start the app from, or their runs fail."
-        )
-    ]
+    assert app_says(library, replacing("Hello.")) == []
 
 
 def test_a_kept_suffix_or_example_naming_a_tool_no_longer_granted_says_so(

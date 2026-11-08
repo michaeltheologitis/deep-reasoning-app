@@ -12,11 +12,11 @@ from pathlib import Path
 import yaml
 from conflit.config import load_namespaces
 from deep_reasoner.config import load_cli_config
-from deep_reasoner.namespaces import ROOT
+from deep_reasoner.namespaces import CONFIG_SOURCE, ROOT
 from deep_reasoner.v2.cli import V2Config, build_namespace_registry
 from pydantic import ValidationError
 
-from deep_reasoning.app_tools import LOCAL_REPL
+from deep_reasoning.app_tools import LOCAL_REPL, claude_code_tools
 from deep_reasoning.library import (
     APP_TOOLS,
     BUILDERS,
@@ -24,12 +24,11 @@ from deep_reasoning.library import (
     CONTENT,
     ENTRY_NAMESPACE,
     HISTORIAN,
-    HISTORIANS_EXAMPLES,
     LIBRARIAN,
-    LIBRARIAN_HAND_OFFS,
     MAX_YAML_CHARS,
     NAMESPACE_NAME,
     NOT_RUN_SETTINGS,
+    ROOTS_EXAMPLES,
     UPSERT_DECOMPOSITION,
     UPSERT_NAMESPACE,
     UPSERT_SETTING,
@@ -41,17 +40,20 @@ from deep_reasoning.library import (
     check_size,
     check_tool_block,
     check_written,
-    config_and_registry,
+    config_of,
     decomposition_problems,
     dump,
     granted,
-    hand_off,
+    granted_in,
+    handed_to,
+    in_chain_order,
     literals,
     namespace_problem,
     parsed,
     parsed_python,
     problem,
     read_library,
+    run_config_and_registry,
     running_code,
     shown,
     taken,
@@ -59,6 +61,7 @@ from deep_reasoning.library import (
     template_problems,
     texts_in,
     tool_file,
+    unreachable,
     writing,
 )
 from deep_reasoning.tool_check import refuse_unbuilt_keyless
@@ -85,20 +88,22 @@ LEAD_CHARS = 20
 # How many keys of a mapping's change a report shows.
 SHOWN_KEYS = 3
 # Root's fields that reach every namespace beside its own, and those only a namespace that
-# sets none along its chain gets.
+# sets none along its chain gets, with what one gets when root sets none.
 ADDED_UP = ("tools", "vars", "system_suffix")
-NEAREST = ("spawn", "repl", "reasoner")
-# What root's worked examples hand each of the app's own namespaces, and which of them
-# each of those the app seeds in root hands to, by its name.
+NEAREST = {
+    "spawn": "may spawn into any namespace",
+    "repl": "run code in the run settings' repl",
+    "reasoner": "run on the run settings' backbone",
+}
+# The questions root's worked examples hand each of the app's own namespaces.
 HANDED = {HISTORIAN: "earlier messages", LIBRARIAN: "the Library"}
-SEEDED = {parsed(hand_off(text)).name: HISTORIAN for text in HISTORIANS_EXAMPLES} | {
-    parsed(text).name: LIBRARIAN for text in LIBRARIAN_HAND_OFFS
+# Root's worked examples in a new Library, by name: where each hands its question, and
+# the example as the engine reads it, to tell one still as seeded.
+SEEDED = {
+    example.name: (handed_to(example), example.model_dump())
+    for example in map(parsed, ROOTS_EXAMPLES)
 }
 UNSET = object()
-BILLS = (
-    "Root's reasoner is claude_code, which runs each of them on Claude Code, billed to"
-    " your subscription."
-)
 
 
 def file_problem(error):
@@ -141,10 +146,10 @@ def tool_row(name, block, config_dir):
             " built-in's name only to give that built-in its settings."
         )
     check_tool_block(name, block)
+    if runs_on_the_chats_model(name, block):
+        # The config's model or preset may not exist where the chat runs.
+        block = {key: value for key, value in block.items() if key != "model"}
     if factory_from is None:
-        if factory == "llm":
-            # It runs on the chat's model, as the chat does; the config's model or preset may not exist there.
-            block = {key: value for key, value in block.items() if key != "model"}
         return block, None
     file = config_dir / factory_from
     try:
@@ -154,6 +159,12 @@ def tool_row(name, block, config_dir):
             f'Tool "{name}" names factory_from {factory_from}. {file_problem(error)}'
         ) from error
     return {**block, "factory_from": tool_file(name)}, source
+
+
+def runs_on_the_chats_model(name, block):
+    """Whether tool *name*, as its config *block* makes it, is an llm tool, which runs on
+    each chat's model, as the chat does."""
+    return block.get("factory_from") is None and block.get("factory", name) == "llm"
 
 
 def config_problem(error):
@@ -361,8 +372,7 @@ def namespace_named(name):
     each character that doesn't show escaped."""
     if NAMESPACE_NAME.fullmatch(name):
         return f"Namespace {name}"
-    shown = "".join(each if each.isprintable() else ascii(each)[1:-1] for each in name)
-    return f'Namespace "{shown}"'
+    return f'Namespace "{visible(name)}"'
 
 
 def check_new_names(before, changes):
@@ -404,12 +414,11 @@ def check_builds(tools, environment, files):
         refuse_unbuilt_keyless(asked, environment, note=NOT_CARRIED, files=files)
 
 
-def library_state(connection):
-    """The Library as an import compares with it: the run settings; each namespace's own
-    fields; each decomposition as the engine reads it, by (namespace, name), None for one
-    left out; and each tool's block and source. A row the engine can't read is left out
-    with a warning, as the Library's readers leave it out."""
-    read = read_library(connection)
+def library_state(read):
+    """The Library, as read_library() *read* it, as an import compares with it: the run
+    settings; each namespace's own fields; each decomposition as the engine reads it, by
+    (namespace, name), None for one left out; and each tool's block and source. A row the
+    engine can't read is left out with a warning, as the Library's readers leave it out."""
     return {
         "settings": read["settings"],
         "namespaces": read["namespaces"],
@@ -547,44 +556,55 @@ def import_config(connection, path, secrets=(), environment=None):
     # the builds this holds the write lock through; a config the engine refuses runs no
     # code, as the builds come after its check.
     with writing(connection):
-        before = library_state(connection)
-        earlier = resolved(connection)
+        read = read_library(connection)
+        before, earlier = library_state(read), as_the_engine_reads(read)
         imported = imported_state(settings, namespaces, tools, before)
         changes = changes_of(before, imported)
         check_new_names(before, changes)
         store_changes(connection, changes)
-        stored, registry = accepted(connection)
+        later = accepted(connection)
         check_namespaces(connection, before, changes)
-        names = template_names(stored)
+        names = template_names(later[0])
         check_renders(changes, decompositions, names)
         built = to_build(before, imported, changes)
         files = {
             name: block.get("factory_from") for name, block in config.tools.items()
         }
         check_builds(built, environment or {}, files)
-        # Said inside the transaction, so a Ctrl+C after the commit can't fall before it.
-        said = import_report(before, changes, decompositions, names, earlier, registry)
+        # Inside the transaction, so a report that raises rolls the import back.
+        said = import_report(
+            before, changes, decompositions, names, earlier, later, environment or {}
+        )
     return {"changes": said, "left_out": left_out(config)}
 
 
-def resolved(connection):
-    """The Library's namespaces as the engine resolves them; None when it can't, as for a
-    shared file's it refuses."""
+def as_the_engine_reads(read):
+    """The Library, as read_library() *read* it, as the engine reads it: (config,
+    registry); None when it can't, as for a shared file's it refuses."""
     try:
-        return config_and_registry(connection)[1]
+        return run_config_and_registry(config_of(read))
     except ValueError:
         return None
 
 
+def visible(text):
+    """*text* on one line as a terminal shows it: each line break as ⏎, and each other
+    character that doesn't show (a control character, an escape) escaped."""
+    return "".join(
+        "⏎" if each == "\n" else each if each.isprintable() else ascii(each)[1:-1]
+        for each in text
+    )
+
+
 def brief(value, start=0):
     """*value* as an import's report shows it, on one line, cut past BRIEF_CHARS: a text
-    from *start*, each line break shown as ⏎."""
+    from *start*."""
     if value is UNSET:
         return "(unset)"
     if not isinstance(value, str):
-        text = shown(value)
+        text = visible(shown(value))
         return text if len(text) <= BRIEF_CHARS else f"{text[: BRIEF_CHARS - 1]}…"
-    part = value[start : start + BRIEF_CHARS].replace("\n", "⏎")
+    part = visible(value[start : start + BRIEF_CHARS])
     cut_before = "…" if start else ""
     cut_after = "…" if len(value) > start + BRIEF_CHARS else ""
     return f'{cut_before}"{part}"{cut_after}'
@@ -615,7 +635,9 @@ def changed(key, before, after):
             line
             for each in differing(before, after)
             for line in changed(
-                f"{key}.{each}", before.get(each, UNSET), after.get(each, UNSET)
+                f"{key}.{visible(str(each))}",
+                before.get(each, UNSET),
+                after.get(each, UNSET),
             )
         ]
     start = 0
@@ -649,22 +671,26 @@ def and_list(names):
 
 
 def setting_lines(before, changes):
+    """Each run setting an import changed, but where new chats start, which the app's
+    lines say."""
     defaults = V2Config().model_dump()
     held = before["settings"]
     lines = []
     for setting, value in changes["settings"].items():
+        if setting == ENTRY_NAMESPACE:
+            continue
         old = held.get(setting, defaults.get(setting, UNSET))
         default = "" if setting in held else " (the engine's default)"
         found = [
-            f"  {key}: {was}{default if key == setting else ''} → {now}"
+            f"{key}: {was}{default if key == setting else ''} → {now}"
             for key, was, now in changed(setting, old, value)
         ]
         lines += capped(setting, found)
-    return lines
+    return [f"  {line}" for line in lines]
 
 
 def quoted(names):
-    return ", ".join(f'"{name}"' for name in names)
+    return ", ".join(f'"{visible(name)}"' for name in names)
 
 
 def namespace_lines(before, changes):
@@ -695,52 +721,49 @@ def namespace_lines(before, changes):
     return lines
 
 
-def tool_lines(before, changes, namespaces):
-    """What an import did to each tool, with the namespaces it reaches as *namespaces*,
-    each one's own fields after the import, grant it."""
+def tool_lines(before, changes, registry):
+    """What an import did to each tool, and which namespaces have it, as *registry*
+    resolves them after the import."""
     lines = []
     for name, (block, source) in changes["tools"].items():
+        done = "added"
         if name in before["tools"]:
             held, held_source = before["tools"][name]
             parts = field_lines(held, block)
             parts += ["its Python"] if source != held_source else []
             done = f"replaced {', '.join(parts)}" if parts else "replaced"
-        else:
-            done = "added"
-        lines.append(f"  {name}: {done}; {reach(name, source, namespaces)}")
+        lines.append(f"  {name}: {done}; {reach(name, source, registry)}")
     return lines
 
 
-def reach(tool, source, namespaces):
-    """Which of *namespaces* have *tool*, whose Python is *source* (None for a
+def reach(tool, source, registry):
+    """Which namespaces of *registry* have *tool*, whose Python is *source* (None for a
     built-in's), in words."""
-    granting = [
-        name for name, own in namespaces.items() if tool in own.get("tools", [])
-    ]
+    granting = granted_in(registry, in_chain_order(registry), tool)
     if ROOT in granting:
         return "every namespace has it, as root grants it"
     if granting:
         return f"granted in {', '.join(granting)}"
-    return (
-        "not built: no namespace grants it"
-        if source is not None
-        else "no namespace grants it"
-    )
+    if source is None:
+        return "no namespace grants it"
+    return "not built: no namespace grants it"
 
 
-def app_lines(before, changes, earlier, registry):
+def app_lines(before, changes, earlier, later, environment):
     """What an import changes in how the app's chats run, in words, a line each: only
-    what applies. *earlier* and *registry* are the Library's namespaces as the engine
-    resolves them, before the import (None when it couldn't) and after."""
-    lines = []
+    what applies. *earlier* and *later* are the Library as the engine reads it, (config,
+    registry), before the import (None when it couldn't) and after; *environment* is
+    what runs get of this one."""
+    held = before["settings"].get(ENTRY_NAMESPACE, ROOT)
     entry = changes["settings"].get(ENTRY_NAMESPACE)
-    lines += [f"New chats start in {entry}."] if entry else []
-    lines += root_lines(before, changes, registry)
-    lines += librarian_lines(earlier, registry)
-    lines += spawn_lines(before, changes)
-    lines += key_lines(earlier, registry)
+    lines = [f"New chats start in {entry}, not {held}."] if entry else []
+    lines += root_lines(before, changes, later[1])
+    lines += librarian_lines(earlier, later[1])
+    lines += hand_off_lines(earlier, later[1], entry or held)
+    lines += billing_lines(earlier, later)
+    lines += key_lines(earlier, later[1], environment)
     lines += seeded_lines(before, changes)
-    lines += stale_lines(before, changes, earlier, registry)
+    lines += stale_lines(before, changes, earlier, later[1])
     after = before["namespaces"] | changes["namespaces"]
     ungranted = sorted(set(granted(before["namespaces"])) - set(granted(after)))
     if ungranted:
@@ -749,20 +772,6 @@ def app_lines(before, changes, earlier, registry):
             " if chats need it."
         )
     return lines
-
-
-def missing_hand_offs(spawn, whose):
-    """That a *spawn* list leaves out the app's own namespaces, so *whose* agents can't
-    hand them what root's worked examples do, in words; None when it leaves out neither,
-    or is no list, as for a namespace that may spawn anywhere."""
-    missing = [each for each in HANDED if isinstance(spawn, list) and each not in spawn]
-    if not missing:
-        return None
-    topics = " or ".join(HANDED[each] for each in missing)
-    return (
-        f"leaves out {' and '.join(missing)}, so {whose} agents can't hand them questions"
-        f" about {topics}"
-    )
 
 
 def root_lines(before, changes, registry):
@@ -777,22 +786,28 @@ def root_lines(before, changes, registry):
             f" {and_list(added_up)} beside its own."
         )
     for field in (each for each in fields if each in NEAREST):
-        reached = [
-            name
-            for name in registry.names
-            if name != ROOT and getattr(registry.resolve(name).sources, field) == ROOT
-        ]
-        line = (
-            f"Root's {field} reaches only the namespaces that set none:"
-            f" {', '.join(reached) or 'none'}"
-        )
-        clause = (
-            missing_hand_offs(root.get(field), "their") if field == "spawn" else None
-        )
-        lines.append(f"{line}; it {clause}." if clause else f"{line}.")
-    if "reasoner" in fields and (root.get("reasoner") or {}).get("type") == CLAUDE_CODE:
-        lines.append(BILLS)
+        lines.append(nearest_line(field, root.get(field), registry))
     return lines
+
+
+def nearest_line(field, value, registry):
+    """What root's *field*, now *value* (None for unset), means for the namespaces that
+    set none along their chain, in words."""
+    if value is None:
+        unset = [
+            name
+            for name in in_chain_order(registry)
+            if getattr(registry.resolve(name).sources, field) in (None, CONFIG_SOURCE)
+        ]
+        return f"Root sets no {field} now, so {and_list(unset)} {NEAREST[field]}."
+    reached = [
+        name
+        for name in in_chain_order(registry)
+        if name != ROOT and getattr(registry.resolve(name).sources, field) == ROOT
+    ]
+    if not reached:
+        return f"Root's {field} reaches no other namespace: each sets its own."
+    return f"Root's {field} reaches only the namespaces that set none: {and_list(reached)}."
 
 
 def librarian_lines(earlier, registry):
@@ -802,8 +817,8 @@ def librarian_lines(earlier, registry):
         return []
     now = registry.resolve(LIBRARIAN).repl.type
     was = LOCAL_REPL
-    if earlier is not None and LIBRARIAN in earlier.names:
-        was = earlier.resolve(LIBRARIAN).repl.type
+    if earlier is not None and LIBRARIAN in earlier[1].names:
+        was = earlier[1].resolve(LIBRARIAN).repl.type
     if now == LOCAL_REPL or was != LOCAL_REPL:
         return []
     return [
@@ -814,53 +829,109 @@ def librarian_lines(earlier, registry):
     ]
 
 
-def spawn_lines(before, changes):
-    """Each namespace but root whose spawn the import changed to leave out the app's own
-    namespaces, which root's worked examples hand questions to."""
-    lines = []
-    for name, own in changes["namespaces"].items():
-        held = before["namespaces"].get(name, {}).get("spawn")
-        clause = missing_hand_offs(own.get("spawn"), "its")
-        if name != ROOT and clause and not same(own.get("spawn"), held):
-            lines.append(f"{name}'s spawn {clause}.")
-    return lines
+def hand_off_lines(earlier, registry, entry):
+    """Which namespaces' agents can't hand root's worked examples' questions to the
+    app's own namespaces now, though they could before, as the engine's check_spawn
+    decides; *entry*, where new chats start, first."""
+    lost = defaultdict(list)
+    # Stable, so the rest keep the registry's order.
+    for name in sorted(in_chain_order(registry), key=lambda each: each != entry):
+        if name.split(".")[0] in HANDED:
+            continue
+        targets = tuple(
+            target
+            for target in HANDED
+            if unreachable(registry, name, target)
+            and not could_not_hand(earlier, name, target)
+        )
+        where = f"{name} (where new chats start)" if name == entry else name
+        lost[targets].append(where)
+    return [
+        f"Agents in {and_list(names)} can't hand questions about"
+        f" {' or '.join(HANDED[each] for each in targets)} to the"
+        f" {and_list(list(targets))} now: their spawn leaves"
+        f" {'it' if len(targets) == 1 else 'them'} out."
+        for targets, names in lost.items()
+        if targets
+    ]
 
 
-def key_lines(earlier, registry):
-    """Each key a namespace's REPL now reads that isn't set here, and who needs it."""
+def could_not_hand(earlier, name, target):
+    """Whether namespace *name*'s agents couldn't hand a question to *target* before the
+    import, as *earlier* reads the Library."""
+    return (
+        earlier is not None
+        and name in earlier[1].names
+        and unreachable(earlier[1], name, target) is not None
+    )
+
+
+def bills(engine, name):
+    """Whether namespace *name* runs Claude Code, as its backbone or a tool, in *engine*,
+    (config, registry)."""
+    config, registry = engine
+    if name not in registry.names:
+        return False
+    tools = registry.resolve(name).tools
+    return registry.backbone(name) == CLAUDE_CODE or bool(
+        claude_code_tools(config, tools)
+    )
+
+
+def billing_lines(earlier, later):
+    """Which namespaces the import newly puts on Claude Code, as backbone or a tool."""
+    newly = [
+        name
+        for name in in_chain_order(later[1])
+        if bills(later, name) and not (earlier is not None and bills(earlier, name))
+    ]
+    if not newly:
+        return []
+    return [
+        f"Agents in {and_list(newly)} now run Claude Code, billed to your subscription."
+    ]
+
+
+def key_lines(earlier, registry, environment):
+    """Each key a namespace's REPL now reads that *environment* doesn't hold, and who
+    needs it."""
     needing = defaultdict(list)
-    for name in registry.names:
+    for name in in_chain_order(registry):
         repl = registry.resolve(name).repl
         key = getattr(repl, "api_key_env", None)
-        if key and not os.environ.get(key) and not same_repl(earlier, name, repl):
+        if key and not environment.get(key) and not same_repl(earlier, name, repl):
             needing[key].append(name)
     return [
-        f"{', '.join(names)} need {key} for the REPL they run code in, and it isn't set"
-        " here: set it in the shell you start the app from, or their runs fail."
+        f"{and_list(names)} {'needs' if len(names) == 1 else 'need'} {key} to run code,"
+        " and it isn't set here: set it in the shell you start the app from, or runs"
+        " there fail."
         for key, names in needing.items()
     ]
 
 
 def same_repl(earlier, name, repl):
     """Whether namespace *name* ran code in *repl* before the import, as *earlier*
-    resolves it."""
+    reads it."""
     return (
         earlier is not None
-        and name in earlier.names
-        and earlier.resolve(name).repl == repl
+        and name in earlier[1].names
+        and earlier[1].resolve(name).repl == repl
     )
 
 
 def seeded_lines(before, changes):
-    """Each of the app's own worked examples in root that the import replaced."""
-    return [
-        f"Root's \"{name}\" replaces the app's own example of handing questions about"
-        f" {HANDED[SEEDED[name]]} to the {SEEDED[name]}, so agents learn it from yours."
-        for namespace, name in changes["decompositions"]
-        if namespace == ROOT
-        and name in SEEDED
-        and (namespace, name) in before["decompositions"]
-    ]
+    """Each of the app's own worked examples in root that the import replaced, while the
+    Library held it as seeded."""
+    lines = []
+    for namespace, name in changes["decompositions"]:
+        target, seed = SEEDED.get(name, (None, None))
+        held = before["decompositions"].get((namespace, name))
+        if namespace == ROOT and target and held is not None and same(held, seed):
+            lines.append(
+                f"Root's \"{name}\" replaces the app's own example of handing questions"
+                f" about {HANDED[target]} to the {target}, so agents learn it from yours."
+            )
+    return lines
 
 
 def stale_lines(before, changes, earlier, registry):
@@ -869,8 +940,8 @@ def stale_lines(before, changes, earlier, registry):
     if earlier is None:
         return []
     lines = []
-    for name in [each for each in registry.names if each in earlier.names]:
-        lost = set(earlier.resolve(name).tools) - set(registry.resolve(name).tools)
+    for name in [each for each in in_chain_order(registry) if each in earlier[1].names]:
+        lost = set(earlier[1].resolve(name).tools) - set(registry.resolve(name).tools)
         lines += kept_naming(before, changes, name, lost) if lost else []
     return lines
 
@@ -882,23 +953,19 @@ def kept_naming(before, changes, name, lost):
     own = before["namespaces"].get(name, {})
     suffix = own.get("system_suffix")
     kept = same(suffix, changes["namespaces"].get(name, own).get("system_suffix"))
-    words = (
-        set(re.findall(r"\w+", suffix)) if kept and isinstance(suffix, str) else set()
-    )
-    named = sorted(lost & words)
+    words = re.findall(r"\w+", suffix) if kept and isinstance(suffix, str) else []
+    named = ", ".join(sorted(lost & set(words)))
     lines = []
     if named:
-        lines.append(
-            f"{label}'s system_suffix names {', '.join(named)}, which it no longer has."
-        )
+        lines.append(f"{label}'s system_suffix names {named}, which it no longer has.")
     for (at, example), data in before["decompositions"].items():
         if at != name or data is None or (at, example) in changes["decompositions"]:
             continue
         called = ", ".join(sorted(lost & code_names(data)))
         if called:
             lines.append(
-                f'{label}\'s worked example "{example}" calls {called}, which it no'
-                " longer has."
+                f'{label}\'s worked example "{visible(example)}" calls {called}, which it'
+                " no longer has."
             )
     return lines
 
@@ -910,28 +977,28 @@ def code_names(decomposition):
         if message["role"] != "assistant":
             continue
         try:
-            tree = ast.parse(running_code(message["content"]))
-        except (SyntaxError, RecursionError, MemoryError):
+            tree = parsed_python(running_code(message["content"]))
+        except LibraryError:
             continue
         names |= {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     return names
 
 
-def import_report(before, changes, decompositions, names, earlier, registry):
+def import_report(before, changes, decompositions, names, earlier, later, environment):
     """What an import changed, in lines of plain words, from the Library *before* it and
     its *changes*; the config's *decompositions* by (namespace, name), whose templates may
-    read *names*; *earlier* and *registry*, the namespaces as the engine resolves them
-    before (None when it couldn't) and after."""
-    after = before["namespaces"] | changes["namespaces"]
+    read *names*; and what that changes in the app (app_lines(), which takes *earlier*,
+    *later* and *environment*)."""
     sections = {
         "Run settings, for every chat:": setting_lines(before, changes),
         "Namespaces:": namespace_lines(before, changes),
-        "Tools:": tool_lines(before, changes, after),
+        "Tools:": tool_lines(before, changes, later[1]),
         "The panel will mark these decompositions ✗, stored all the same:": (
             crossed_lines(changes, decompositions, names)
         ),
         "What this changes in the app:": [
-            f"  {line}" for line in app_lines(before, changes, earlier, registry)
+            f"  {line}"
+            for line in app_lines(before, changes, earlier, later, environment)
         ],
     }
     return [line for title, rows in sections.items() if rows for line in [title, *rows]]
@@ -962,9 +1029,7 @@ def left_out(config):
         f"Left out: tool {name}'s model {block['model']}, as an llm tool runs on each"
         " chat's model."
         for name, block in config.tools.items()
-        if "model" in block
-        and "factory_from" not in block
-        and block.get("factory", name) == "llm"
+        if "model" in block and runs_on_the_chats_model(name, block)
     ]
     unread = sorted((config.model_fields_set & NOT_RUN_SETTINGS) - CONTENT)
     if unread:

@@ -188,10 +188,9 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 - `uv run deep-reasoning import CONFIG.yaml` brings a `deep_reasoner` config's namespaces, decompositions, tools and
   run settings into the Library (each chat keeps its own model), replacing items of the same name and the root fields
   it sets, and prints what it changed (each decomposition by name, a changed mapping key by key, a long text from
-  where it changed) and what it left out, then what that changes in the app: where new chats start, what of root
-  reaches which namespaces, a REPL that keeps the librarian from writing tools, a `spawn` that leaves out the
-  historian or librarian, a key a REPL needs that isn't set, one of the app's own worked examples replaced, and a kept
-  suffix or worked example naming a tool its namespace no longer has. It refuses, changing nothing, a file that isn't a config,
+  where it changed) and what it left out, then, only where it applies, what that changes in the app: such as where
+  new chats start, a REPL that keeps the librarian from writing tools, a key a REPL needs that isn't set, or a worked
+  example calling a tool its namespace no longer has. It refuses, changing nothing, a file that isn't a config,
   the app's `historian` and `librarian` namespaces or one under them, a tool named as a built-in, a key anywhere in
   it (any saved in settings or set in your shell for any provider or server), whatever the panel's save would refuse
   (a namespace, var or decomposition name, a template, a `system_suffix`, two decompositions of one name in a
