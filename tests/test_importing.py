@@ -1204,6 +1204,27 @@ def test_within_must_be_a_folder_holding_the_config(library, tmp_path, within):
     refused_unchanged(library, config, said, within=tmp_path / within)
 
 
+@pytest.mark.parametrize(
+    ("entry", "meant"),
+    [("reseach", " (did you mean research?)"), ("billing", "")],
+)
+def test_import_refuses_an_entry_namespace_naming_none_there(
+    library, tmp_path, entry, meant
+):
+    text = f"entry_namespace: {entry}\nnamespaces:\n  research: {{vars: {{a: 1}}}}\n"
+    said = (
+        f'entry_namespace names "{entry}", which is not a namespace in the config or the'
+        f" Library{meant}: add it, or name one that is."
+    )
+    refused_unchanged(library, config_file(tmp_path, text), said)
+
+
+def test_an_entry_namespace_the_library_already_holds_is_imported(library, tmp_path):
+    import_into(library, config_file(tmp_path, "namespaces:\n  research: {}\n"))
+    said = import_into(library, config_file(tmp_path, "entry_namespace: research\n"))
+    assert "  New chats start in research, not root." in said
+
+
 def test_import_refuses_yaml_nested_too_deeply_in_words(library, tmp_path):
     config = config_file(tmp_path, "max_iter: " + "[" * 5000 + "]" * 5000 + "\n")
     refused_unchanged(library, config, f"{config} is nested too deeply to read.")

@@ -230,9 +230,25 @@ def read_config(path, folder):
 
 def unknown_key(key):
     """A key a config holds that the engine doesn't read, as an import leaves it out."""
-    close = difflib.get_close_matches(key, V2Config.model_fields, n=1)
-    meant = f" (did you mean {close[0]}?)" if close else ""
+    meant = closest(key, V2Config.model_fields)
     return f"Left out: {key}, which is not a setting the engine reads{meant}."
+
+
+def closest(word, choices):
+    """' (did you mean X?)' for the one of *choices* closest to *word*; blank for none."""
+    close = difflib.get_close_matches(word, choices, n=1)
+    return f" (did you mean {close[0]}?)" if close else ""
+
+
+def check_entry(entry, names):
+    """Raise unless *entry*, the entry_namespace a config sets (None for none), is one
+    of *names*, the namespaces the Library will have, as new chats start there."""
+    if entry is None or entry in names:
+        return
+    raise LibraryError(
+        f'entry_namespace names "{entry}", which is not a namespace in the config or the'
+        f" Library{closest(entry, names)}: add it, or name one that is."
+    )
 
 
 def check_not_the_apps(names):
@@ -613,6 +629,8 @@ def import_config(connection, path, secrets=(), environment=None, within=None):
         before, earlier = library_state(read), as_the_engine_reads(read)
         imported = imported_state(settings, namespaces, tools, before)
         changes = changes_of(before, imported)
+        names = [ROOT, *registry.names, *before["namespaces"]]
+        check_entry(settings.get(ENTRY_NAMESPACE), names)
         check_new_names(before, changes)
         store_changes(connection, changes)
         later = accepted(connection)

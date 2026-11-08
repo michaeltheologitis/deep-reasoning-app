@@ -443,6 +443,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not 0 <= args.port <= MAX_PORT:
         parser.error(f"--port must be between 0 and {MAX_PORT}")
+    # Only the import's report on stdout: its log lines go to stderr. Looked up as each
+    # line is logged, so a stream swapped in later is the one written to.
+    stream = "stderr" if args.command == "import" else "stdout"
+    structlog.configure(
+        logger_factory=lambda *_: structlog.PrintLogger(getattr(sys, stream))
+    )
     if args.command == "import":
         import_or_exit(args.library, args.config, home, args.within)
         return

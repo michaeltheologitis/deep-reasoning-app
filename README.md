@@ -146,8 +146,9 @@ imports too.
 - A namespace that sets `spawn` has its agents told, each run, where they can hand work; the panel shows that line
   under its System suffix and marks a listed namespace that is gone.
 - A shared Library's rows the engine can't read are left out, so the rest works, and so are worked examples whose
-  template a save would refuse and namespaces whose name could pass for another (`Root`, a look-alike of root, or
-  one holding a character you can't see); the panel marks each ✗ with why, to fix or delete. Its templates run sandboxed, reaching no Python internals.
+  template a save would refuse and namespaces whose name could pass for another (`Root`, a look-alike of root, or one
+  holding a character you can't see); the panel marks each ✗ with why, to fix or delete. Its templates run sandboxed,
+  reaching no Python internals.
 - Every run builds every tool some namespace grants, whatever its chat's namespace: a granted tool's code runs at the
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never
@@ -182,11 +183,11 @@ imports too.
   run settings into the Library (each chat keeps its own model), replacing items of the same name and the root fields
   it sets, and prints what it changed, what it left out and what that changes in the app. It refuses, changing
   nothing, a file that isn't a config, the app's `historian` and `librarian` or one under them, a tool named as a
-  built-in, a key anywhere in it, whatever the panel would refuse, `max_iter` or `max_depth` below 1, and a granted
-  tool that doesn't build (built once, from the config alone, with no key). It reads only files in the config's
-  folder and below (`_compose`, `namespaces_dir`, `factory_from`); pass `--within FOLDER` when a config composes
-  files from a folder above it, as `deep_reasoner`'s examples do. An import that fails or changes nothing
-  leaves no new file. Import only configs you trust.
+  built-in, a key anywhere in it, whatever the panel would refuse, an `entry_namespace` naming no namespace it would
+  have, `max_iter` or `max_depth` below 1, and a granted tool that doesn't build (built once, from the config alone,
+  with no key). It reads only files in the config's folder and below (`_compose`, `namespaces_dir`, `factory_from`);
+  pass `--within FOLDER` when a config composes files from a folder above it, as `deep_reasoner`'s examples do. An
+  import that fails or changes nothing leaves no Library (only its `.lock`). Import only configs you trust.
 - `uv run deep-reasoning reset` deletes the Library file (`--library PATH` for another), with its chats and
   settings, and its run and scratch folders, after listing them and asking you to type `delete` (`--yes` skips it).
   Your keys and the folders you picked stay; it deletes only a Library file.

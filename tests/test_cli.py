@@ -353,6 +353,24 @@ def test_import_says_what_it_changed(tmp_path, capsys, waitlist, configs):
     assert "  root: tools [llm] → [waitlist]; the rest of root kept" in said[header:]
 
 
+def test_an_imports_report_alone_is_on_stdout_its_log_lines_on_stderr(tmp_path, capsys):
+    library = tmp_path / "lib.sqlite"
+    open_library(library).close()
+    with closing(open_library(library)) as connection, connection:
+        # A row a shared file may hold, which every read of the Library warns of.
+        connection.execute("INSERT INTO namespaces VALUES ('Root', '')")
+    config = tmp_path / "config.yaml"
+    config.write_text("max_iter: 7\n")
+    cli.main(["import", str(config), "--library", str(library)])
+    said = capsys.readouterr()
+    assert said.out.splitlines() == [
+        f"Imported {config} into the Library at {library}.",
+        "Run settings, for every chat:",
+        "  max_iter: 30 (the engine's default) → 7",
+    ]
+    assert "library.row_left_out" in said.err
+
+
 def test_importing_a_config_again_says_it_changed_nothing(tmp_path, capsys):
     config = tmp_path / "steps.yaml"
     config.write_text("max_iter: 4\n")
