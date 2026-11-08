@@ -3050,6 +3050,23 @@ def test_a_library_file_that_cannot_be_written_is_refused_in_plain_words(
     assert client.get("/api/chats").json() == [chat]
 
 
+def test_a_shared_files_chats_table_that_refuses_new_chats_answers_in_plain_words(
+    client, library
+):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute("DROP TABLE chats")
+        connection.execute(
+            "CREATE TABLE chats (id TEXT PRIMARY KEY, title TEXT NOT NULL,"
+            " created REAL NOT NULL, namespace TEXT, provider TEXT, model TEXT,"
+            " folder TEXT, CHECK (0))"
+        )
+    added = client.post("/api/chats")
+    assert added.status_code == 400
+    assert added.json() == {
+        "detail": "The Library file refused the new chat: CHECK constraint failed: 0."
+    }
+
+
 def test_a_broken_library_file_is_not_passed_off_as_one_that_cannot_be_written(
     client, library
 ):

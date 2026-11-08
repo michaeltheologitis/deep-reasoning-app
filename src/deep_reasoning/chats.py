@@ -17,7 +17,7 @@ from typing import Any
 import structlog
 from coolname import generate_slug
 
-from deep_reasoning.library import RUN_ID, RUN_ID_FORMAT, open_library
+from deep_reasoning.library import RUN_ID, RUN_ID_FORMAT, LibraryError, open_library
 
 log = structlog.get_logger()
 
@@ -25,9 +25,8 @@ log = structlog.get_logger()
 CHAT_ID = r"^[A-Za-z0-9_-]{1,100}$"
 CHOICES = ("namespace", "provider", "model", "folder")
 COLUMNS = "id, title, created, namespace, provider, model, folder"
-# Adds no row when the id is taken.
 ADD_CHAT = (
-    "INSERT OR IGNORE INTO chats (id, title, created, folder)"
+    "INSERT INTO chats (id, title, created, folder)"
     " VALUES (:id, :title, :created, :folder)"
 )
 NEW_TITLE = "New chat"
@@ -36,6 +35,10 @@ TITLE_CHARS = 200
 RUN_IDS = "SELECT chat, id FROM runs WHERE typeof(id) = 'text'"
 # Three words, like "tunneling-easygoing-mosquito": over 300 million ids.
 ID_WORDS = 3
+# A new id is tried this many times before the chat is refused; a taken one is rare.
+ID_TRIES = 10
+ID_TAKEN = "SQLITE_CONSTRAINT_PRIMARYKEY"
+NO_FREE_ID = f"The Library file had no free chat id in {ID_TRIES} tries; try again."
 
 Chat = dict[str, Any]
 
@@ -127,9 +130,25 @@ def create_chat(path: Path, folder: str | None = None) -> Chat:
         "folder": folder,
     }
     with connect(path) as connection:
-        while not connection.execute(ADD_CHAT, chat).rowcount:
+        for _ in range(ID_TRIES):
+            if inserted(connection, chat):
+                return dict.fromkeys(CHOICES) | chat | {"last_run": None}
             chat["id"] = generate_slug(ID_WORDS)
-    return dict.fromkeys(CHOICES) | chat | {"last_run": None}
+    raise LibraryError(NO_FREE_ID)
+
+
+def inserted(connection: sqlite3.Connection, chat: Chat) -> bool:
+    """Whether *chat* went in: False when its id is taken. Any other refusal, as a shared
+    file's own constraints may make, is a LibraryError."""
+    try:
+        connection.execute(ADD_CHAT, chat)
+    except sqlite3.IntegrityError as error:
+        if error.sqlite_errorname == ID_TAKEN:
+            return False
+        raise LibraryError(
+            f"The Library file refused the new chat: {error}."
+        ) from error
+    return True
 
 
 def capped(title: str) -> str:
