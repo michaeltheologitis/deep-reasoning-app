@@ -124,7 +124,7 @@ def turn_of(library, run):
 
 
 async def run_to_the_end(runs, prompt, config, earlier=()):
-    run = runs.start(CHAT, prompt, config, earlier)
+    run = await runs.start(CHAT, prompt, config, earlier)
     return run, [event async for event in runs.events(run)]
 
 
@@ -227,7 +227,9 @@ async def test_a_run_works_in_its_folder_and_keeps_its_own_files_in_the_run_fold
     plan = {"Write a note.": [write, repl("FinalAnswer('noted')")]}
     with FakeOpenAI(scripted(plan)) as fake:
         runs = Runs(library, home)
-        run = runs.start(CHAT, "Write a note.", fake_config(fake), [], folder=folder)
+        run = await runs.start(
+            CHAT, "Write a note.", fake_config(fake), [], folder=folder
+        )
         events = [event async for event in runs.events(run)]
     assert events[-1]["outcome"] == "answered", events[-1]
     assert events[0]["folder"] == of_kind(events, "cell.end")[0]["output"]
@@ -325,7 +327,7 @@ async def test_a_tool_that_moves_the_working_folder_as_it_loads_leaves_cells_in_
         tools = {"mover": {"factory": "build", "factory_from": str(source)}}
         runs = Runs(library, home)
         config = fake_config(fake, tools=tools)
-        run = runs.start(CHAT, "Write a note.", config, [], folder=folder)
+        run = await runs.start(CHAT, "Write a note.", config, [], folder=folder)
         events = [event async for event in runs.events(run)]
     assert events[-1]["outcome"] == "answered", events[-1]
     assert of_kind(events, "cell.end")[0]["output"] == str(folder)
@@ -347,7 +349,9 @@ async def test_the_folders_modules_import_but_never_shadow_installed_ones(
     plan = {"Use my helpers.": [look, repl("FinalAnswer('used')")]}
     with FakeOpenAI(scripted(plan)) as fake:
         runs = Runs(library, home)
-        run = runs.start(CHAT, "Use my helpers.", fake_config(fake), [], folder=folder)
+        run = await runs.start(
+            CHAT, "Use my helpers.", fake_config(fake), [], folder=folder
+        )
         events = [event async for event in runs.events(run)]
     assert of_kind(events, "cell.end")[0]["output"] == "hi from helpers True"
     assert events[-1]["outcome"] == "answered", events[-1]
@@ -376,7 +380,7 @@ async def test_stop_ends_every_agent_and_cell_stopped(home, library, fake_config
     }
     with FakeOpenAI(scripted(plan)) as fake:
         runs = Runs(library, home)
-        run = runs.start(CHAT, "Keep a spinner going.", fake_config(fake), [])
+        run = await runs.start(CHAT, "Keep a spinner going.", fake_config(fake), [])
         events, seconds = await stop_at(runs, run, "while True:\n    pass")
     assert seconds < 2
     ends = {event["node"]: event["status"] for event in of_kind(events, "agent.end")}
@@ -399,7 +403,7 @@ async def test_stop_kills_a_cell_blocked_in_c(home, library, fake_config, tmp_pa
     plan = {"Wait a minute.": [PRINT_GROUP, repl("import os", write)]}
     with FakeOpenAI(scripted(plan)) as fake:
         runs = Runs(library, home, stop_grace_s=0.5)
-        run = runs.start(CHAT, "Wait a minute.", fake_config(fake), [])
+        run = await runs.start(CHAT, "Wait a minute.", fake_config(fake), [])
         try:
             # Once the pipe holds what the cell wrote, the cell is in its write.
             wait = asyncio.to_thread(select.select, [reader], [], [], HELD_S)
@@ -427,7 +431,7 @@ async def test_after_a_stop_the_run_still_gets_the_grace_period_to_save(
     with FakeOpenAI(scripted({"Wait a moment.": [sleep]})) as fake:
         runs = Runs(library, home, stop_grace_s=grace_s)
         config = fake_config(fake, **settings)
-        run = runs.start(CHAT, "Wait a moment.", config, [])
+        run = await runs.start(CHAT, "Wait a moment.", config, [])
         events, _ = await stop_at(runs, run, f"import time\ntime.sleep({blocked_s})")
     assert events[-1]["outcome"] == "stopped"
     assert saved.read_text() == "whole"
@@ -436,7 +440,7 @@ async def test_after_a_stop_the_run_still_gets_the_grace_period_to_save(
 async def test_stop_before_the_root_starts_calls_no_model(home, library, fake_config):
     with FakeOpenAI(scripted(FAN_OUT)) as fake:
         runs = Runs(library, home)
-        run = runs.start(CHAT, "Summarize two courses.", fake_config(fake), [])
+        run = await runs.start(CHAT, "Summarize two courses.", fake_config(fake), [])
         assert runs.stop(run)
         events = [event async for event in runs.events(run)]
     assert fake.calls == []
@@ -475,7 +479,7 @@ async def test_a_stop_amid_library_writes_ends_the_run_with_each_written_change_
     with FakeOpenAI(scripted({"Add them.": [adds]})) as fake:
         runs = Runs(library, home)
         config = in_the_librarian(library, fake_config(fake))
-        run = runs.start(CHAT, "Add them.", config, [])
+        run = await runs.start(CHAT, "Add them.", config, [])
         events, stopped_at = [], None
         async for event in runs.events(run):
             events.append(event)
@@ -652,7 +656,7 @@ async def test_a_stopped_message_goes_in_once_saying_why_it_has_no_answer(
     plan = {"Try again, briefly.": [repl("FinalAnswer('ok')")]}
     with FakeOpenAI(scripted(plan)) as fake:
         runs = Runs(library, home)
-        stopped = runs.start(CHAT, "Count the stars.", fake_config(fake), [])
+        stopped = await runs.start(CHAT, "Count the stars.", fake_config(fake), [])
         runs.stop(stopped)
         _ = [event async for event in runs.events(stopped)]
         earlier = [turn_of(library, stopped)]
@@ -720,7 +724,7 @@ async def test_a_stream_rejoined_mid_run_replays_without_gaps(
 
     with FakeOpenAI(held_before_answering) as fake:
         runs = Runs(library, home)
-        run = runs.start(CHAT, "Summarize two courses.", fake_config(fake), [])
+        run = await runs.start(CHAT, "Summarize two courses.", fake_config(fake), [])
         stream = runs.events(run)
         seen = [await anext(stream) for _ in range(5)]
         rejoined = runs.events(run, after=3)
@@ -742,13 +746,66 @@ async def test_a_chat_runs_one_message_at_a_time(home, library, fake_config):
 
     with FakeOpenAI(held) as fake:
         runs = Runs(library, home)
-        run = runs.start(CHAT, "Summarize two courses.", fake_config(fake), [])
+        run = await runs.start(CHAT, "Summarize two courses.", fake_config(fake), [])
         with pytest.raises(RunInProgress):
-            runs.start(CHAT, "And another thing.", fake_config(fake), [])
+            await runs.start(CHAT, "And another thing.", fake_config(fake), [])
         assert runs.live(CHAT) == run
         release.set()
         _ = [event async for event in runs.events(run)]
     assert runs.live(CHAT) is None
+
+
+async def test_a_runs_config_is_made_off_the_event_loop_with_its_chat_held(
+    home, library, fake_config
+):
+    loop_free = threading.Event()
+    with FakeOpenAI(scripted({"Hi.": [repl("FinalAnswer('hello')")]})) as fake:
+        config = fake_config(fake)
+
+        def config_for(folder):
+            # Set from the event loop, so only while the config is made off it.
+            assert loop_free.wait(HELD_S), "the config was made on the event loop"
+            return config(folder)
+
+        def unmade(folder):
+            raise AssertionError("a second run started while the first was starting")
+
+        async def meanwhile():
+            with pytest.raises(RunInProgress):
+                await runs.start(CHAT, "Hi again.", unmade, [])
+            loop_free.set()
+
+        runs = Runs(library, home)
+        run, _ = await asyncio.gather(
+            runs.start(CHAT, "Hi.", config_for, []), meanwhile()
+        )
+        events = [event async for event in runs.events(run)]
+    assert [event["seq"] for event in events] == list(range(1, len(events) + 1))
+    assert events[0]["kind"] == "turn.start" and events[-1]["outcome"] == "answered"
+
+
+async def test_remove_while_a_run_starts_waits_to_end_it(home, library, fake_config):
+    making, made = threading.Event(), threading.Event()
+    with FakeOpenAI(scripted({"Hi.": [repl("FinalAnswer('hello')")]})) as fake:
+        config = fake_config(fake)
+
+        def config_for(folder):
+            making.set()
+            made.wait(HELD_S)
+            return config(folder)
+
+        runs = Runs(library, home)
+        starting = asyncio.create_task(runs.start(CHAT, "Hi.", config_for, []))
+        await asyncio.to_thread(making.wait, HELD_S)
+        removing = asyncio.create_task(runs.remove(CHAT))
+        await asyncio.sleep(0)  # the remove waits on the start
+        made.set()
+        run = await starting
+        await removing
+        live = runs.live(CHAT)
+        await runs.close()  # ends a run the remove missed
+    assert live is None and not runs.exists(run)
+    assert not (home / "runs" / run).exists()
 
 
 async def until(runs, run, done):
@@ -770,7 +827,7 @@ async def test_a_chat_takes_its_next_message_once_its_turn_has_ended(
     with FakeOpenAI(scripted(plan)) as fake:
         runs = Runs(library, home)
         config = fake_config(fake, **settings)
-        run = runs.start(CHAT, "Hi.", config, [])
+        run = await runs.start(CHAT, "Hi.", config, [])
         await until(runs, run, lambda event: event["kind"] == "turn.end")
         assert not saved.exists()  # the worker is still closing the run
         assert runs.live(CHAT) is None and runs.stop(run) is False
@@ -785,7 +842,7 @@ async def test_remove_ends_the_chats_run_as_deleted_and_deletes_its_folder_once_
     spin = "while True:\n    pass"
     with FakeOpenAI(scripted({"Spin.": [PRINT_GROUP, repl(spin)]})) as fake:
         runs = Runs(library, home)
-        run = runs.start(CHAT, "Spin.", fake_config(fake), [])
+        run = await runs.start(CHAT, "Spin.", fake_config(fake), [])
         watching = runs.events(run)
         await anext(watching)  # a stream open on the run, as a tab's is
         events = await until(runs, run, lambda event: event.get("code") == spin)
@@ -805,7 +862,7 @@ async def test_remove_waits_for_a_worker_still_closing_its_run(
     settings, saved = slow_saving(tmp_path)
     with FakeOpenAI(scripted({"Hi.": [repl("FinalAnswer('hello')")]})) as fake:
         runs = Runs(library, home)
-        run = runs.start(CHAT, "Hi.", fake_config(fake, **settings), [])
+        run = await runs.start(CHAT, "Hi.", fake_config(fake, **settings), [])
         await until(runs, run, lambda event: event["kind"] == "turn.end")
         assert not saved.exists()  # the worker is still closing the run
         await runs.remove(CHAT)
@@ -990,7 +1047,9 @@ async def test_a_runs_keys_reach_its_worker_alone_and_anthropics_never(
     with FakeOpenAI(scripted(plan)) as fake:
         runs = Runs(library, home)
         keys = {"A_RUNS_KEY": key}
-        run = runs.start(CHAT, "Look around.", fake_config(fake), [], "fake", keys)
+        run = await runs.start(
+            CHAT, "Look around.", fake_config(fake), [], "fake", keys
+        )
         events = [event async for event in runs.events(run)]
     assert of_kind(events, "cell.end")[0]["output"] == "True False"
     assert events[0]["provider"] == "fake"
@@ -1007,7 +1066,9 @@ async def test_a_key_a_cell_prints_never_reaches_the_app_file(
     with FakeOpenAI(scripted(plan)) as fake:
         runs = Runs(library, home)
         keys = {"A_RUNS_KEY": key}
-        run = runs.start(CHAT, "Show the key.", fake_config(fake), [], "fake", keys)
+        run = await runs.start(
+            CHAT, "Show the key.", fake_config(fake), [], "fake", keys
+        )
         events = [event async for event in runs.events(run)]
     assert of_kind(events, "cell.end")[0]["output"] == "[key withheld]"
     assert events[-1]["answer"] == "[key withheld]"
@@ -1022,19 +1083,19 @@ async def test_a_start_the_app_file_refuses_leaves_no_run_behind(
     monkeypatch.setattr(sqlite3, "connect", partial(CONNECT, factory=full_disk(0)))
     refused = pytest.raises(sqlite3.OperationalError, match=FULL)
     with FakeOpenAI(scripted(FAN_OUT)) as fake, refused:
-        runs.start(CHAT, "Summarize two courses.", fake_config(fake), [])
+        await runs.start(CHAT, "Summarize two courses.", fake_config(fake), [])
     assert runs.live(CHAT) is None and fake.calls == []
     assert list((home / "runs").iterdir()) == []
 
 
-def test_a_start_whose_config_fails_leaves_no_run_behind(home, library):
+async def test_a_start_whose_config_fails_leaves_no_run_behind(home, library):
     def config_for(folder):
         (folder / "tools").mkdir()
         raise ValueError("the engine refuses the config")
 
     runs = Runs(library, home)
     with pytest.raises(ValueError, match="refuses"):
-        runs.start(CHAT, "Hi.", config_for, [])
+        await runs.start(CHAT, "Hi.", config_for, [])
     assert runs.live(CHAT) is None
     assert list((home / "runs").iterdir()) == []
 
