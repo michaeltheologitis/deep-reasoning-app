@@ -421,12 +421,12 @@ test("a page of no known agent, as a crafted file may hold, is left out", () => 
   assert.deepEqual([turn.steps, turn.pages], [[], []]);
 });
 
-test("a worked example its agent wasn't shown is the agent's first step, saying which, where and why", () => {
+test("a worked example its agent wasn't shown is the agent's first step, saying which, where it is stored and why", () => {
   const events = recorded("left_out");
   const { turn } = foldEvents(events);
   const [counter] = rowsOf(turn);
   const [leftOut] = ofKind(events, "example.left_out");
-  assert.deepEqual(counter.steps[0], { kind: "left_out", name: "tally", namespace: "tallying", why: "ZeroDivisionError: division by zero" });
+  assert.deepEqual(counter.steps[0], { kind: "left_out", name: "tally", namespace: "tallying", from: "tallying", why: "ZeroDivisionError: division by zero" });
   assert.equal(leftOut.node, 2);
   assert.ok(turn.steps.every((step) => step.kind !== "left_out"));
   assert.equal(turn.answer, "tallied");

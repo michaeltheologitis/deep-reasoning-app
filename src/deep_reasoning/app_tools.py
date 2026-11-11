@@ -39,7 +39,7 @@ from concurrent.futures import Future
 from contextlib import closing, contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass, field
-from functools import cached_property, partial
+from functools import cached_property, partial, wraps
 from importlib.util import find_spec
 from pathlib import Path
 from types import SimpleNamespace
@@ -83,7 +83,6 @@ from deep_reasoning.library import (
     literals,
     loaded,
     namespace_rows,
-    parsed,
     parsed_python,
     read_library,
     reading,
@@ -167,9 +166,33 @@ CUT_SHORT = (
     " cut short: write the whole of it, from show(name, whole=True), tools(name) or"
     " changes()."
 )
-# An example's cell tags, each on a line of its own, which a cell writes as placeholders,
-# as a reply's last real <repl> is the one that runs.
+# An example's cell tags, each on a line of its own, as a cell may type them, as
+# placeholders: a reply's last real <repl> is the one that runs.
 REAL_TAGS = {"[repl]": "<repl>", "[/repl]": "</repl>"}
+LONE_PLACEHOLDER = re.compile(r"^([ \t]*)\[(/?)repl\]([ \t]*)$", re.MULTILINE)
+# How every text the tool gives writes a repl tag, which typed into a cell would end the
+# cell there, and how every text it takes is read back: as a mark nobody types. A typed
+# placeholder, which a write takes for a tag, and the mark's own bracket are marked too,
+# so a text given and written back is the same to the byte.
+MARKS = {
+    "<repl>": "⟦repl⟧",
+    "</repl>": "⟦/repl⟧",
+    "[repl]": "⟦[repl]⟧",
+    "[/repl]": "⟦[/repl]⟧",
+    "⟦": "⟦⟦",
+}
+UNMARKS = {mark: text for text, mark in MARKS.items()}
+TO_MARK = re.compile("|".join(map(re.escape, MARKS)))
+TO_UNMARK = re.compile("|".join(map(re.escape, UNMARKS)))
+# The tags the engine reads as a turn's parts: inside a turn's text, one would end its
+# part there or start another.
+TAG = re.compile(r"</?(?:repl|think|observation)>", re.IGNORECASE)
+TAG_IN_TURN = jinja2.Template(
+    "Turn {{ number }}'s {{ field }} holds {{ tag }}, a tag the engine reads, which would"
+    " end the turn's part there or start another: type no tags in turns, as the tool"
+    " writes them. To show one in a text, write {{ placeholder }} instead.",
+    undefined=jinja2.StrictUndefined,
+)
 HOLDS_A_KEY = (
     "What you wrote holds a provider's key, and the Library file is shared, so keys never"
     " go in it. Take the key out."
@@ -187,12 +210,24 @@ LOCKED_FIELDS = {
     ),
 }
 USERS_CHOICE = "the user's choice, in the Library panel's Namespaces tab (Edit YAML)."
-# A var's or tool setting's name with one of these as a word part reads as a secret's.
-SECRET_WORD = re.compile(r"(api)?(key|token|secret|password)s?", re.IGNORECASE)
+# A var's or tool setting's name reads as a secret's when one of these, or its plural, is
+# one of its word parts, or ends it after a word saying what it opens (apikey, authtoken),
+# but not when it starts a longer word (tokenizer, keywords) or ends another (hotkey).
+SECRET_WORDS = "(?:key|token|secret|password)s?"
+SECRET_PART = re.compile(SECRET_WORDS, re.IGNORECASE)
+SECRET_ENDING = re.compile(
+    rf"(?:api|auth|access|private|client|session|refresh|bearer|secret|pass){SECRET_WORDS}$",
+    re.IGNORECASE,
+)
 WORD_PART = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
-# And a value shaped like a key: 16 or more characters of a token's alphabet, letters
-# and digits among them, as no id, date, name or column label is.
-SECRET_SHAPED = re.compile(r"(?=.*[A-Za-z])(?=.*\d)[\w.+/=~-]{16,}", re.ASCII)
+# And a value holding a run of a key's characters this long, whose letters and digits
+# switch between lowercase, uppercase and digits this often, or for this share of them,
+# reads as a key: random, as no id, date, path, model name or label is.
+KEY_LENGTH = 16
+KEY_RUN = re.compile(rf"[A-Za-z0-9+/=_-]{{{KEY_LENGTH},}}")
+ONE_CASE_OR_DIGITS = re.compile(r"[a-z]+|[A-Z]+|[0-9]+")
+MIN_SWITCHES = 10
+MIN_SWITCH_SHARE = 0.4
 # Unless the name ends in env and the value is an environment variable's name.
 NAMES_A_VARIABLE = "env"
 VARIABLE_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
@@ -400,6 +435,13 @@ def add_logged(kind: str, fields: tuple[str, ...], tree: Tree, event: Event) -> 
     add_step(tree, event.get("node"), step)
 
 
+def add_change(tree: Tree, event: Event) -> None:
+    """A change the library tool made, its before and after marked as the tool gives
+    them (marked())."""
+    texts = {key: marked(event.get(key)) for key in ("before", "after")}
+    add_logged("change", CHANGE_FIELDS, tree, event | texts)
+
+
 def end_cell(tree: Tree, event: Event) -> None:
     cell = tree.cells.get(event.get("cell"))
     if cell is not None:
@@ -452,7 +494,7 @@ FOLDS = {
     "think": think,
     "cell.start": start_cell,
     "cell.end": end_cell,
-    "library.change": partial(add_logged, "change", CHANGE_FIELDS),
+    "library.change": add_change,
     "page.open": partial(add_logged, "page", PAGE_FIELDS),
     LEFT_OUT: partial(add_logged, "left_out", LEFT_OUT_FIELDS),
     "usage": add_usage,
@@ -1084,7 +1126,10 @@ def check_no_key(texts: list[str], key_names: list[str]) -> None:
 def with_real_tags(text: str) -> str:
     """The decomposition written as YAML *text* with each line of an assistant turn that
     is a placeholder tag alone, [repl] or [/repl], written as the real one; *text* as it
-    is when it has none, or doesn't read as a decomposition, which the store refuses."""
+    is when it has none, holds a real tag, so wasn't typed, or doesn't read as a
+    decomposition, which the store refuses."""
+    if "<repl>" in text or not any(map(text.__contains__, REAL_TAGS)):
+        return text
     try:
         decomposition = yaml.safe_load(text)
     except yaml.YAMLError:
@@ -1101,7 +1146,41 @@ def with_real_tags(text: str) -> str:
             lines = content.splitlines(keepends=True)
             turn["content"] = "".join(map(tag_written, lines))
             changed = changed or turn["content"] != content
-    return dump(decomposition) if changed else text
+    if not changed:
+        return text
+    # Written in place where that writes the same, as for a block of text, so a copy of
+    # one the tool gave keeps its layout and comments.
+    in_place = LONE_PLACEHOLDER.sub(r"\1<\2repl>\3", text)
+    return (
+        in_place if yaml.safe_load(in_place) == decomposition else dump(decomposition)
+    )
+
+
+def marked(value: Any) -> Any:
+    """*value*, as the tool gives it: each text in it, at any depth, keys included, with
+    each repl tag marked (MARKS)."""
+    return each_text(value, partial(TO_MARK.sub, lambda found: MARKS[found.group()]))
+
+
+def unmarked(value: Any) -> Any:
+    """*value*, as given to the tool, with each mark read back: marked()'s inverse."""
+    return each_text(
+        value, partial(TO_UNMARK.sub, lambda found: UNMARKS[found.group()])
+    )
+
+
+def each_text(value: Any, change: Callable[[str], str]) -> Any:
+    """*value* with each text in it, at any depth, keys included, made *change*(text)."""
+    if type(value) is str:
+        return change(value)
+    if type(value) is dict:
+        return {
+            each_text(key, change): each_text(item, change)
+            for key, item in value.items()
+        }
+    if type(value) in (list, tuple):
+        return [each_text(item, change) for item in value]
+    return value
 
 
 def tag_written(line: str) -> str:
@@ -1133,10 +1212,26 @@ def written_out(value: Any, what: str) -> str:
 
 def from_turns(name: Any, turns: Any) -> str:
     """The worked example *name* written as YAML from its *turns*, as write_decomposition
-    takes them, each as the engine's message, the tags written in."""
+    takes them, each as the engine's message, the tags written in; a LibraryError for a
+    turn whose text holds a tag."""
     if type(name) is not str or type(turns) is not list:
         raise LibraryError(NOT_TURNS)
-    return dump({"name": name, "messages": [turn_message(turn) for turn in turns]})
+    name = unmarked(name)
+    messages = [unmarked(turn_message(turn)) for turn in turns]
+    # Each a dict of texts, as turn_message() checked.
+    for number, turn in enumerate(unmarked(turns), start=1):
+        for field_name, text in turn.items():
+            if found := TAG.search(text):
+                tag = found.group()
+                raise LibraryError(
+                    TAG_IN_TURN.render(
+                        number=number,
+                        field=field_name,
+                        tag=tag,
+                        placeholder=f"[{tag[1:-1]}]",
+                    )
+                )
+    return dump({"name": name, "messages": messages})
 
 
 def turn_message(turn: Any) -> dict[str, str]:
@@ -1158,15 +1253,18 @@ def turn_message(turn: Any) -> dict[str, str]:
     return {"role": "assistant", "content": f"{think}<repl>\n{code}\n</repl>"}
 
 
-def yaml_text(value: Any) -> str:
+def yaml_text(value: Any, typed: Callable[[str], str] = str) -> str:
     """*value*, YAML text or a dict of plain values, as YAML text, from its first line
-    that isn't blank."""
+    that isn't blank, its marks read back (unmarked()) once *typed* has written what was
+    typed."""
     if type(value) is dict and plain(value):
-        return written_out(value, "The YAML")
+        # Read back once checked, as a dict holding itself never ends.
+        written_out(value, "The YAML")
+        return typed(dump(unmarked(value)))
     # Exactly str: a subclass could compare unequal to "root" and still name it.
     if type(value) is not str:
         raise LibraryError(NOT_TEXT)
-    return value.lstrip("\n")
+    return unmarked(typed(value.lstrip("\n")))
 
 
 def check_whole(texts: Iterable[str]) -> None:
@@ -1175,9 +1273,9 @@ def check_whole(texts: Iterable[str]) -> None:
         raise LibraryError(CUT_SHORT)
 
 
-def check_writable(namespace: str, text: str, key_names: list[str]) -> None:
+def check_writable(namespace: str, text: str, key_names: list[str]) -> Any:
     """Raise unless the tool may write the YAML *text* for the namespace named
-    *namespace*."""
+    *namespace*; *text* as data."""
     if type(namespace) is not str:
         raise LibraryError(NOT_TEXT)
     if namespace == ROOT:
@@ -1185,19 +1283,21 @@ def check_writable(namespace: str, text: str, key_names: list[str]) -> None:
     check_size(text, "The YAML")
     check_whole([text])
     # Parsed too, as an escape such as "\x73k-" spells a key the raw text doesn't hold.
-    check_no_key([namespace, text, *texts_in(loaded(text))], key_names)
+    data = loaded(text)
+    check_no_key([namespace, text, *texts_in(data)], key_names)
+    return data
 
 
-def code_problems(text: str) -> list[str]:
-    """Each assistant turn of the decomposition written as YAML *text* whose code, the
+def code_problems(decomposition: dict[str, Any]) -> list[str]:
+    """Each assistant turn of *decomposition*, as data the store took, whose code, the
     <repl> block the engine runs, isn't valid Python."""
     problems = []
-    for number, turn in enumerate(parsed(text).messages, start=1):
-        if turn.role != "assistant":
+    for number, turn in enumerate(decomposition["messages"], start=1):
+        if turn["role"] != "assistant":
             continue
         try:
             parsed_python(
-                running_code(turn.content), f"Turn {number} (assistant)'s code"
+                running_code(turn["content"]), f"Turn {number} (assistant)'s code"
             )
         except LibraryError as error:
             problems.append(str(error))
@@ -1223,16 +1323,31 @@ def plain(value: Any) -> bool:
 
 
 def secret_like(name: Any) -> bool:
-    """Whether *name*, a var's or setting's, reads as a secret's: key, token, secret or
-    password is one of its word parts."""
-    parts = WORD_PART.findall(name) if type(name) is str else []
-    return any(SECRET_WORD.fullmatch(part) for part in parts)
+    """Whether *name*, a var's or setting's, reads as a secret's (SECRET_PART,
+    SECRET_ENDING)."""
+    if type(name) is not str:
+        return False
+    parts = WORD_PART.findall(name)
+    return any(map(SECRET_PART.fullmatch, parts)) or bool(SECRET_ENDING.search(name))
+
+
+def key_shaped(text: str) -> bool:
+    """Whether *text* holds a run of a key's characters that reads as random."""
+    for run in KEY_RUN.findall(text):
+        letters_and_digits = re.sub(r"[^A-Za-z0-9]", "", run)
+        switches = len(ONE_CASE_OR_DIGITS.findall(letters_and_digits)) - 1
+        share = switches / max(len(letters_and_digits), KEY_LENGTH)
+        if switches >= MIN_SWITCHES or share >= MIN_SWITCH_SHARE:
+            return True
+    return False
 
 
 def secret_shaped(name: Any, value: Any) -> bool:
-    """Whether *value*, held under *name*, is text shaped like a key, and not the name of
-    the environment variable that holds one, as a name ending in env gives."""
-    if type(value) is not str or not SECRET_SHAPED.fullmatch(value):
+    """Whether *value*, held under *name*, is text or bytes holding a key, and not the
+    name of the environment variable that holds one, as a name ending in env gives."""
+    if type(value) is bytes:
+        value = value.decode("latin-1")
+    if type(value) is not str or not key_shaped(value):
         return False
     parts = WORD_PART.findall(name) if type(name) is str else []
     names_a_variable = [part.lower() for part in parts[-1:]] == [NAMES_A_VARIABLE]
@@ -1658,6 +1773,16 @@ def module_notes(refusal: str) -> list[str]:
     return notes
 
 
+def giving_marks(method: Callable[..., Any]) -> Callable[..., Any]:
+    """The library tool's *method*, its result given with each repl tag marked."""
+
+    @wraps(method)
+    def given(*args: Any, **kwargs: Any) -> Any:
+        return marked(method(*args, **kwargs))
+
+    return given
+
+
 def build_library(client: Any, params: dict[str, Any]) -> Func:
     """The library tool, over the app file *library* its block in the run's config names,
     for a run of a chat in *namespace*, whose worker holds keys in *key_names*; it builds
@@ -1778,11 +1903,8 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         if turns is not None:
             text = from_turns(yaml if name is None else name, turns)
         else:
-            text = yaml_text(yaml)
-        # A text with a real tag was read back, not typed, so its [repl] is the example's.
-        if "<repl>" not in text:
-            text = with_real_tags(text)
-        check_writable(namespace, text, key_names)
+            text = yaml_text(yaml, typed=with_real_tags)
+        data = check_writable(namespace, text, key_names)
 
         def write() -> tuple[dict[str, Any], Event]:
             stored, before = written(
@@ -1805,7 +1927,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             return stored, change
 
         stored, change = stop_proof(write)
-        broken = code_problems(text)
+        broken = code_problems(data)
         return {**change, "problems": stored["problems"]} | (
             {"code_problems": broken} if broken else {}
         )
@@ -1851,7 +1973,10 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     ) -> dict[str, Any]:
         """Add tool *name*, built by the function *factory* in the Python *source* with
         *settings* as its params, or replace the one of its name."""
+        source = unmarked(source)
         check_tool(name, source, factory, settings, key_names)
+        # Read back once checked, as settings holding themselves never end.
+        settings = unmarked(settings)
         # The grant and the locks first, before the tool's code runs; the build holds no
         # write lock, so they are checked again under it.
         with app_file(library, "ro") as connection:
@@ -1873,13 +1998,13 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         return stop_proof(write)
 
     tool = SimpleNamespace(
-        show=show,
-        tools=tools,
-        changes=changes,
-        write_decomposition=write_decomposition,
-        add_namespace=add,
-        change_namespace=change,
-        write_tool=write_tool,
+        show=giving_marks(show),
+        tools=giving_marks(tools),
+        changes=giving_marks(changes),
+        write_decomposition=giving_marks(write_decomposition),
+        add_namespace=giving_marks(add),
+        change_namespace=giving_marks(change),
+        write_tool=giving_marks(write_tool),
     )
     description = LIBRARY_DESCRIPTION
     if chat_namespace not in editors:

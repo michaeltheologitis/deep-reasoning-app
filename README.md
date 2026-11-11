@@ -185,44 +185,45 @@ imports too.
   all, between `{% raw %}` and `{% endraw %}`), includes another or reaches into Python internals; over 1,000,000
   characters; YAML whose aliases (`*name`) stand for far more than it holds, or giving a key twice, however written
   (`1` and `0x1`, `yes` and `on`; only the last would be read; a row an older version stored so reads as before); a
-  line in the words of one the app adds at run time (below) whose namespace, REPL or hand-offs aren't so there, in a suffix, a var or a worked example,
-  however spaced, cased or split (other wording claims nothing); a name with outer, doubled or odd spaces,
-  invisible characters or a word mixing Latin letters with Cyrillic or Armenian ones (a Cyrillic `а`); a namespace
-  named oddly, with a backbone the engine doesn't know, or with a var whose name isn't a Python name, starts with
-  `_`, is a keyword or built-in, or is a tool's, or taking away a var a worked example there or below reads
-  (`{{ vars.rate }}`); a namespace granting a tool marked ✗ or one the Library lacks; and a namespace granting a tool
-  of yours that no namespace granted yet, if it doesn't build (built first, up to a minute).
+  name with outer, doubled or odd spaces, invisible characters or a word mixing Latin letters with Cyrillic or
+  Armenian ones (a Cyrillic `а`); a namespace named oddly, with a backbone the engine doesn't know, or with a var
+  whose name isn't a Python name, starts with `_`, is a keyword or built-in, or is a tool's, or taking away a var a
+  worked example there or below reads (`{{ vars.rate }}`); a namespace granting a tool marked ✗ or one the Library
+  lacks; and a namespace granting a tool of yours that no namespace granted yet, if it doesn't build (built first, up
+  to a minute).
 - A worked example that still fails as a run renders it (`{{ task.votes.total }}`, `{{ 1/0 }}`), or that is still
-  rendering after 3 seconds, is left out of that agent's prompt, whole, and the run goes on: the
-  agent's steps start with a "Left out" line naming the example, its namespace and why. A template may make no text,
-  list or number past 1,000,000 characters, items or digits, nor pad a field (`center`, `ljust`, `%05d`, `{:>5}`)
-  past that; a suffix or system prompt that would, or that fails otherwise, is sent as written.
+  rendering after 3 seconds, is left out of that agent's prompt, whole, and the run goes on: the agent's steps start
+  with a "Left out" line naming the example, the namespace it is stored in, and the error. A template may make no
+  text, list or number past 1,000,000 characters, items or digits, nor pad a field (`center`, `ljust`, `%05d`,
+  `{:>5}`) past that; a suffix or system prompt that would, or that fails otherwise, is sent as written.
 - A save or delete is refused if what you opened changed meanwhile (the librarian, another tab or an import): your
   draft stays beside what is stored. Any refusal stays shown, and one of what you wrote keeps Save off, until you change
   what you wrote. A delete the panel knows would be refused says why at once. The panel and the
   namespace menu read the Library again when you open the panel or come back to the window.
 - Each run tells the agents of every namespace but root which namespace they are in, so "hand this to stats" reaching
-  `stats` is done there; of one whose REPL isn't the one above it (root: the local one), where their Python runs;
-  and, when it sets `spawn`, where they can hand work. The panel shows that line under its System suffix, "added by
-  the app at run time", and marks a listed namespace that is gone; no save stores a false one.
+  `stats` is done there; of one whose REPL isn't the one above it (root: the local one), where their Python runs,
+  whatever is said above; and, when it sets `spawn`, where they can hand work. The panel shows that line under its
+  System suffix, "added by the app at run time", and marks a listed namespace that is gone. Saving takes any text,
+  a line in these words included: what a shared Library's text tells agents is for you to trust or not.
 - A shared Library's rows the engine can't read are left out, so the rest works, and so is a row that could pass for
   another or hides a mismatch: a worked example with a template no save takes, named with a hidden character, or
   stored under a name its YAML doesn't give; a namespace named with a space, a
   character outside printable ASCII or as root (`Root`, `historian `, `root.stats`); a tool named as no save names
   one (`my-tool`, `json`); YAML whose aliases stand for millions of values. The panel marks each ✗ with why, to fix
-  or delete; an older Library's other names read as before. A false line in a run line's words stays, marked with
-  a ◆ warning. Runs ignore a grant of a tool left out or not there, and the panel warns of it; a left-out tool
-  deletes though granted, its grants left in their YAML, still ignored. A row named as one of the app's own tools
-  is listed apart, after the app's, and Delete removes only the row. Its templates run sandboxed, reaching no Python internals.
+  or delete; an older Library's other names read as before. Runs ignore a grant of a tool left out or not there,
+  and the panel warns of it; a left-out tool deletes though granted, its grants left in their YAML, still ignored.
+  A row named as one of the app's own tools is listed apart, after the app's, and Delete removes only the row. Its
+  templates run sandboxed, reaching no Python internals.
 - Every run builds every tool some namespace grants, whatever its chat's namespace: a granted tool's code runs at the
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never
   runs, but to check it builds. While a run builds its tools, its tree says "starting…".
 - Agents see each tool by the name a namespace grants it under (the engine's `llm` too), with its signature and its
-  `Func` description, else its docstring, which the Tools tab shows. It is built afresh for each message, so its state
-  lasts one message, shared by every agent in that run. A tool that saves its state (the engine's `PersistentTool`) is
-  saved at the end of every run, as every run builds it: two chats running at once can lose each other's entries. An async tool's calls return coroutines, which agents drive
-  with `run_all([...])`, as the REPL has no top-level `await`: a worked example calling it that way helps.
+  `Func` description, else its docstring, indented under it, which the Tools tab shows. It is built afresh for each
+  message, so its state lasts one message, shared by every agent in that run. A tool that saves its state (the
+  engine's `PersistentTool`) is saved at the end of every run, as every run builds it: two chats running at once can
+  lose each other's entries. An async tool's calls return coroutines, which agents drive with `run_all([...])`, as
+  the REPL has no top-level `await`: a worked example calling it that way helps.
 - A tool of yours may not be named as one of Python's built-ins or a module agents' code commonly uses (`len`, `json`,
   `pandas`), which it would hide: the librarian, an import and the panel's grant refuse it. Built to check it (the
   panel, an import), a tool sees no key: only the key variables your shell sets hold a placeholder, as only those
@@ -242,7 +243,9 @@ imports too.
   changing a var, it names the worked examples that hard-code the old value. What all agents should do it leaves
   to root's suffix, which you edit in the panel, rather than spreading it over namespaces.
 - It writes a worked example from its steps (the task; each step's reasoning and code; what the code printed), so
-  it never types the tags that would run the example's code in place of its own.
+  it never types the tags that would run the example's code in place of its own: a step holding one is refused, and
+  every text it reads gives each `<repl>` as `⟦repl⟧`, read back when it writes, so copying a worked example never
+  ends its cell and writing one back changes nothing.
 - Each change shows under its answer and in the tree, opens onto its YAML (or a tool's Python) before and after, and
   applies from your next message; the panel and namespace menu show it at once. Ask it to undo one and it writes the
   before back from the record.
@@ -252,8 +255,10 @@ imports too.
 - It never changes root, a namespace's REPL or backbone, which namespaces grant `library`, `history` or `page`, the
   system prompt or the run settings; never grants a tool that runs Claude Code (billed to your subscription), or adds
   a namespace under one that grants `library` or runs Claude Code; never replaces a tool root grants or one built
-  into the engine, or names one as a built-in or app tool; never deletes; never writes a key, nor a key-shaped
-  value in a var or tool setting named like a secret (`weather_key`, `api_token`; one you stored yourself stays).
+  into the engine, or names one as a built-in or app tool; never deletes; never writes a key, nor a random-looking
+  run of 16 or more letters, digits and `+/=_-` in a var or tool setting named with key, token, secret or password
+  as a word (`weather_key`, `apiKey`) or ending one after what it opens (`privatekey`, not `hotkey` or `tokenizer`);
+  `sort_key: created_at_2024_utc` and `model_token: meta/Llama3x70bInstruct` pass, and one you stored yourself stays.
   Asked to, it says why and how you do it in the panel. These limits guard the tool, not the file: the agent's
   Python isn't sandboxed, and could open the file itself.
 - Any chat can ask about the Library ("what namespaces do I have?", "add a namespace for legal questions"): root hands

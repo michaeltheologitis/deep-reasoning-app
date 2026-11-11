@@ -774,7 +774,7 @@ function noteMark(notes) {
 
 const noteList = (notes) => notes.length > 0 && element("div", { class: "lib-call-notes" }, notes.map((text) => element("p", {}, text)));
 
-// what a namespace agents still run in may need looking at, as a shared file's false run line: ◆ in the warn colour, as a run's Left out line, not a ✗
+// what a namespace agents still run in may need looking at, as a grant runs ignore: ◆ in the warn colour, as a run's Left out line, not a ✗
 function warningMark(warnings) {
   const count = warnings.length;
   const label = `${count} warning${count === 1 ? "" : "s"}`;
