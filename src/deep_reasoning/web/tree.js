@@ -26,11 +26,13 @@ const WORD_CHAR = /(?![\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}
 const NEW_TAB_LINK = '<a target="_blank" rel="noopener noreferrer" ';
 const ANCHOR_TAG = /<\/?a\b[^>]*>/g;
 // what the HTML marked makes may hold, and no more: its tags and attributes, and links to the web, mail or a place in the
-// answer; the app serves nothing at a relative address, such as a file's name in the chat's folder
+// answer; the app serves nothing at a relative address, such as a file's name in the chat's folder. DOMPurify tests that
+// regexp against every attribute it doesn't know to be no address, so the rest are named as none.
 const SANITIZE = {
   ALLOWED_TAGS: ["a", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "input", "li", "ol", "p", "pre", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"],
   ALLOWED_ATTR: ["align", "checked", "class", "disabled", "href", "rel", "start", "target", "title", "type"],
   ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|#)/i,
+  ADD_URI_SAFE_ATTR: ["align", "checked", "disabled", "rel", "start", "target", "type"],
 };
 const THEME_KEY = "theme";
 const LINE_CHARS = 100;

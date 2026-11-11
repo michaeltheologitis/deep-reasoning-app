@@ -23,9 +23,12 @@ def home(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def warnings_afresh(monkeypatch):
-    """Each test's reads warn of what they leave out, as a process's first would."""
+def reads_afresh(monkeypatch):
+    """Each test reads the Library as a process's first read would: nothing kept from
+    another test's, and each warning logged."""
     monkeypatch.setattr(library_module, "WARNED", set())
+    library_module.namespace_read.cache_clear()
+    library_module.decomposition_read.cache_clear()
 
 
 @pytest.fixture

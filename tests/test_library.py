@@ -83,6 +83,7 @@ from deep_reasoning.library import (
     add_decomposition,
     add_namespace,
     change_namespace,
+    decomposition_read,
     default_namespace,
     delete_decomposition,
     delete_namespace,
@@ -92,6 +93,7 @@ from deep_reasoning.library import (
     edit_decomposition,
     engine_config,
     example_calls,
+    fields_of,
     fitting,
     hand_off,
     handed_to,
@@ -1728,6 +1730,140 @@ def test_a_namespace_is_added_at_the_top_and_its_child_inherits_from_it(
     )
 
 
+@pytest.mark.parametrize(
+    ("act", "text", "said"),
+    [
+        (
+            partial(add_namespace, name="notes"),
+            "system_suffix: Be brief.\nvars: {year: 2026}\nsystem_suffix: Be long.\n",
+            "line 3: system_suffix is given twice",
+        ),
+        (
+            partial(add_namespace, name="notes"),
+            "vars:\n  year: 2026\n  city: Leeds\n  year: 2027\n",
+            "line 4: year is given twice",
+        ),
+        (
+            partial(add_decomposition, namespace=ROOT),
+            f"{NO_THINK}name: twice\n",
+            "line 5: name is given twice",
+        ),
+    ],
+    ids=["a-field", "a-var", "a-decomposition's-name"],
+)
+def test_yaml_giving_a_key_twice_is_refused_saying_where(library, act, text, said):
+    before = dumped(library)
+    with pytest.raises(LibraryError, match=f"^{said}; keep one"):
+        change(library, lambda connection: act(connection, text=text))
+    assert dumped(library) == before
+
+
+@pytest.mark.parametrize(
+    ("first", "again"),
+    [
+        ("1", "0x1"),
+        ("1", "1.0"),
+        ("1", "true"),
+        ("true", "yes"),
+        ("on", "yes"),
+        ("null", "~"),
+    ],
+)
+def test_a_key_given_again_written_otherwise_is_refused_saved_and_read_as_the_last(
+    library, first, again
+):
+    text = f"vars:\n  table:\n    {first}: a\n    {again}: b\n"
+    said = f"line 4: {again} is the same key as {first} on line 3; keep one"
+    with pytest.raises(LibraryError, match=f"^{re.escape(said)}"):
+        change(library, add_namespace, "notes", text)
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("notes", text))
+    with closing(open_library(library)) as connection:
+        table = stored_config(connection)["namespaces"]["notes"]["vars"]["table"]
+    assert list(table.values()) == ["b"]
+
+
+GIVEN_TWICE = "is given twice; keep one, as only the last would be read."
+# Rows an older version stored, each giving a key twice.
+OLDER_REPEATS = {
+    "namespaces": (
+        "notes",
+        "tools: [sanitizer]\nsystem_suffix: Be brief.\nsystem_suffix: Be long.\n",
+    ),
+    "decompositions": (ROOT, "no think", f"{NO_THINK}name: no think\n"),
+    "settings": ("repl", "type: restricted\ntype: local\n"),
+    "tools": (
+        "sanitizer",
+        "factory: llm\nsystem_prompt: A.\nsystem_prompt: B.\n",
+        None,
+    ),
+}
+
+
+def plant_older_repeats(library):
+    with closing(open_library(library)) as connection, writing(connection):
+        for table, row in OLDER_REPEATS.items():
+            marks = ", ".join("?" * len(row))
+            connection.execute(f"INSERT OR REPLACE INTO {table} VALUES ({marks})", row)
+
+
+def test_an_older_row_giving_a_key_twice_reads_as_the_last_with_a_warning(library):
+    plant_older_repeats(library)
+    # Kept between reads, so an earlier test may have read the same row.
+    decomposition_read.cache_clear()
+    with capture_logs() as logs, closing(open_library(library)) as connection:
+        config = stored_config(connection)
+        shown = panel(connection)
+    assert config["namespaces"]["notes"]["system_suffix"] == "Be long."
+    root_examples = config["namespaces"][ROOT]["decompositions"]
+    assert "no think" in [each["name"] for each in root_examples]
+    assert config["repl"] == {"type": "local"}
+    assert config["tools"]["sanitizer"]["system_prompt"] == "B."
+    rows = [*shown["namespaces"], *shown["tools"], *shown["run_settings"]]
+    assert [row["problems"] for row in rows if row.get("problems")] == []
+    assert {
+        (entry["table"], entry["row"], entry["why"])
+        for entry in logs
+        if entry["event"] == "library.key_given_twice"
+    } == {
+        ("namespaces", "'notes'", f"line 3: system_suffix {GIVEN_TWICE}"),
+        ("decompositions", "('root', 'no think')", f"line 5: name {GIVEN_TWICE}"),
+        ("settings", "'repl'", f"line 2: type {GIVEN_TWICE}"),
+        ("tools", "'sanitizer'", f"line 3: system_prompt {GIVEN_TWICE}"),
+    }
+
+
+def test_yaml_giving_a_key_twice_read_outside_a_row_reader_logs_nothing():
+    with capture_logs() as logs:
+        fields = fields_of(OLDER_REPEATS["namespaces"][1])
+    assert fields["system_suffix"] == "Be long."
+    assert logs == []
+
+
+def test_an_older_namespace_giving_a_key_twice_changes_by_merge_but_not_as_typed(
+    library,
+):
+    plant_older_repeats(library)
+    typed = OLDER_REPEATS["namespaces"][1]
+    with pytest.raises(LibraryError, match=f"^line 3: system_suffix {GIVEN_TWICE}$"):
+        change(library, change_namespace, "notes", typed + "vars: {year: 2026}\n")
+    change(
+        library, partial(change_namespace, merge=True), "notes", "vars: {year: 2026}"
+    )
+    with closing(open_library(library)) as connection:
+        assert namespace_yaml(connection, "notes") == (
+            "tools:\n- sanitizer\nsystem_suffix: Be long.\nvars:\n  year: 2026\n"
+        )
+
+
+def test_a_key_given_again_over_a_merged_one_is_saved(library):
+    text = "vars:\n  base: &base {city: Leeds, year: 2026}\n  later:\n    <<: *base\n    year: 2027\n"
+    change(library, add_namespace, "terms", text)
+    with closing(open_library(library)) as connection:
+        later = stored_config(connection)["namespaces"]["terms"]["vars"]["later"]
+    assert later == {"city": "Leeds", "year": 2027}
+
+
 @pytest.mark.parametrize("text", [f"# why\n{RESEARCH}", "# fill in later\n"])
 def test_a_namespace_keeps_its_yaml_as_written(library, text):
     change(library, add_namespace, "research", text)
@@ -2073,6 +2209,45 @@ def test_a_namespace_named_to_pass_for_another_is_left_out_saying_why(
     assert shown[name]["usable"] is False
     assert shown[name]["problems"] == [
         f"Its name, {name!a}, {why}, so it could pass for another namespace in the menu."
+    ]
+
+
+LOOKS_LIKE_ANOTHER = "so it could pass for another namespace in the menu."
+ASCII_ONLY = ": namespace names are printable ASCII only."
+
+
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ("notes-\u65e5\u672c", f"(U+65E5){ASCII_ONLY}"),
+        ("notes-\U0001f4d2", f"(U+1F4D2){ASCII_ONLY}"),
+        ("r\u043eot", f"(U+043E), {LOOKS_LIKE_ANOTHER}"),
+        ("\u0394t-estimates", f"(U+0394){ASCII_ONLY}"),
+        ("\u03c0", f"(U+03C0){ASCII_ONLY}"),
+        ("\u03bfdds", f"(U+03BF){ASCII_ONLY}"),
+        ("caf\u00e9", f"(U+00E9){ASCII_ONLY}"),
+        ("\u0280oot", f"(U+0280), {LOOKS_LIKE_ANOTHER}"),
+        ("\u0131dle", f"(U+0131), {LOOKS_LIKE_ANOTHER}"),
+        ("\u0561pp", f"(U+0561), {LOOKS_LIKE_ANOTHER}"),
+        ("\uff52oot", f"(U+FF52), {LOOKS_LIKE_ANOTHER}"),
+        ("\U0001d42bdds", f"(U+1D42B), {LOOKS_LIKE_ANOTHER}"),
+        ("no\u00a0tes", f"(U+00A0), {LOOKS_LIKE_ANOTHER}"),
+        ("ro\u200bot", f"(U+200B), {LOOKS_LIKE_ANOTHER}"),
+    ],
+)
+def test_a_name_beyond_printable_ascii_could_pass_for_another_only_if_it_looks_like_one(
+    library, name, said
+):
+    with pytest.raises(LibraryError) as refused:
+        change(library, add_namespace, name, "")
+    assert str(refused.value).startswith(
+        f"The name holds a character a namespace's name can't {said} A namespace name"
+    )
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, (name, ""))
+    shown = {each["name"]: each for each in panel_of(library)["namespaces"]}
+    assert shown[name]["problems"] == [
+        f"Its name, {name!a}, holds characters a saved name can't {said}"
     ]
 
 
@@ -2959,6 +3134,31 @@ def test_a_namespace_whose_aliases_stand_for_millions_is_refused_in_words(
     with pytest.raises(LibraryError, match=MANY_ALIASES):
         change(library, change_namespace, HISTORIAN, text)
     assert dumped(library) == before
+
+
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        (
+            alias_bomb(6),
+            (
+                "written out, as the engine reads them, it would hold 2,466,238 values"
+                " and characters, where its 352 characters of YAML may stand for 10,704"
+                " at most."
+            ),
+        ),
+        (
+            "vars: {loop: &loop [*loop]}\n",
+            (
+                "one holds itself, so written out, as the engine reads them, it would"
+                " never end."
+            ),
+        ),
+    ],
+)
+def test_an_alias_refusal_says_how_much_they_stand_for(library, text, said):
+    with pytest.raises(LibraryError, match=f"{MANY_ALIASES}: {re.escape(said)}"):
+        change(library, add_namespace, "bomb", text)
 
 
 def test_a_namespace_using_an_alias_or_two_is_saved(library):
