@@ -444,6 +444,22 @@ def why_unrendered(error: Exception) -> str:
     return detail.split("\n", 1)[0][:WHY_CHARS]
 
 
+def where_stored(
+    registry: NamespaceRegistry, left_out: tuple[dict[str, Any], ...]
+) -> tuple[dict[str, Any], ...]:
+    """Each worked example *left_out* with the namespace it is stored in, from, as the
+    *registry* of the agent it was left out for resolves its namespace."""
+    return tuple(
+        each
+        | {
+            "from": registry.resolve(each["namespace"]).sources.decompositions.get(
+                each["name"]
+            )
+        }
+        for each in left_out
+    )
+
+
 def leaving_out_unrendered(recorder: Recorder) -> None:
     """Leave each worked example that fails to render out of its agent's prompt, all its
     turns, telling *recorder* which agent, once it started, so the run goes on, where
@@ -471,7 +487,8 @@ def leaving_out_unrendered(recorder: Recorder) -> None:
         try:
             start(self)
             if left_out := LEFT_OUT_NOW.get():
-                recorder.left_out(self._log_vars["node_id"], left_out)
+                stored = where_stored(self._registry, left_out)
+                recorder.left_out(self._log_vars["node_id"], stored)
         finally:
             LEFT_OUT_NOW.reset(token)
 

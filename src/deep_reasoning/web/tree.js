@@ -402,9 +402,11 @@ function renderPage(step) {
 }
 
 // A worked example the agent wasn't shown, as it couldn't be rendered, and why: each field from the run's record shows as text.
+// why is the error's own text, which a shared file's template can word: quoted as code, never as the app's words
 function renderLeftOut(step) {
-  const head = element("span", { class: "head" }, element("b", {}, LEFT_OUT), ` worked example "${asText(step.name)}" in ${asText(step.namespace)}`);
-  return element("div", { class: "cell left-out" }, element("div", { class: "line" }, element("span"), decor("◆", { class: "glyph" }), head), out(clip(asText(step.why), WHY_CHARS), { tone: "warn", full: true }));
+  const head = element("span", { class: "head" }, element("b", {}, LEFT_OUT), ` worked example "${asText(step.name)}" from ${asText(step.from)}`);
+  const why = ["couldn't be rendered: ", element("code", {}, clip(asText(step.why), WHY_CHARS))];
+  return element("div", { class: "cell left-out" }, element("div", { class: "line" }, element("span"), decor("◆", { class: "glyph" }), head), out(why, { tone: "warn", full: true }));
 }
 
 function stepView(step, root) {

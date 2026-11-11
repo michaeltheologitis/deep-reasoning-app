@@ -1039,10 +1039,11 @@ async def test_a_worked_example_that_fails_as_it_renders_is_left_out_saying_why(
     [root] = kinds(events, "agent.start")
     [left_out] = kinds(events, LEFT_OUT)
     assert events.index(left_out) == events.index(root) + 1
-    assert {key: left_out[key] for key in ("node", "name", "namespace")} == {
+    assert {key: left_out[key] for key in ("node", "name", "namespace", "from")} == {
         "node": root["node"],
         "name": "tally",
         "namespace": ROOT,
+        "from": ROOT,
     }
     assert left_out["why"].startswith(why)
 
@@ -1081,10 +1082,34 @@ async def test_a_sub_agent_is_told_which_of_its_own_worked_examples_it_wasnt_sho
     assert [events[-1]["outcome"], events[-1]["answer"]] == ["answered", "4"]
     _, stats = kinds(events, "agent.start")
     [left_out] = kinds(events, LEFT_OUT)
-    assert [left_out["node"], left_out["namespace"]] == [stats["node"], "stats"]
+    assert [left_out["node"], left_out["namespace"], left_out["from"]] == [
+        stats["node"],
+        "stats",
+        "stats",
+    ]
     assert left_out["why"].startswith(why)
     [asked_stats] = [call for call in fake.calls if "Tally them." in str(call.messages)]
     assert not any(SAMPLE_TALLY in each["content"] for each in asked_stats.messages)
+
+
+@pytest.mark.anyio
+async def test_a_worked_example_left_out_names_the_namespace_it_is_stored_in(
+    library_on, connect
+):
+    plan = {
+        "Ask stats.": [repl("FinalAnswer(subagent('Tally them.', namespace='stats'))")],
+        "Tally them.": [repl("FinalAnswer(4)")],
+    }
+    template, _ = FAILING_AS_RENDERED["a division by zero"]
+    with FakeOpenAI(scripted(plan)) as fake:
+        library = library_on(fake)
+        stored(library, UPSERT_NAMESPACE, "stats", "")
+        stored(library, UPSERT_DECOMPOSITION, ROOT, "tally", tallying(template))
+        events = await ask_plainly_to(library, connect, "Ask stats.")
+    assert [(each["namespace"], each["from"]) for each in kinds(events, LEFT_OUT)] == [
+        (ROOT, ROOT),
+        ("stats", ROOT),
+    ]
 
 
 async def ask_plainly_to(library, connect, prompt):

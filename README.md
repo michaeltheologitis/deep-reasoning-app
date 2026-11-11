@@ -184,10 +184,10 @@ imports too.
   reads (`{{ vars.rate }}`); a namespace granting a tool marked ✗ or one the Library lacks; and a namespace granting
   a tool of yours that no namespace granted yet, if it doesn't build (built first, up to a minute).
 - A worked example that still fails as a run renders it (`{{ task.votes.total }}`, `{{ 1/0 }}`), or that is still
-  rendering after 3 seconds, is left out of that agent's prompt, whole, and the run goes on: the
-  agent's steps start with a "Left out" line naming the example, its namespace and why. A template may make no text,
-  list or number past 1,000,000 characters, items or digits, nor pad a field (`center`, `ljust`, `%05d`, `{:>5}`)
-  past that; a suffix or system prompt that would, or that fails otherwise, is sent as written.
+  rendering after 3 seconds, is left out of that agent's prompt, whole, and the run goes on: the agent's steps start
+  with a "Left out" line naming the example, the namespace it is stored in, and the error. A template may make no
+  text, list or number past 1,000,000 characters, items or digits, nor pad a field (`center`, `ljust`, `%05d`,
+  `{:>5}`) past that; a suffix or system prompt that would, or that fails otherwise, is sent as written.
 - A save or delete is refused if what you opened changed meanwhile (the librarian, another tab or an import): your
   draft stays beside what is stored. Any refusal stays shown, and one of what you wrote keeps Save off, until you change
   what you wrote. A delete the panel knows would be refused says why at once. The panel and the

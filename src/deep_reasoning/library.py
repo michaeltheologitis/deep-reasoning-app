@@ -466,8 +466,8 @@ node is `node`: {kind: "think", text}, {kind: "cell", code, output, status ("don
 "failed", "stopped", or "cut off" by a run that ended otherwise), agents: the nodes of \
 the sub-agents it started}, {kind: "change", what, namespace, name, before (None when \
 added), after}, {kind: "page", page, title} (a page opened for the user) or {kind: \
-"left_out", name, namespace, why} (a worked example the agent wasn't shown, as it \
-couldn't be rendered), each with its drive.
+"left_out", name, namespace, from, why} (a worked example the agent wasn't shown, as it \
+couldn't be rendered, and the namespace it is stored in), each with its drive.
   history.errors(turn=None): what went wrong anywhere in message `turn`, or in every \
 earlier message: each failed cell of any agent, the top one included, as turn, node, \
 namespace (the agent's), task, index (its place in history.steps(turn, node)), error \
