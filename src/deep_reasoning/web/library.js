@@ -1,5 +1,6 @@
 // The Library panel: the decompositions, namespaces, tools and data every run draws on, read from the server's Library file; adding, editing and deleting save there.
 import { LIBRARY_CHANGED, PANEL_CLOSE, TOUCH, caret, chatNamespace, closeOtherPanels, element, libraryChanged, nameParts, request, showPanel } from "./app.js";
+import { shownName } from "./models.js";
 import { turnProblems } from "./turns.js";
 
 const LIBRARY_URL = "api/library";
@@ -567,7 +568,7 @@ function deleteQuestion(namespace) {
   const count = namespace.decompositions.length;
   const what = count ? ` and its ${count} decomposition${count === 1 ? "" : "s"}` : "";
   const fallback = namespace.name === library.default_namespace ? ` New chats will start in ${ROOT} instead.` : "";
-  return [`Delete namespace ${namespace.name}${what}?${fallback}`, ...namespace.deleting].join(" ");
+  return [`Delete namespace ${shownName(namespace.name)}${what}?${fallback}`, ...namespace.deleting].join(" ");
 }
 
 // It sends the count the confirm said, so the server deletes no more than that.
@@ -806,7 +807,7 @@ function renderDecompositions() {
   const groups = library.namespaces
     .filter((namespace) => namespace.decompositions.length)
     .map((namespace) => {
-      const title = namespace.name === ROOT ? `${ROOT} · every namespace inherits these` : namespace.name;
+      const title = namespace.name === ROOT ? `${ROOT} · every namespace inherits these` : shownName(namespace.name);
       return group(title, namespace.decompositions.map((each) => decompositionRow(namespace.name, each)));
     });
   return [addSection(decompositionForm), ...groups];
@@ -834,7 +835,8 @@ function decompositionsField(name) {
 function renderNamespaces() {
   const tree = library.namespaces.map((namespace) => {
     const star = namespace.name === library.default_namespace && element("span", { class: "lib-star" }, "★ new chats start here");
-    const name = element("span", { class: "lib-name ns-name", title: namespace.name }, nameParts(namespace.name));
+    const shown = shownName(namespace.name);
+    const name = element("span", { class: "lib-name ns-name", title: shown }, nameParts(shown));
     const head = [name, star, namespace.problems.length > 0 ? checkMark(namespace.problems) : warningMark(namespace.warnings)];
     const content = () => [problemList(namespace.problems), warningList(namespace.warnings), namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
     return element("div", { style: `--depth: ${namespace.depth}` }, disclosure(namespaceKey(namespace.name), head, content));

@@ -897,6 +897,10 @@ LOOKS_LIKE = (
     "The name holds a character a namespace's name can't (U+{}), so it could pass for"
     " another namespace in the menu."
 )
+ASCII_ONLY = (
+    "The name holds a character a namespace's name can't (U+{}): namespace names are"
+    " printable ASCII only."
+)
 
 
 @pytest.mark.parametrize(
@@ -906,7 +910,10 @@ LOOKS_LIKE = (
         ('"a\\nb"', f'Namespace "a\\nb": {LOOKS_LIKE.format("000A")}'),
         ('"a\\u200bb"', f'Namespace "a\\u200bb": {LOOKS_LIKE.format("200B")}'),
         ("a/b", f'Namespace "a/b": {SHAPE}'),
-        ('"a\\U0001F600"', f'Namespace "a\\U0001f600": {LOOKS_LIKE.format("1F600")}'),
+        (
+            '"a\\U0001F600"',
+            f'Namespace "a\\U0001f600": {ASCII_ONLY.format("1F600")}',
+        ),
         (
             '"h\\u0456storian"',
             f'Namespace "h\\u0456storian": {LOOKS_LIKE.format("0456")}',

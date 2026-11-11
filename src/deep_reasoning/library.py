@@ -722,6 +722,10 @@ COMMON_MODULES = frozenset(
 # Latin is ordinary in maths names, as "Δt estimate".
 LATIN = "LATIN"
 LOOK_ALIKE_SCRIPTS = {"CYRILLIC", "ARMENIAN"}
+# Alphabets whose letters may be drawn as Latin ones, as Greek ο and Cyrillic о are o.
+LATIN_LOOKING = {LATIN, "GREEK", *LOOK_ALIKE_SCRIPTS}
+PASSES_FOR_ANOTHER = ", so it could pass for another namespace in the menu."
+ASCII_ONLY = ": namespace names are printable ASCII only."
 # Characters that don't show: controls and formats, such as a zero-width space.
 INVISIBLE = ("Cc", "Cf")
 # What the engine renders a turn's template against, beside prompt_template_variables.
@@ -2957,10 +2961,10 @@ def check_name(name):
     child, none of them root by another spelling, as root is every namespace's parent."""
     if not name:
         raise LibraryError(NAME_IT)
-    if odd := first_char(name, not_plain):
+    if odd := next(filter(not_plain, name), None):
         raise LibraryError(
-            f"The name holds a character a namespace's name can't ({odd}), so it could"
-            f" pass for another namespace in the menu. {NAME_SHAPE}"
+            f"The name holds a character a namespace's name can't (U+{ord(odd):04X})"
+            f"{beyond_ascii(odd)} {NAME_SHAPE}"
         )
     if not NAMESPACE_NAME.fullmatch(name):
         raise LibraryError(NAME_SHAPE)
@@ -2973,6 +2977,19 @@ def check_name(name):
 
 def not_plain(char):
     return not (char.isascii() and char.isprintable())
+
+
+def beyond_ascii(char):
+    """Why a namespace's name can't hold *char*, outside printable ASCII: it could pass
+    for another if it reads as printable ASCII or as nothing (a letter drawn as Latin, a
+    styled or full-width one, another kind of space, one you can't see)."""
+    looks_plain = (
+        invisible(char)
+        or char.isspace()
+        or script_of(char) in LATIN_LOOKING
+        or unicodedata.normalize("NFKC", char).isascii()
+    )
+    return PASSES_FOR_ANOTHER if looks_plain else ASCII_ONLY
 
 
 def reads_as_root(name):
@@ -2994,17 +3011,17 @@ def check_stored_name(name):
     Library's names stay."""
     if name == ROOT:
         return
-    if odd := first_char(name, not_plain):
-        why = f"holds characters a saved name can't ({odd})"
+    if odd := next(filter(not_plain, name), None):
+        why = (
+            f"holds characters a saved name can't (U+{ord(odd):04X}){beyond_ascii(odd)}"
+        )
     elif name.split(".")[0].strip().lower() == ROOT:
-        why = "reads as root"
+        why = f"reads as root{PASSES_FOR_ANOTHER}"
     elif " " in name:
-        why = "holds a space"
+        why = f"holds a space{PASSES_FOR_ANOTHER}"
     else:
         return
-    raise LibraryError(
-        f"Its name, {name!a}, {why}, so it could pass for another namespace in the menu."
-    )
+    raise LibraryError(f"Its name, {name!a}, {why}")
 
 
 def check_place(connection, name):

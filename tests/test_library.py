@@ -1965,6 +1965,38 @@ def test_a_namespace_named_to_pass_for_another_is_left_out_saying_why(
     ]
 
 
+LOOKS_LIKE_ANOTHER = "so it could pass for another namespace in the menu."
+ASCII_ONLY = ": namespace names are printable ASCII only."
+
+
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ("notes-\u65e5\u672c", f"(U+65E5){ASCII_ONLY}"),
+        ("notes-\U0001f4d2", f"(U+1F4D2){ASCII_ONLY}"),
+        ("r\u043eot", f"(U+043E), {LOOKS_LIKE_ANOTHER}"),
+        ("\u03bfdds", f"(U+03BF), {LOOKS_LIKE_ANOTHER}"),
+        ("caf\u00e9", f"(U+00E9), {LOOKS_LIKE_ANOTHER}"),
+        ("\uff52oot", f"(U+FF52), {LOOKS_LIKE_ANOTHER}"),
+        ("ro\u200bot", f"(U+200B), {LOOKS_LIKE_ANOTHER}"),
+    ],
+)
+def test_a_name_beyond_printable_ascii_could_pass_for_another_only_if_it_looks_like_one(
+    library, name, said
+):
+    with pytest.raises(LibraryError) as refused:
+        change(library, add_namespace, name, "")
+    assert str(refused.value).startswith(
+        f"The name holds a character a namespace's name can't {said} A namespace name"
+    )
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, (name, ""))
+    shown = {each["name"]: each for each in panel_of(library)["namespaces"]}
+    assert shown[name]["problems"] == [
+        f"Its name, {name!a}, holds characters a saved name can't {said}"
+    ]
+
+
 def test_a_row_whose_name_isnt_text_is_left_out_and_listed_nowhere(library):
     unnamed = b"\xff"
     rows = {
