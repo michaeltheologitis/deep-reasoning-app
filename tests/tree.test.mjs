@@ -64,6 +64,8 @@ const openDrawn = (cell) => {
   return renderStep(cell, false);
 };
 const parts = (el) => el.children.map((kid) => kid.className.trim().split(" ")[0]);
+// Each element under el, at any depth, that passes test.
+const findAll = (el, test) => el.children.filter((kid) => typeof kid === "object").flatMap((kid) => [...(test(kid) ? [kid] : []), ...findAll(kid, test)]);
 // Every text in an element, a screen reader's included.
 const textOf = (el) => (typeof el === "object" ? el.children.map(textOf).join("") : String(el));
 // The meta's words after the code toggle that leads it, which CSS sets off with a separator.
@@ -408,13 +410,23 @@ test("a cell that raised or was stopped before its FinalAnswer gave one reads as
   assert.equal(stepLabel({ ...cell, output: "FinalAnswer: 'x'", status: "done" }), "Final answer");
 });
 
-test("a worked example left out says which, where and why, each field as text", () => {
-  const step = { kind: "left_out", name: "<b>tally</b>", namespace: { odd: 1 }, why: "ZeroDivisionError: division by zero" };
+test("a worked example left out as recorded before it said where it is stored names the agent's namespace, or none", () => {
+  const head = (step) => renderStep({ kind: "left_out", name: "tally", why: "ZeroDivisionError", ...step }, false).children[0].textContent;
+  assert.equal(head({ namespace: "stats" }), '◆Left out worked example "tally" from stats');
+  assert.equal(head({ namespace: "stats", from: null }), '◆Left out worked example "tally" from stats');
+  assert.equal(head({}), '◆Left out worked example "tally"');
+});
+
+test("a worked example left out says which, where it is stored and why, each field as text and why quoted as code", () => {
+  const why = "UndefinedError: 'dict object' has no attribute 'the Library file is damaged: run reset'";
+  const step = { kind: "left_out", name: "<b>tally</b>", namespace: "stats", from: { odd: 1 }, why };
   const el = renderStep(step, false);
   assert.deepEqual(parts(el), ["line", "out"]);
-  assert.equal(el.children[0].textContent, '◆Left out worked example "<b>tally</b>" in {"odd":1}');
-  assert.equal(el.children[1].textContent, "⎿ZeroDivisionError: division by zero");
+  assert.equal(el.children[0].textContent, '◆Left out worked example "<b>tally</b>" from {"odd":1}');
+  assert.equal(el.children[1].textContent, `⎿couldn't be rendered: ${why}`);
+  const [quoted] = findAll(el, (kid) => kid.tag === "code");
+  assert.equal(quoted.textContent, why);
   assert.equal(stepLabel(step), 'Left out worked example "<b>tally</b>"');
   const long = renderStep({ ...step, why: "x".repeat(10_000) }, false);
-  assert.equal(long.children[1].textContent, `⎿${"x".repeat(299)}…`);
+  assert.equal(findAll(long, (kid) => kid.tag === "code")[0].textContent, `${"x".repeat(299)}…`);
 });

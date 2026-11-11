@@ -325,11 +325,6 @@ NO_SUB_AGENTS = (
 )
 # Where the panel and show(name) say the lines above come from: the app, never stored.
 ADDED_AT_RUN_TIME = "added by the app at run time"
-# Curly apostrophes, which plain_words() writes straight, as the lines are typed.
-STRAIGHT = {ord(char): "'" for char in "\u2018\u2019\u02bc"}
-# What a run line's placeholder holds when it is made into a pattern (claim_pattern()):
-# a word none of the lines holds.
-CLAIM_SLOT = "claimslot"
 # What a namespace that can't make a worked example's hand-off is shown in its place, by
 # kind: "here" when it is the target or under it, so it answers itself; "record" when only
 # the target reads the chat's record, so it can't; else it answers itself if it can.
@@ -477,8 +472,8 @@ node is `node`: {kind: "think", text}, {kind: "cell", code, output, status ("don
 "failed", "stopped", or "cut off" by a run that ended otherwise), agents: the nodes of \
 the sub-agents it started}, {kind: "change", what, namespace, name, before (None when \
 added), after}, {kind: "page", page, title} (a page opened for the user) or {kind: \
-"left_out", name, namespace, why} (a worked example the agent wasn't shown, as it \
-couldn't be rendered), each with its drive.
+"left_out", name, namespace, from, why} (a worked example the agent wasn't shown, as it \
+couldn't be rendered, and the namespace it is stored in), each with its drive.
   history.errors(turn=None): what went wrong anywhere in message `turn`, or in every \
 earlier message: each failed cell of any agent, the top one included, as turn, node, \
 namespace (the agent's), task, index (its place in history.steps(turn, node)), error \
@@ -542,13 +537,16 @@ to namespace `namespace`, or replaces the one of that name there. Agents copy it
 write it as they work. turns is a list of dicts, in order: {"user": the task}; then \
 each step, {"think": its reasoning, "code": the Python it runs}, each but the last \
 followed by {"observation": what its code printed}; the last step's code calls \
-FinalAnswer(...), which ends the run, so no observation follows it. Type no tags: the tool writes the engine's <think>, <repl> and \
-<observation> around them, as the last <repl> block in your reply is the one that runs. \
+FinalAnswer(...), which ends the run, so no observation follows it. Type no tags, in \
+any text: the tool writes the engine's <think>, <repl> and <observation> around them, as \
+the last <repl> block in your reply is the one that runs, and refuses a text holding one. \
 Give each code as a raw string over several lines (r\"\"\"…\"\"\"), so the escapes you \
 type stay in its Python. To fix or change one, write it again from turns. \
 write_decomposition(namespace, yaml) takes a decomposition's whole YAML instead, as \
-show(name) and changes() give it, and writes it as it is: to change a few words of a \
-stored one, .replace(...) them in its yaml in your cell, never with text holding a tag. \
+show(name) and changes() give it. Every text this tool gives writes <repl> and </repl> \
+as ⟦repl⟧ and ⟦/repl⟧, so a copy never ends your cell, and every text it takes reads \
+them back as the tags. To change a few words of a stored one, .replace(...) them in its \
+yaml in your cell, never with text holding a tag. \
 It is stored even when it isn't yet a worked example like that: the \
 result's problems lists each way it isn't (empty when none), and until you write it \
 again without them the Library panel marks it ✗. The result's code_problems, when \
@@ -1760,6 +1758,12 @@ def overrides(own, above, shown, swaps):
     }
 
 
+# Where the worked examples each namespace's agents see are stored, by namespace and
+# name, before a run copies some (without_impossible_hand_offs()): the worker names a
+# left-out one by it. A key of the run's config the engine ignores.
+EXAMPLES_STORED_IN = "examples_stored_in"
+
+
 def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     """The Library as one plain dict that V2Config accepts, for run *run* of *chat*, which
     enters *namespace*; the run's model and client are the chat's to put in.
@@ -1799,11 +1803,16 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     }
     for name in APP_TOOLS.keys() & config["tools"]:
         config["tools"][name] |= told
+    stored_in = {}
     try:
         resolved, registry = run_config_and_registry(config)
         editors = [
             name for name in registry.names if sees(registry, name, LIBRARY_TOOL)
         ]
+        stored_in = {
+            name: dict(registry.resolve(name).sources.decompositions)
+            for name in registry.names
+        }
         config = without_impossible_hand_offs(config, resolved, registry)
         config = with_run_lines(config, registry)
     except ValueError as error:
@@ -1812,14 +1821,15 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
         editors = []
     if LIBRARY_TOOL in config["tools"]:
         config["tools"][LIBRARY_TOOL]["editors"] = editors
-    return config | {"entry_namespace": namespace}
+    return config | {"entry_namespace": namespace, EXAMPLES_STORED_IN: stored_in}
 
 
 def with_run_lines(config, registry):
     """*config* with each of run_lines() after its namespace's own system_suffix, a
-    blank line between, for its run only: the Library holds none."""
+    blank line between, for its run only: the Library holds none. A bare root, as one
+    left out runs, is given its own."""
     for name, line in run_lines(registry).items():
-        fields = config["namespaces"][name]
+        fields = config["namespaces"].setdefault(name, {})
         own = (fields.get("system_suffix") or "").rstrip("\n")
         fields["system_suffix"] = "\n\n".join(filter(None, [own, line]))
     return config
@@ -2092,97 +2102,6 @@ def loaded(text, repeated=None):
             " can hold; write the whole character instead."
         )
     return data
-
-
-def false_claims(registry, namespace, texts):
-    """Each line of *texts*, namespace *namespace*'s own (its fields' or a worked
-    example's), in the words of one a run adds after a suffix (CLAIMS), that isn't so
-    there: which namespace its agents are in, where their Python runs, or where they may
-    hand work; as (what it says, what is so), however spaced, cased or split."""
-    resolved = registry.resolve(namespace)
-    repl, spawn = resolved.repl.type, resolved.spawn
-    allowed = (
-        None if spawn is None else [each for each in spawn if each in registry.names]
-    )
-    may = "any namespace" if allowed is None else ", ".join(allowed) or "no namespace"
-    actual = {
-        "namespace": namespace.casefold(),
-        "repl": repl.casefold(),
-        "hands": None if allowed is None else frozenset(map(str.casefold, allowed)),
-    }
-    truth = {
-        "namespace": f"its agents are in {namespace}",
-        "repl": f"its agents' Python runs in the {repl} REPL",
-        "hands": f"its agents may hand work to {may}",
-    }
-    return [
-        (line.group(), truth[kind])
-        for words in map(plain_words, texts)
-        for kind, pattern, claimed in CLAIMS
-        for line in pattern.finditer(words)
-        if claimed(line.groupdict().get(CLAIM_SLOT)) != actual[kind]
-    ]
-
-
-def claim_refusal(where, claim, ending="agents would believe it, so take it out"):
-    """What a text *where* holds that makes *claim* (false_claims()), as a save refuses
-    it, or with another *ending*, as the panel warns of a shared file's."""
-    said, truth = claim
-    return (
-        f"{where} holds “{said}”, shaped like a line the app adds at run time, but"
-        f" {truth}: {ending}."
-    )
-
-
-def plain_words(text):
-    """*text* as its words read: in its compatible forms (NFKC, so a non-breaking or
-    full-width space is a space), without the characters that don't show, apostrophes
-    straight, each run of spaces and line breaks one space, case folded."""
-    text = unicodedata.normalize("NFKC", text)
-    unseen = {ord(char): None for char in set(text) if unseen_char(char)}
-    return " ".join(text.translate(unseen | STRAIGHT).split()).casefold()
-
-
-def unseen_char(char):
-    return unicodedata.category(char) in INVISIBLE and not char.isspace()
-
-
-def claim_pattern(line, stop, slot=r"\S+"):
-    """The leading clause of a run's *line*, rendered with CLAIM_SLOT in its placeholder,
-    up to *stop*, as a pattern of text as plain_words() writes it, the placeholder a
-    group matching *slot*: what follows the clause may be anything, as "…, so you may
-    change the Library"."""
-    clause = plain_words(line).partition(stop)[0]
-    held = re.escape(clause).replace(CLAIM_SLOT, f"(?P<{CLAIM_SLOT}>{slot})")
-    return re.compile(rf"(?<!\w){held}")
-
-
-# The leading clause of each line a run adds, as (what it is of, its pattern, the value
-# a match claims): which namespace its agents are in, where their Python runs, and where
-# they may hand work, each as the app words it; any other wording claims nothing.
-CLAIMS = (
-    (
-        "namespace",
-        claim_pattern(HERE_LINE.render(name=CLAIM_SLOT, above=False, loops=False), "."),
-        str,
-    ),
-    (
-        "repl",
-        claim_pattern(SANDBOX_LINE.render(type=LOCAL_REPL, local=LOCAL_REPL), ","),
-        lambda _: LOCAL_REPL,
-    ),
-    (
-        "repl",
-        claim_pattern(SANDBOX_LINE.render(type=CLAIM_SLOT, local=LOCAL_REPL), ","),
-        str,
-    ),
-    (
-        "hands",
-        claim_pattern(SPAWN_LINE.render(allowed=[CLAIM_SLOT], above=False), ";", ".+?"),
-        lambda listed: frozenset(listed.split(", ")),
-    ),
-    ("hands", claim_pattern(NO_SUB_AGENTS, ":"), lambda _: frozenset()),
-)
 
 
 def check_aliases(data, text):
@@ -2635,19 +2554,13 @@ def template_problems(decomposition, names):
     return [each for each in found if each]
 
 
-def check_example(connection, namespace, decomposition):
-    """Raise unless every turn of *decomposition* is a template the engine renders, and
-    none makes a claim in the shape of a run's line that isn't so in *namespace*."""
-    config, registry = config_and_registry(connection)
+def check_templates(connection, decomposition):
+    """Raise unless every turn of *decomposition* is a template the engine renders."""
+    config, _ = config_and_registry(connection)
     names = template_names(config.prompt_template_variables)
     problems = template_problems(decomposition, names)
     if problems:
         raise LibraryError("\n".join(problems))
-    texts = texts_in(decomposition.model_dump())
-    if namespace in registry.names and (
-        claims := false_claims(registry, namespace, texts)
-    ):
-        raise LibraryError(claim_refusal("It", claims[0]))
 
 
 def running_code(content):
@@ -2770,7 +2683,7 @@ def add_decomposition(connection, namespace, text, replace=False, allowed=None):
         found = stored_decomposition(connection, namespace, name)
         if found is not None and not replace:
             raise already_has(namespace, name)
-        check_example(connection, namespace, decomposition)
+        check_templates(connection, decomposition)
         connection.execute(UPSERT_DECOMPOSITION, tuple(stored.values()))
     problems = example_problems(decomposition)
     return stored | {"problems": problems}, found
@@ -2816,7 +2729,7 @@ def edit_decomposition(connection, namespace, name, was, text):
     check_size(text, "A decomposition's YAML")
     decomposition = parsed(text)
     with writing(connection):
-        check_example(connection, namespace, decomposition)
+        check_templates(connection, decomposition)
         # In its place, so the decompositions stay in the order they were added.
         try:
             edited = connection.execute(
@@ -3024,8 +2937,6 @@ def check_written(connection, name, adding, vars_before):
         raise LibraryError(read["namespaces_left"][name])
     check_fields(connection, registry.config(name), adding, read)
     own = read["namespaces"].get(name, {})
-    if claims := false_claims(registry, name, texts_in(own)):
-        raise LibraryError(claim_refusal("Its YAML", claims[0]))
     if ignored := ignored_grants(read, own.get("tools", [])):
         raise LibraryError("\n".join(ignored))
     below = [each for each in registry.names if name in registry.chain(each)]
@@ -3953,37 +3864,17 @@ def namespace_rows(read, config, registry, chats=None):
             ),
             "usable": usable(name, left),
             "problems": left[name].splitlines() if name in left else [],
-            "warnings": (
-                warnings_of(read, registry, name, decompositions[name])
-                if name in readable
-                else []
-            ),
+            "warnings": warnings_of(read, name) if name in readable else [],
             "refusal": namespace_refusal(spawns, name),
         }
         for name in spawns
     ]
 
 
-def warnings_of(read, registry, name, rows):
+def warnings_of(read, name):
     """What the panel warns of namespace *name* of the Library *read*, as a shared file
-    may hold it: a claim its own fields or worked examples (*rows*, as
-    read_decompositions() reads them) make in the shape of a run's line that isn't so
-    there, and each grant runs ignore (ignored_grants())."""
-    own = read["namespaces"].get(name, {})
-    examples = [
-        (f'Its worked example "{row["name"]}"', row["decomposition"].model_dump())
-        for row in rows
-        if row["decomposition"] is not None
-    ]
-    believed = "its agents may believe it"
-    return [
-        *(
-            claim_refusal(where, claim, believed)
-            for where, data in [("Its YAML", own), *examples]
-            for claim in false_claims(registry, name, texts_in(data))
-        ),
-        *ignored_grants(read, own.get("tools", [])),
-    ]
+    may hold it: each grant runs ignore (ignored_grants())."""
+    return ignored_grants(read, read["namespaces"].get(name, {}).get("tools", []))
 
 
 def hand_offs_made(registry, calls):

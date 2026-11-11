@@ -52,8 +52,8 @@ const FOLDS = {
   "cell.end": endCell,
   "library.change": addChange,
   "page.open": addPage,
-  // a worked example the agent wasn't shown, as it couldn't be rendered
-  "example.left_out": (fold, { node, name, namespace, why }) => addStep(fold, node, { kind: "left_out", name, namespace, why }),
+  // a worked example the agent wasn't shown, as it couldn't be rendered, and the namespace it is stored in
+  "example.left_out": (fold, { node, name, namespace, from, why }) => addStep(fold, node, { kind: "left_out", name, namespace, from, why }),
   usage: addUsage,
   "agent.end": endAgent,
   "turn.end": endTurn,

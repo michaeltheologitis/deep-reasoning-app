@@ -17,6 +17,7 @@ import re
 import select
 import signal
 import sys
+import textwrap
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -45,7 +46,12 @@ from genai_prices import Usage, calc_price
 from openai.resources.chat.completions import AsyncCompletions
 
 from deep_reasoning.app_tools import CLAUDE_CODE
-from deep_reasoning.library import granted_in, in_chain_order, sandbox_templates
+from deep_reasoning.library import (
+    EXAMPLES_STORED_IN,
+    granted_in,
+    in_chain_order,
+    sandbox_templates,
+)
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
     FINAL_ANSWER,
@@ -147,13 +153,14 @@ def detail_of(error: BaseException) -> str:
 def tool_line(name: str, value: Any, description: str) -> str:
     """The line agents are shown for tool *name*, as the engine's func.describe words
     one, but by *name*: what they call, with its signature where Python reads one, or
-    the name alone for an object they use through its methods."""
+    the name alone for an object they use through its methods. Each line of its
+    *description* is indented under it, as one there reads as the system prompt's own."""
     if callable(value):
         try:
             name += str(inspect.signature(value))
         except (TypeError, ValueError):
             name += "(...)"
-    body = f"\n  {description}" if description else ""
+    body = f"\n{textwrap.indent(description, '  ')}" if description else ""
     return f"- `{name}`{body}"
 
 
@@ -443,10 +450,24 @@ def why_unrendered(error: Exception) -> str:
     return detail.split("\n", 1)[0][:WHY_CHARS]
 
 
-def leaving_out_unrendered(recorder: Recorder) -> None:
+def where_stored(
+    stored_in: dict[str, dict[str, str]], left_out: tuple[dict[str, Any], ...]
+) -> tuple[dict[str, Any], ...]:
+    """Each worked example *left_out* with the namespace it is stored in, from, by
+    *stored_in* (EXAMPLES_STORED_IN); None if it doesn't say."""
+    return tuple(
+        each | {"from": stored_in.get(each["namespace"], {}).get(each["name"])}
+        for each in left_out
+    )
+
+
+def leaving_out_unrendered(
+    recorder: Recorder, stored_in: dict[str, dict[str, str]]
+) -> None:
     """Leave each worked example that fails to render out of its agent's prompt, all its
-    turns, telling *recorder* which agent, once it started, so the run goes on, where
-    the engine would end it. A stop is no failure to render: it isn't an Exception."""
+    turns, telling *recorder* which agent, once it started, and where the example is
+    stored (*stored_in*), so the run goes on, where the engine would end it. A stop is
+    no failure to render: it isn't an Exception."""
     rendered_turns = agent._rendered_turns
     start = agent.DeepReasonerAgentBase._start
 
@@ -470,7 +491,8 @@ def leaving_out_unrendered(recorder: Recorder) -> None:
         try:
             start(self)
             if left_out := LEFT_OUT_NOW.get():
-                recorder.left_out(self._log_vars["node_id"], left_out)
+                stored = where_stored(stored_in, left_out)
+                recorder.left_out(self._log_vars["node_id"], stored)
         finally:
             LEFT_OUT_NOW.reset(token)
 
@@ -593,7 +615,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     configure_structlog_fixture(console=False, extra_processors=[recorder])
     keep_app_logs_out_of_cells()
     counting_calls(recorder)
-    leaving_out_unrendered(recorder)
+    leaving_out_unrendered(recorder, spec["config"].get(EXAMPLES_STORED_IN, {}))
     threading.Thread(target=read_commands, args=(stdin, stop), daemon=True).start()
     # A tool that doesn't build while the run builds the config's tools, at its start,
     # stops every run; one that doesn't later is that run's own failure.

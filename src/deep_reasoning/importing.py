@@ -41,12 +41,10 @@ from deep_reasoning.library import (
     check_tool_block,
     check_tool_name,
     check_written,
-    claim_refusal,
     config_of,
     decomposition_problems,
     dump,
     expanded_shape,
-    false_claims,
     granted,
     granted_in,
     handed_to,
@@ -462,19 +460,6 @@ def check_namespaces(connection, before, changes):
             check_written(connection, name, held is None, (held or {}).get("vars", {}))
 
 
-def check_claims(changes, registry):
-    """Raise unless each decomposition the import writes makes no claim in the shape of a
-    run's line that isn't so in its namespace, as *registry* resolves it."""
-    for (namespace, name), each in changes["decompositions"].items():
-        if namespace in registry.names and (
-            claims := false_claims(registry, namespace, texts_in(each))
-        ):
-            refusal = claim_refusal("It", claims[0])
-            raise LibraryError(
-                f'Namespace {namespace}, decomposition "{name}": {refusal}'
-            )
-
-
 def check_renders(changes, decompositions, names, stored):
     """Raise unless each decomposition the import writes renders, its templates reading
     only *names*, as the panel refuses one that doesn't, and so does each of the
@@ -661,7 +646,6 @@ def import_config(connection, path, secrets=(), environment=None, within=None):
         store_changes(connection, changes)
         later = accepted(connection)
         check_namespaces(connection, before, changes)
-        check_claims(changes, later[1])
         names = template_names(later[0].prompt_template_variables)
         check_renders(changes, decompositions, names, read["decompositions"])
         built = to_build(before, imported, changes)
