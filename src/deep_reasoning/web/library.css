@@ -14,8 +14,9 @@
 }
 .library[hidden] { display: none; }
 @media (min-width: 1200px) { .library { grid-column: 3; grid-row: 1; } }
+/* over the page, which it leaves out of reach (inert, in app.js), dimmed as the open drawer dims it; a tap there closes it */
 @media (max-width: 1199px) {
-  .library { position: fixed; inset: 0 0 0 auto; z-index: 6; box-shadow: -10px 0 30px color-mix(in srgb, var(--fg) 14%, transparent); }
+  .library { position: fixed; inset: 0 0 0 auto; z-index: 6; box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.35); }
 }
 @media (max-width: 720px) {
   .library { --deepest-indent: 3; width: 100%; border-left: 0; box-shadow: none; padding-top: env(safe-area-inset-top, 0px); }

@@ -61,6 +61,8 @@ const HELD_HERE = "here";
 const HELD_ELSEWHERE = "elsewhere";
 // the width at which the chat list is a drawer, as style.css has it
 const PHONE = matchMedia("(max-width: 720px)");
+// the widths at which a side panel lies over the page, as library.css has it
+const OVERLAID = matchMedia("(max-width: 1199px)");
 const SCRATCH_NAME = "scratch";
 const SCRATCH_PICK = "Use a scratch folder";
 const FOLDER_NAME_CHARS = 24;
@@ -359,7 +361,7 @@ function setDrawer(open) {
   (byId("chats").querySelector("[aria-current]") ?? byId("new-chat")).focus();
 }
 
-// By Esc, or the drawer's own ×, as ☰ is under the page it makes inert: focus goes back to ☰.
+// By Esc, the drawer's own close, or a tap beside it, as ☰ is under the page it makes inert: focus goes back to ☰.
 function shutDrawer() {
   setDrawer(false);
   byId("menu").focus();
@@ -381,18 +383,23 @@ function showPanel(panel, toggle, open) {
   (opener?.isConnected && opener.checkVisibility() ? opener : toggle).focus();
 }
 
-// At phone width a side panel covers the whole page, and the open drawer the chat, so nothing behind either takes focus, as
-// the shut drawer takes none.
+// Short of the room for a side panel beside the chat, it lies over the page, the whole of it on a phone, and the open drawer over
+// the chat, so nothing behind either takes focus, as the shut drawer takes none.
 function coverPage() {
-  const covered = PHONE.matches && document.querySelector(".library:not([hidden])") !== null;
+  const panel = document.querySelector(".library:not([hidden])");
+  const covered = OVERLAID.matches && panel !== null;
   const sidebar = byId("sidebar");
   byId("main").inert = covered || drawerOpen();
   byId("skip").inert = byId("main").inert;
-  sidebar.inert = PHONE.matches && (covered || !drawerOpen());
-  // the open drawer is a modal dialog, the page under it out of reach
-  sidebar.setAttribute("role", drawerOpen() ? "dialog" : "complementary");
-  if (drawerOpen()) sidebar.setAttribute("aria-modal", "true");
-  else sidebar.removeAttribute("aria-modal");
+  sidebar.inert = covered || (PHONE.matches && !drawerOpen());
+  // the open drawer, or a side panel over the page, is a modal dialog, the page under it out of reach
+  for (const each of [sidebar, ...document.querySelectorAll(".library")]) modal(each, each === sidebar ? drawerOpen() : covered && each === panel);
+}
+
+function modal(el, is) {
+  el.setAttribute("role", is ? "dialog" : "complementary");
+  if (is) el.setAttribute("aria-modal", "true");
+  else el.removeAttribute("aria-modal");
 }
 
 function keepScroll(scroll, draw) {
@@ -1390,13 +1397,20 @@ function wire() {
   for (const id of ["namespace", "model", "folder"]) byId(id).addEventListener("mousedown", (e) => e.preventDefault());
   byId("menu").addEventListener("click", () => setDrawer(!drawerOpen()));
   byId("drawer-close").addEventListener("click", shutDrawer);
-  // the event's path, as a click in the list may redraw the row it landed on; a side panel lies over the drawer, not outside it
+  // the event's path, as a click in the list may redraw the row it landed on; a side panel lies over the drawer, not outside it.
+  // A tap on what a side panel lies over, inert, lands on the app itself, and closes it, as one beside the drawer shuts that.
   const inside = ["sidebar", "menu", "settings", "library"].map(byId);
   byId("app").addEventListener("click", (e) => {
+    const panel = document.querySelector(".library:not([hidden])");
+    if (panel && OVERLAID.matches) {
+      if (e.target === byId("app")) panel.dispatchEvent(new Event(PANEL_CLOSE));
+      return;
+    }
     const path = e.composedPath();
-    if (drawerOpen() && !inside.some((el) => path.includes(el))) setDrawer(false);
+    if (drawerOpen() && !inside.some((el) => path.includes(el))) shutDrawer();
   });
   PHONE.addEventListener("change", () => setDrawer(false));
+  OVERLAID.addEventListener("change", coverPage);
   setDrawer(false);
   window.addEventListener("focus", comeBack);
   document.addEventListener("visibilitychange", () => {

@@ -116,7 +116,8 @@ imports too.
   marked missing; a namespace named with more than plain ASCII, as only a shared file may hold, shows escaped
   (`'r\u043eot'`), as the Library panel writes it.
 - Light and dark themes with text at WCAG AA contrast; phone width, where the chats are a drawer (☰; its × or Esc shuts it)
-  and the Library and settings fill the screen, each leaving what is under it out of reach; on a touch screen a
+  and the Library and settings fill the screen; narrower than 1,200 px these lie over the page, each leaving what is
+  under it out of reach, dimmed (a tap there closes it); on a touch screen a
   **send** button sends, Enter makes a new line, a chat picked from the list leaves the keyboard down, and rows and
   tree lines are a finger's height. A skip link leads to the message box.
   No internet needed: the page loads nothing but the app.
