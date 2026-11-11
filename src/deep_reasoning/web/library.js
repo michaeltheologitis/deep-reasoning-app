@@ -125,8 +125,9 @@ const tabButtons = TABS.map((name) =>
   element("button", { type: "button", role: "tab", class: "lib-tab", id: `library-tab-${name.toLowerCase()}`, "aria-controls": body.id, onclick: () => selectTab(name) }, name),
 );
 panel.append(
+  // not a header, which in a panel that isn't an aside would read as the page's banner
   element(
-    "header",
+    "div",
     { class: "lib-head" },
     element("h2", { class: "lib-title" }, "Library", fileName),
     element("button", { type: "button", class: "lib-close", "aria-label": "Close the Library", onclick: () => setOpen(false) }, "×"),

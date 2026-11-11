@@ -40,8 +40,9 @@ const folderButton = pickerButton("default-folder", "dialog", folderName, pickDe
 folderButton.setAttribute("aria-describedby", "default-folder-missing default-folder-note");
 
 panel.append(
+  // not a header, which in a panel that isn't an aside would read as the page's banner
   element(
-    "header",
+    "div",
     { class: "lib-head" },
     element("h2", { class: "lib-title" }, "Settings", element("span", { class: "lib-filename" }, ` · ${ENV_FILE}`)),
     element("button", { type: "button", class: "lib-close", "aria-label": "Close the settings", onclick: () => setOpen(false) }, "×"),
