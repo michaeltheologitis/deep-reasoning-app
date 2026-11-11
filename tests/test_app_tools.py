@@ -1765,7 +1765,7 @@ LIVE_KEY = "sk-live-4eC39HqLyjWDarjtT1zdp7dc"
         ({"api_keys": [WEATHER_KEY, OWM_KEY]}, ["api_keys"]),
         ({"weather": {"settings": [{"token": OWM_KEY}]}}, ["token"]),
         ({"api_key_env": LIVE_KEY}, ["api_key_env"]),
-        ({"privatekey": OWM_KEY, "keyboard": WEATHER_KEY}, ["keyboard", "privatekey"]),
+        ({"privatekey": OWM_KEY, "keyboard": WEATHER_KEY}, ["privatekey"]),
         ({"auth_token": f"Bearer {OWM_KEY}"}, ["auth_token"]),
         ({"basic_token": f"user:{LIVE_KEY}"}, ["basic_token"]),
     ],
@@ -1841,11 +1841,11 @@ VALUES_READ_AS_KEYS = [
 ]
 
 
-def refused_as_a_key(library, value):
-    """Whether the library tool refuses *value* under a var named api_key, as a key."""
-    refusal = SECRET_LIKE.render(field="vars", names=["api_key"])
+def refused_as_a_key(library, value, name="api_key"):
+    """Whether the library tool refuses *value* under a var named *name*, as a key."""
+    refusal = SECRET_LIKE.render(field="vars", names=[name])
     try:
-        library_tool(library).change_namespace("drafts", {"vars": {"api_key": value}})
+        library_tool(library).change_namespace("drafts", {"vars": {name: value}})
     except LibraryError as error:
         if refusal not in str(error):
             raise
@@ -1862,6 +1862,38 @@ def test_a_value_under_a_secrets_name_is_refused_just_when_it_reads_as_a_key(
     fresh, value, is_key
 ):
     assert refused_as_a_key(fresh, value) == is_key
+
+
+# Names of vars, and whether each reads as a secret's: key, token, secret or password as
+# a word part, or ending a word after one that says what it opens, but not starting one.
+NAMES_READ_AS_SECRETS = [
+    ("api_key", True),
+    ("owmApiKey", True),
+    ("OPENWEATHER_TOKEN", True),
+    ("client_secret", True),
+    ("Password", True),
+    ("api_keys", True),
+    ("token2", True),
+    ("privatekey", True),
+    ("apikey", True),
+    ("AUTHTOKEN", True),
+    ("tokenizer", False),
+    ("keywords", False),
+    ("hotkey", False),
+    ("keyboard", False),
+    ("monkey", False),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "is_secret"),
+    NAMES_READ_AS_SECRETS,
+    ids=[each for each, _ in NAMES_READ_AS_SECRETS],
+)
+def test_a_key_is_refused_under_a_name_just_when_it_reads_as_a_secrets(
+    fresh, name, is_secret
+):
+    assert refused_as_a_key(fresh, OWM_KEY, name) == is_secret
 
 
 def test_a_key_written_as_binary_yaml_is_refused(fresh):

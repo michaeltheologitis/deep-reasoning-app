@@ -211,8 +211,15 @@ LOCKED_FIELDS = {
     ),
 }
 USERS_CHOICE = "the user's choice, in the Library panel's Namespaces tab (Edit YAML)."
-# A var's or tool setting's name holding one of these reads as a secret's.
-SECRET_WORD = re.compile(r"key|token|secret|password", re.IGNORECASE)
+# A var's or tool setting's name reads as a secret's when one of these, or its plural, is
+# one of its word parts, or ends it after a word saying what it opens (apikey, authtoken),
+# but not when it starts a longer word (tokenizer, keywords) or ends another (hotkey).
+SECRET_WORDS = "(?:key|token|secret|password)s?"
+SECRET_PART = re.compile(SECRET_WORDS, re.IGNORECASE)
+SECRET_ENDING = re.compile(
+    rf"(?:api|auth|access|private|client|session|refresh|bearer|secret|pass){SECRET_WORDS}$",
+    re.IGNORECASE,
+)
 WORD_PART = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
 # And a value holding a run of a key's characters this long, whose letters and digits
 # switch between lowercase, uppercase and digits this often, or for this share of them,
@@ -1312,9 +1319,12 @@ def plain(value: Any) -> bool:
 
 
 def secret_like(name: Any) -> bool:
-    """Whether *name*, a var's or setting's, reads as a secret's: it holds key, token,
-    secret or password."""
-    return type(name) is str and SECRET_WORD.search(name) is not None
+    """Whether *name*, a var's or setting's, reads as a secret's (SECRET_PART,
+    SECRET_ENDING)."""
+    if type(name) is not str:
+        return False
+    parts = WORD_PART.findall(name)
+    return any(map(SECRET_PART.fullmatch, parts)) or bool(SECRET_ENDING.search(name))
 
 
 def key_shaped(text: str) -> bool:
