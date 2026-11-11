@@ -247,8 +247,9 @@ imports too.
   system prompt or the run settings; never grants a tool that runs Claude Code (billed to your subscription), or adds
   a namespace under one that grants `library` or runs Claude Code; never replaces a tool root grants or one built
   into the engine, or names one as a built-in or app tool; never deletes; never writes a key, nor a random-looking
-  run of 16 or more letters and digits in a var or tool setting whose name holds key, token, secret or password
-  (`weather_key`, `privatekey`; `sort_key: created_at_2024_utc` passes, and one you stored yourself stays).
+  run of 16 or more letters, digits and `+/=_-` in a var or tool setting whose name holds key, token, secret or
+  password (`weather_key`, `privatekey`; `sort_key: created_at_2024_utc` and `model_token: meta/Llama3x70bInstruct`
+  pass, and one you stored yourself stays).
   Asked to, it says why and how you do it in the panel. These limits guard the tool, not the file: the agent's
   Python isn't sandboxed, and could open the file itself.
 - Any chat can ask about the Library ("what namespaces do I have?", "add a namespace for legal questions"): root hands

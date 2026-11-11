@@ -214,11 +214,14 @@ USERS_CHOICE = "the user's choice, in the Library panel's Namespaces tab (Edit Y
 # A var's or tool setting's name holding one of these reads as a secret's.
 SECRET_WORD = re.compile(r"key|token|secret|password", re.IGNORECASE)
 WORD_PART = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
-# And a value holding an unbroken run of letters and digits this long, switching between
-# them this often, reads as a key: random, as no id, date, path or label is.
-KEY_RUN = re.compile(r"[A-Za-z0-9]{16,}")
-LETTERS_OR_DIGITS = re.compile(r"[A-Za-z]+|[0-9]+")
-MIN_SWITCHES = 4
+# And a value holding a run of a key's characters this long, whose letters and digits
+# switch between lowercase, uppercase and digits this often, or for this share of them,
+# reads as a key: random, as no id, date, path, model name or label is.
+KEY_LENGTH = 16
+KEY_RUN = re.compile(rf"[A-Za-z0-9+/=_-]{{{KEY_LENGTH},}}")
+ONE_CASE_OR_DIGITS = re.compile(r"[a-z]+|[A-Z]+|[0-9]+")
+MIN_SWITCHES = 10
+MIN_SWITCH_SHARE = 0.4
 # Unless the name ends in env and the value is an environment variable's name.
 NAMES_A_VARIABLE = "env"
 VARIABLE_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
@@ -1315,11 +1318,14 @@ def secret_like(name: Any) -> bool:
 
 
 def key_shaped(text: str) -> bool:
-    """Whether *text* holds a run of letters and digits shaped like a key's."""
-    return any(
-        len(LETTERS_OR_DIGITS.findall(run)) > MIN_SWITCHES
-        for run in KEY_RUN.findall(text)
-    )
+    """Whether *text* holds a run of a key's characters that reads as random."""
+    for run in KEY_RUN.findall(text):
+        letters_and_digits = re.sub(r"[^A-Za-z0-9]", "", run)
+        switches = len(ONE_CASE_OR_DIGITS.findall(letters_and_digits)) - 1
+        share = switches / max(len(letters_and_digits), KEY_LENGTH)
+        if switches >= MIN_SWITCHES or share >= MIN_SWITCH_SHARE:
+            return True
+    return False
 
 
 def secret_shaped(name: Any, value: Any) -> bool:

@@ -1804,16 +1804,6 @@ def test_a_var_named_like_a_secret_holding_one_is_refused_saying_where_secrets_g
         {"password_hint": "the name of my first cat"},
         {"max_key_length": 5, "secret_santa": True, "api_key": ""},
         {"weather_key_env": "OWM_KEY", "api_key_env": "OWM_API_KEY_2024_ABCDEF12"},
-        {
-            "sort_key": "created_at_2024_utc",
-            "key_column": "transaction_id_v2",
-            "token_model": "gpt-4o-mini-2024-07-18",
-        },
-        {
-            "key_file": "data/2024/report_q3.csv",
-            "primary_keys": ["customer_id_2024"],
-            "secret_santa_year": "December2024Party",
-        },
     ],
     ids=[
         "column-labels",
@@ -1822,13 +1812,56 @@ def test_a_var_named_like_a_secret_holding_one_is_refused_saying_where_secrets_g
         "words",
         "no-text",
         "naming-a-variable",
-        "labels-with-numbers",
-        "a-path-an-id-and-a-word-with-a-year",
     ],
 )
 def test_a_var_that_holds_no_secret_is_written(fresh, given):
     library_tool(fresh).change_namespace("drafts", {"vars": given})
     assert own_fields(fresh, "drafts") == {"vars": given}
+
+
+# Values under a var named like a secret, and whether each reads as a key: random runs of
+# token characters do; ids, paths, model names, dates and words don't.
+VALUES_READ_AS_KEYS = [
+    (WEATHER_KEY, True),
+    (OWM_KEY, True),
+    (f"Bearer {OWM_KEY}", True),
+    ("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", True),
+    (LIVE_KEY, True),
+    ("created_at_2024_utc", False),
+    ("transaction_id_v2", False),
+    ("gpt-4o-mini-2024-07-18", False),
+    ("data/2024/report_q3.csv", False),
+    ("customer_id_2024", False),
+    ("December2024Party", False),
+    ("meta/Llama3x70bInstruct", False),
+    ("mistralai/Mixtral-8x7B-Instruct-v0.1", False),
+    ("sentence-transformers/all-MiniLM-L6-v2", False),
+    ("2026-01-01T12:00:00Z", False),
+    ("the name of my first cat", False),
+]
+
+
+def refused_as_a_key(library, value):
+    """Whether the library tool refuses *value* under a var named api_key, as a key."""
+    refusal = SECRET_LIKE.render(field="vars", names=["api_key"])
+    try:
+        library_tool(library).change_namespace("drafts", {"vars": {"api_key": value}})
+    except LibraryError as error:
+        if refusal not in str(error):
+            raise
+        return True
+    return False
+
+
+@pytest.mark.parametrize(
+    ("value", "is_key"),
+    VALUES_READ_AS_KEYS,
+    ids=[each for each, _ in VALUES_READ_AS_KEYS],
+)
+def test_a_value_under_a_secrets_name_is_refused_just_when_it_reads_as_a_key(
+    fresh, value, is_key
+):
+    assert refused_as_a_key(fresh, value) == is_key
 
 
 def test_a_key_written_as_binary_yaml_is_refused(fresh):
