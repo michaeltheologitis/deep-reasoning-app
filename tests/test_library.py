@@ -1645,6 +1645,31 @@ def test_yaml_giving_a_key_twice_is_refused_saying_where(library, act, text, sai
     assert dumped(library) == before
 
 
+@pytest.mark.parametrize(
+    ("first", "again"),
+    [
+        ("1", "0x1"),
+        ("1", "1.0"),
+        ("1", "true"),
+        ("true", "yes"),
+        ("on", "yes"),
+        ("null", "~"),
+    ],
+)
+def test_a_key_given_again_written_otherwise_is_refused_saved_and_read_as_the_last(
+    library, first, again
+):
+    text = f"vars:\n  table:\n    {first}: a\n    {again}: b\n"
+    said = f"line 4: {again} is the same key as {first} on line 3; keep one"
+    with pytest.raises(LibraryError, match=f"^{re.escape(said)}"):
+        change(library, add_namespace, "notes", text)
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("notes", text))
+    with closing(open_library(library)) as connection:
+        table = stored_config(connection)["namespaces"]["notes"]["vars"]["table"]
+    assert list(table.values()) == ["b"]
+
+
 GIVEN_TWICE = "is given twice; keep one, as only the last would be read."
 # Rows an older version stored, each giving a key twice.
 OLDER_REPEATS = {

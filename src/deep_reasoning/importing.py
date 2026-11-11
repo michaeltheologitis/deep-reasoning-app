@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
-from conflit.config import _parse_compose_entry, load_namespaces, read_yaml_strict
+from conflit.config import _parse_compose_entry, load_namespaces
 from deep_reasoner.config import load_cli_config
 from deep_reasoner.namespaces import CONFIG_SOURCE, ROOT
 from deep_reasoner.v2.cli import V2Config, build_namespace_registry
@@ -36,7 +36,6 @@ from deep_reasoning.library import (
     LibraryError,
     accepted,
     check_decomposition_name,
-    check_keys_once,
     check_name,
     check_size,
     check_tool_block,
@@ -67,6 +66,7 @@ from deep_reasoning.library import (
     tool_file,
     unreachable,
     writing,
+    yaml_data,
 )
 from deep_reasoning.tool_check import refuse_unbuilt_keyless
 
@@ -339,8 +339,9 @@ def check_composes_within(path, folder, stack=()):
     """Raise unless each file the config at *path*, a real path, composes, and each they
     compose, as conflit finds them, is in *folder*, each checked before it is read; what
     conflit refuses, such as a cycle, is left to it."""
-    keys_once(path)
-    composed = read_yaml_strict(path).get(COMPOSE)
+    data = file_data(path)
+    # conflit refuses a file that isn't a mapping as it reads it.
+    composed = data.get(COMPOSE) if isinstance(data, dict) else None
     for entry in composed if isinstance(composed, list) else []:
         given, _ = _parse_compose_entry(entry, COMPOSE)
         found = inside(path.parent / given, given, folder, f"{path} composes")
@@ -358,20 +359,19 @@ def namespace_files(config, folder):
     found = inside(config.config_dir / given, given, folder, "Its namespaces_dir is")
     held = "Its namespaces_dir holds"
     return [
-        yaml.safe_load(keys_once(inside(file, file, folder, held)))
+        file_data(inside(file, file, folder, held))
         for file in sorted(found.glob("**/*.yaml"))
     ]
 
 
-def keys_once(path):
-    """The text of the YAML file at *path*, refused, naming it, if it gives a key twice,
-    which the engine would read as the last."""
-    # Read from the file, so YAML that doesn't parse is said to be in it.
+def file_data(path):
+    """The data of the YAML file at *path*, read once; refused, naming it, if it gives a
+    key twice, which the engine would read as the last."""
     with path.open(encoding="utf-8") as stream:
-        composed = yaml.compose(stream, Loader=yaml.SafeLoader)
-    with about(path):
-        check_keys_once(composed)
-    return path.read_text(encoding="utf-8")
+        data, repeated = yaml_data(stream)
+    if repeated:
+        raise LibraryError(f"{path}: {repeated}")
+    return data
 
 
 def check_expanded(path, files, size=0):

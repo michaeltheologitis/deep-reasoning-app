@@ -20,7 +20,7 @@ import sys
 import time
 import unicodedata
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
 from contextlib import closing, contextmanager
 from functools import lru_cache, partial, update_wrapper, wraps
 from pathlib import Path
@@ -1929,47 +1929,44 @@ def problem(error):
 
 
 class RepeatsLoader(yaml.SafeLoader):
-    """yaml.safe_load's loader, noting where a mapping first gives a key twice, which it
-    reads as the last."""
+    """yaml.safe_load's loader, noting where a mapping first gives a key twice, however
+    written (1 and 0x1, true and yes, null and ~), as it keeps only the last. A key given
+    over one merged in (<<) is the merge's own."""
 
     repeated = None
 
-    def construct_document(self, node):
-        self.repeated = repeated_key(node)
-        return super().construct_document(node)
+    def construct_mapping(self, node, deep=False):
+        if self.repeated is None and isinstance(node, yaml.MappingNode):
+            self.repeated = self.first_repeat(node, deep)
+        return super().construct_mapping(node, deep)
 
-
-def repeated_key(node):
-    """Where a mapping in the composed YAML *node* first gives a key twice, in words; None
-    when none does. A key given over one merged in (<<) is the merge's own. Each node is
-    visited once, so it takes as long as composing did, whatever its aliases stand for."""
-    seen_nodes, stack = set(), [] if node is None else [node]
-    while stack:
-        node = stack.pop()
-        if id(node) in seen_nodes or isinstance(node, yaml.ScalarNode):
-            continue
-        seen_nodes.add(id(node))
-        if isinstance(node, yaml.SequenceNode):
-            stack += node.value
-            continue
-        keys = set()
-        for key, value in node.value:
-            stack += [key, value]
-            if not isinstance(key, yaml.ScalarNode) or key.tag == MERGE_TAG:
+    def first_repeat(self, node, deep):
+        """Where the mapping *node* first gives a key again, in words; None if it doesn't.
+        Each key is built as the mapping builds it, which keeps it."""
+        given = {}
+        for key_node, _ in node.value:
+            if key_node.tag == MERGE_TAG:
                 continue
-            if (key.tag, key.value) in keys:
-                return (
-                    f"line {key.start_mark.line + 1}: {key.value} is given twice; keep"
-                    " one, as only the last would be read."
-                )
-            keys.add((key.tag, key.value))
-    return None
+            key = self.construct_object(key_node, deep=deep)
+            # One that can't be a key is refused as the mapping is built.
+            if not isinstance(key, Hashable):
+                continue
+            if key in given:
+                return given_again(given[key], key_node)
+            given[key] = key_node
+        return None
 
 
-def check_keys_once(node):
-    """Raise if a mapping in the composed YAML *node* gives a key twice, saying where."""
-    if why := repeated_key(node):
-        raise LibraryError(why)
+def given_again(first, again):
+    """Where the key node *again* gives the key *first* gave, in words."""
+    if again.value == first.value:
+        what = "is given twice"
+    else:
+        what = f"is the same key as {first.value} on line {first.start_mark.line + 1}"
+    return (
+        f"line {again.start_mark.line + 1}: {again.value} {what}; keep one, as only the"
+        " last would be read."
+    )
 
 
 def yaml_data(source):

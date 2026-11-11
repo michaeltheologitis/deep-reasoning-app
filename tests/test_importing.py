@@ -1131,8 +1131,20 @@ def test_import_refuses_an_alias_bomb_without_writing_it_out(library, tmp_path, 
             },
             "helper.yaml: line 2: a is given twice; keep one",
         ),
+        (
+            {
+                "config.yaml": "namespaces_dir: parts\n",
+                "parts/helper.yaml": "name: helper\nvars:\n  table: {yes: 1, on: 2}\n",
+            },
+            "helper.yaml: line 3: on is the same key as yes on line 3; keep one",
+        ),
     ],
-    ids=["itself", "in-a-file-it-composes", "in-its-namespaces-dir"],
+    ids=[
+        "itself",
+        "in-a-file-it-composes",
+        "in-its-namespaces-dir",
+        "written-otherwise",
+    ],
 )
 def test_import_refuses_a_key_given_twice_saying_where(library, tmp_path, files, said):
     lay_out(tmp_path, files)
