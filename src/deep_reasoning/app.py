@@ -173,7 +173,7 @@ def gone_provider(name):
 def unrunnable(connection, namespace):
     """Why a chat can't run in *namespace*, said after its name; None when it can. The
     engine supplies a bare root when the file's is left out or missing."""
-    readable, left_out, _ = read_namespaces(connection)
+    readable, left_out, _ = read_namespaces(connection, deciding=namespace)
     if namespace == ROOT or namespace in readable:
         return None
     if namespace in left_out:
