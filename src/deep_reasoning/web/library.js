@@ -36,9 +36,11 @@ const INVISIBLE = /[\p{Cc}\p{Cf}]/u;
 // a code point as U+ writes it: hex, at least four digits
 const CODE_POINT_DIGITS = 4;
 const HEX = 16;
+// a namespace's name in the panel's words: in quotes, or escaped, so a look-alike never passes for another
+const quotedName = (name) => (shownName(name) === name ? `"${name}"` : shownName(name));
 const codePoint = (char) => `U+${char.codePointAt(0).toString(HEX).toUpperCase().padStart(CODE_POINT_DIGITS, "0")}`;
 // what heads a decomposition's turn problems in its form: they don't stop it saving, as a draft may have them, but agents are shown it as it is
-const reach = (namespace) => (namespace === ROOT ? "every namespace" : `${namespace} and the namespaces under it`);
+const reach = (namespace) => (namespace === ROOT ? "every namespace" : `${shownName(namespace)} and the namespaces under it`);
 const headed = (action, namespace, problems) =>
   problems.length ? [`${action} saves it as it is, and from the next message agents in ${reach(namespace)} are shown it, marked ✗ until these are fixed:`, ...problems] : [];
 // the shape of the generated decompositions, small enough to edit in place
@@ -403,7 +405,7 @@ async function addDecomposition(text) {
   const row = decompositionKey(namespace, name);
   opened.add(row);
   const marked = storedDecomposition(namespace, name)?.problems.length ? ", marked ✗" : "";
-  return { said: `Added "${name}" to ${namespace}${marked}`, row };
+  return { said: `Added "${name}" to ${shownName(namespace)}${marked}`, row };
 }
 
 // A namespace's change reaches every namespace under it, so the server answers with the whole Library; and, for a
@@ -422,14 +424,14 @@ async function addNamespace(text) {
   const name = nameInput.value.trim();
   await changeLibrary("POST", NAMESPACES_URL, { name, yaml: text });
   opened.add(namespaceKey(name));
-  return { said: `Added namespace "${name}"`, row: namespaceKey(name) };
+  return { said: `Added namespace ${quotedName(name)}`, row: namespaceKey(name) };
 }
 
 // a spawn list or grant it narrows may leave a worked example calling what its agents no longer reach
 const saveNamespace = (name) => async (text, form) => {
   const before = library;
   await changeLibrary("PUT", namespaceUrl(name), { yaml: text, was: form.was });
-  return { said: `Saved namespace "${name}"${newlyNoted(before)}` };
+  return { said: `Saved namespace ${quotedName(name)}${newlyNoted(before)}` };
 };
 
 // A row's edit form, built once; a closed one holds no draft, so it follows what is stored, and an open one keeps what it was opened on.
@@ -467,7 +469,7 @@ const saveDecomposition = (namespace, name) => async (text, form) => {
   opened.add(row);
   const marked = storedDecomposition(namespace, now)?.problems.length ? ", marked ✗" : "";
   // renamed, its row has a new form, drawn by then
-  return { said: `Saved "${now}" in ${namespace}${marked}`, row, where: () => editForms.get(row)?.confirmation };
+  return { said: `Saved "${now}" in ${shownName(namespace)}${marked}`, row, where: () => editForms.get(row)?.confirmation };
 };
 
 const decompositionEdit = (namespace, { name, yaml }) =>
@@ -488,7 +490,7 @@ function moveToAdd(draft, namespace, name) {
   decompositionForm.editor.value = draft;
   changed(decompositionForm);
   check(decompositionForm);
-  const note = `"${name}" was deleted or renamed in ${namespace} meanwhile, so your draft is here: Add saves it as a new one.`;
+  const note = `"${name}" was deleted or renamed in ${shownName(namespace)} meanwhile, so your draft is here: Add saves it as a new one.`;
   decompositionForm.newer.replaceChildren(element("p", { class: "lib-note" }, note));
   decompositionForm.editor.focus();
   // measured once the panel has drawn it
@@ -578,11 +580,11 @@ async function deleteNamespace(name) {
   await changeLibrary("DELETE", `${namespaceUrl(name)}?decompositions=${said}`);
   opened.delete(namespaceKey(name));
   editForms.delete(namespaceKey(name));
-  return { text: `Deleted namespace "${name}"${newlyNoted(before)}`, row: namespaceKey(parentOf(name)) };
+  return { text: `Deleted namespace ${quotedName(name)}${newlyNoted(before)}`, row: namespaceKey(parentOf(name)) };
 }
 
 // how many notes each worked example has, so a change that gives one more can say so, not one whose note only changed its reason
-const noted = (found) => found.namespaces.flatMap((namespace) => namespace.decompositions.map((each) => [`"${each.name}" in ${namespace.name}`, each.notes.length]));
+const noted = (found) => found.namespaces.flatMap((namespace) => namespace.decompositions.map((each) => [`"${each.name}" in ${shownName(namespace.name)}`, each.notes.length]));
 
 function newlyNoted(before) {
   const had = new Map(noted(before));
@@ -654,7 +656,7 @@ function nameProblem(name, namespace, editing) {
   if (name !== name.trim()) return `The name "${name}" starts or ends with a space; take it out, so it reads as it looks.`;
   const hidden = name.match(INVISIBLE);
   if (hidden) return `The name holds a character you can't see (${codePoint(hidden[0])}); take it out, so it reads as it looks.`;
-  if (name !== editing && namespace?.decompositions.some((each) => each.name === name)) return `${namespace.name} already has "${name}"; rename it, pick another namespace, or Edit that one.`;
+  if (name !== editing && namespace?.decompositions.some((each) => each.name === name)) return `${shownName(namespace.name)} already has "${name}"; rename it, pick another namespace, or Edit that one.`;
   return null;
 }
 
@@ -679,10 +681,10 @@ function messageShapeProblems(message, label) {
 function newNamespaceProblem(name) {
   if (!name) return 'Name the namespace, like "research"; "research.papers" goes under research.';
   if (!NAMESPACE_NAME.test(name)) return 'A namespace name is words of letters, digits, _ and -, each starting with a letter, joined by dots, like "research.papers".';
-  if (name.toLowerCase().split(".").includes("root")) return `"${name}" reads as root, which every namespace goes under already: name it something else, like "research".`;
-  if (namespaceNamed(name)) return `There is already a namespace "${name}"; open it and use Edit YAML.`;
+  if (name.toLowerCase().split(".").includes("root")) return `${quotedName(name)} reads as root, which every namespace goes under already: name it something else, like "research".`;
+  if (namespaceNamed(name)) return `There is already a namespace ${quotedName(name)}; open it and use Edit YAML.`;
   const parent = parentOf(name);
-  if (!namespaceNamed(parent)) return `Add namespace "${parent}" first: "${name}" goes under it.`;
+  if (!namespaceNamed(parent)) return `Add namespace ${quotedName(parent)} first: ${quotedName(name)} goes under it.`;
   return null;
 }
 
@@ -718,9 +720,10 @@ function namespaceProblems(text, name) {
 // as the server words it; a namespace being added can't spawn into one to go under it, which needs it first
 function missingSpawn(spawned, name) {
   if (!namespaceNamed(name) && spawned.startsWith(`${name}.`)) {
-    return `spawn names "${spawned}", which goes under ${name} and isn't in the Library yet: add ${name} without it first, then ${spawned}, then put ${spawned} in the spawn of ${name}.`;
+    const [it, under] = [shownName(spawned), shownName(name)];
+    return `spawn names ${quotedName(spawned)}, which goes under ${under} and isn't in the Library yet: add ${under} without it first, then ${it}, then put ${it} in the spawn of ${under}.`;
   }
-  return `spawn names "${spawned}", which is not a namespace in the Library: add ${spawned} first, or take it out of spawn.`;
+  return `spawn names ${quotedName(spawned)}, which is not a namespace in the Library: add ${shownName(spawned)} first, or take it out of spawn.`;
 }
 
 function disclosure(key, head, content) {
@@ -786,11 +789,11 @@ function decompositionRow(namespace, decomposition) {
     await changeLibrary("DELETE", ADD_URL, { namespace, name, was: yaml });
     opened.delete(key);
     editForms.delete(key);
-    return { text: `Deleted "${name}" from ${namespace}`, row: decompositionForm.el.id };
+    return { text: `Deleted "${name}" from ${shownName(namespace)}`, row: decompositionForm.el.id };
   };
   const content = () => {
     const form = decompositionEdit(namespace, decomposition);
-    const question = `Delete "${name}" from ${namespace}? Agents in ${reach(namespace)} stop seeing it from the next message.`;
+    const question = `Delete "${name}" from ${shownName(namespace)}? Agents in ${reach(namespace)} stop seeing it from the next message.`;
     return [
       problemList(problems),
       noteList(notes),
@@ -868,7 +871,7 @@ function renderTool(tool) {
     return { text: `Deleted tool "${tool.name}"` };
   };
   const stored = () => library.tools.some((each) => each.name === tool.name && each.stored);
-  const granted = ["Granted in", tool.granted_in.join(", ") || "no namespace"];
+  const granted = ["Granted in", tool.granted_in.map(shownName).join(", ") || "no namespace"];
   const made = [["Factory", tool.factory], ["File", tool.file], ["Defined in", tool.defined_in ?? "the deep_reasoner package"]];
   return [
     // one the engine can't read, as a shared file may hold, says why instead
@@ -884,7 +887,7 @@ function renderTool(tool) {
 
 function renderTools() {
   const rows = library.tools.map((tool) => {
-    const granted = tool.granted_in.length ? `granted in ${tool.granted_in.join(", ")}` : "not granted";
+    const granted = tool.granted_in.length ? `granted in ${tool.granted_in.map(shownName).join(", ")}` : "not granted";
     return disclosure(toolKey(tool.name), rowHead(tool.name, granted, tool.problems.length ? checkMark(tool.problems) : tool.badge), () => renderTool(tool));
   });
   return [element("div", { class: "lib-rows" }, toolsSaid, rows)];
@@ -975,7 +978,7 @@ function useLibrary(found) {
   stale.textContent = "";
   fileName.textContent = ` · ${library.file}`;
   const picked = usable(picker.value) ? picker.value : startingNamespace();
-  picker.replaceChildren(...library.namespaces.filter((namespace) => namespace.usable).map(({ name }) => element("option", { value: name }, name)));
+  picker.replaceChildren(...library.namespaces.filter((namespace) => namespace.usable).map(({ name }) => element("option", { value: name }, shownName(name))));
   picker.value = picked;
   pruneForms();
 }
