@@ -303,6 +303,30 @@ async def test_agents_are_shown_each_tool_by_the_name_they_call_it_by(
     assert of_kind(events, "cell.end")[0]["output"] == "3 2 8 count_words"
 
 
+async def test_agents_are_shown_an_engine_tool_by_the_name_they_call_it_by(
+    home, library, fake_config
+):
+    tools = {
+        "llm": {"factory": "llm"},
+        "sanitizer": {"factory": "llm", "system_prompt": "Strip names."},
+    }
+    plan = {"Use the tools.": [repl("FinalAnswer('used')")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        config = fake_config(
+            fake, tools=tools, namespaces={"root": {"tools": [*tools]}}
+        )
+        _, events = await run_to_the_end(Runs(library, home), "Use the tools.", config)
+    assert events[-1]["outcome"] == "answered", events[-1]
+    told = "\n".join(
+        str(message["content"])
+        for message in fake.calls[0].messages
+        if message["role"] == "system"
+    )
+    assert "- `llm(*messages: 'Any', schema" in told
+    assert "- `sanitizer(*messages: 'Any', schema" in told
+    assert "`fn(" not in told
+
+
 async def test_a_tool_that_moves_the_working_folder_as_it_loads_leaves_cells_in_the_chats(
     home, library, fake_config, tmp_path
 ):
