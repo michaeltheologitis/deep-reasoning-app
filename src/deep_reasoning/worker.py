@@ -20,7 +20,7 @@ import sys
 import textwrap
 import threading
 import time
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
@@ -164,14 +164,15 @@ def tool_line(name: str, value: Any, description: str) -> str:
     return f"- `{name}`{body}"
 
 
-def naming_tools(names: Collection[str]) -> None:
-    """Show agents each tool of *names* by the name they call it by. The engine names a
-    tool by its Python value's __name__, so Func(count_words) granted as wordcount read
-    as count_words(...), and an object as fn(...); the value itself is left as it is."""
+def naming_tools() -> None:
+    """Show agents each tool by the name they call it by. The engine names a tool by its
+    Python value's __name__, so Func(count_words) granted as wordcount read as
+    count_words(...), and an object, as the engine's own llm is, as fn(...); the value
+    itself is left as it is."""
     describe = func.describe
 
     def described(self: func) -> str:
-        if self.name not in names:
+        if getattr(self.value, "__name__", None) == self.name:
             return describe(self)
         return tool_line(self.name, self.value, self.description)
 
@@ -622,10 +623,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     chats_folder = os.getcwd()
     try:
         config = V2Config.model_validate(spec["config"])
-        # Each tool of Python of its own, the app's included; the engine's are as it shows them.
-        naming_tools(
-            [name for name, block in config.tools.items() if "factory_from" in block]
-        )
+        naming_tools()
         reasoner, alias = build_reasoner(config, run_dir=folder)
         # A tool's module may move the working folder as it loads: cells run in the chat's.
         os.chdir(chats_folder)

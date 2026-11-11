@@ -20,7 +20,7 @@ import sys
 import time
 import unicodedata
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
 from contextlib import closing, contextmanager
 from functools import lru_cache, partial, update_wrapper, wraps
 from pathlib import Path
@@ -720,6 +720,9 @@ COMMON_MODULES = frozenset(
 # Latin is ordinary in maths names, as "Δt estimate".
 LATIN = "LATIN"
 LOOK_ALIKE_SCRIPTS = {"CYRILLIC", "ARMENIAN"}
+PASSES_FOR_ANOTHER = ", so it could pass for another namespace in the menu."
+ASCII_ONLY = ": namespace names are printable ASCII only."
+MERGE_TAG = "tag:yaml.org,2002:merge"
 # Characters that don't show: controls and formats, such as a zero-width space.
 INVISIBLE = ("Cc", "Cf")
 # What the engine renders a turn's template against, beside prompt_template_variables.
@@ -1036,6 +1039,16 @@ def shown_text(text, size):
         return None
 
 
+def warn_given_twice(table, key, where):
+    """*where* the stored row *key* of *table* gives a key twice, which reads as the last,
+    logged."""
+    log.warning("library.key_given_twice", table=table, row=repr(key), why=where)
+
+
+def unsaid(where):
+    """A stored row's key given twice, read as the last, left unsaid: its reader says so."""
+
+
 def warn_left_out(table, key, why):
     """*why* the row *key* of *table* is left out, logged."""
     log.warning("library.row_left_out", table=table, row=repr(key), why=why)
@@ -1056,11 +1069,11 @@ def unreadable(error):
 
 
 def setting_value(key, text):
-    """Run setting *key*'s value, from its YAML *text*, if the engine reads it so; else a
-    LibraryError saying why not."""
+    """Run setting *key*'s value, from its stored YAML *text*, if the engine reads it so;
+    else a LibraryError saying why not."""
     if key in NOT_RUN_SETTINGS:
         raise LibraryError(NOT_A_RUN_SETTING)
-    value = loaded(text)
+    value = loaded(text, partial(warn_given_twice, "settings", key))
     try:
         V2Config.model_validate({key: value})
     except ValidationError as error:
@@ -1144,7 +1157,7 @@ def tool_block(name, text, source):
     """Tool *name*'s block, from its YAML *text*, if it is one the app stores: with its
     Python *source*, or without for one the engine builds; else a LibraryError saying
     why not."""
-    block = loaded(text)
+    block = loaded(text, partial(warn_given_twice, "tools", name))
     try:
         V2Config.model_validate({"tools": {name: block}})
     except ValidationError as error:
@@ -1192,7 +1205,7 @@ def own_fields(name, text):
     """Namespace *name*'s own fields, from its YAML *text*, if the engine reads them so;
     else a LibraryError saying why not. Its name and decompositions are the app's to put
     in."""
-    data = fields_in(text)
+    data = fields_in(text, partial(warn_given_twice, "namespaces", name))
     fields = {key: value for key, value in data.items() if key not in NAMED_ELSEWHERE}
     try:
         NamespaceConfig.model_validate(fields | {"name": name})
@@ -1244,7 +1257,7 @@ def read_decompositions(connection, names):
         if type(namespace) is not str or type(name) is not str:
             warn_left_out("decompositions", (namespace, name), NAME_NOT_TEXT)
             continue
-        decomposition, why = decomposition_read(text, size, name, names)
+        decomposition, why = decomposition_read(text, size, namespace, name, names)
         if why:
             warn_left_out("decompositions", (namespace, name), why)
         row = {"namespace": namespace, "name": name, "yaml": shown_text(text, size)}
@@ -1253,15 +1266,16 @@ def read_decompositions(connection, names):
 
 
 @lru_cache(maxsize=DECOMPOSITIONS_KEPT)
-def decomposition_read(text, size, name, names):
+def decomposition_read(text, size, namespace, name, names):
     """A stored decomposition, read from its row's *text* and *size* (as fitting() reads
-    them) and the *name* the row is stored under, and why it is left out: the
+    them) and the *namespace* and *name* the row is stored under, and why it is left out: the
     decomposition and None when agents can be shown it; None and why, as the panel lists
     it, when the engine can't read it, a save wouldn't store it so, or a run can't render
     one of its turns, whose templates may read only *names*. Kept for the next read of
     the Library, which most requests and every run make."""
     try:
-        decomposition = decomposition_in(row_text(text, size))
+        repeated = partial(warn_given_twice, "decompositions", (namespace, name))
+        decomposition = decomposition_in(row_text(text, size), repeated)
     except LibraryError as error:
         return None, f"{UNREAD_DECOMPOSITION}\n{error}"
     try:
@@ -1933,11 +1947,70 @@ def problem(error):
     return f"{'.'.join(map(str, error['loc']))}: {error['msg']}."
 
 
-def loaded(text):
-    """The YAML *text* as data, or a LibraryError saying where it doesn't parse or why it
-    holds what no text can."""
+class RepeatsLoader(yaml.SafeLoader):
+    """yaml.safe_load's loader, noting where a mapping first gives a key twice, however
+    written (1 and 0x1, true and yes, null and ~), as it keeps only the last. A key given
+    over one merged in (<<) is the merge's own."""
+
+    repeated = None
+
+    def construct_mapping(self, node, deep=False):
+        if self.repeated is None and isinstance(node, yaml.MappingNode):
+            self.repeated = self.first_repeat(node, deep)
+        return super().construct_mapping(node, deep)
+
+    def first_repeat(self, node, deep):
+        """Where the mapping *node* first gives a key again, in words; None if it doesn't.
+        Each key is built as the mapping builds it, which keeps it."""
+        given = {}
+        for key_node, _ in node.value:
+            if key_node.tag == MERGE_TAG:
+                continue
+            key = self.construct_object(key_node, deep=deep)
+            # One that can't be a key is refused as the mapping is built.
+            if not isinstance(key, Hashable):
+                continue
+            if key in given:
+                return given_again(given[key], key_node)
+            given[key] = key_node
+        return None
+
+
+def given_again(first, again):
+    """Where the key node *again* gives the key *first* gave, in words."""
+    if again.value == first.value:
+        what = "is given twice"
+    else:
+        what = f"is the same key as {first.value} on line {first.start_mark.line + 1}"
+    return (
+        f"line {again.start_mark.line + 1}: {again.value} {what}; keep one, as only the"
+        " last would be read."
+    )
+
+
+def yaml_data(source):
+    """The YAML *source*, text or an open file, as data, as yaml.safe_load reads it, and
+    where it first gives a key twice, in words; None when it doesn't."""
+    loader = RepeatsLoader(source)
     try:
-        data = yaml.safe_load(text)
+        return loader.get_single_data(), loader.repeated
+    finally:
+        loader.dispose()
+
+
+def loaded(text, repeated=None):
+    """The YAML *text* as data, or a LibraryError saying where it doesn't parse or why it
+    holds what no text can. A key given twice is refused, as every save takes text; given
+    *repeated*, as a stored row reads, it reads as the last, as the engine reads it, and
+    *repeated* is called with where, so what an older version stored reads as before."""
+    try:
+        data, where = yaml_data(text)
+    except yaml.reader.ReaderError as error:
+        line = text.count("\n", 0, error.position) + 1
+        raise LibraryError(
+            f"The YAML holds a character it can't hold ({code_point(chr(error.character))},"
+            f" line {line}); take it out."
+        ) from error
     except yaml.YAMLError as error:
         mark = getattr(error, "problem_mark", None)
         where = f"line {mark.line + 1}: " if mark else ""
@@ -1947,11 +2020,15 @@ def loaded(text):
         ) from error
     except RecursionError as error:
         raise LibraryError("The YAML is nested too deeply to read.") from error
+    if where and repeated is None:
+        raise LibraryError(where)
+    if where:
+        repeated(where)
     check_aliases(data, text)
     half = next(filter(None, map(SURROGATE.search, texts_in(data))), None)
     if half:
         raise LibraryError(
-            f"The YAML escapes half of a character (U+{ord(half[0]):04X}), which no text"
+            f"The YAML escapes half of a character ({code_point(half[0])}), which no text"
             " can hold; write the whole character instead."
         )
     return data
@@ -1962,18 +2039,29 @@ def check_aliases(data, text):
     each alias (*name) is written out, as the engine writes them out: a few lines of them
     can stand for millions of values."""
     allowed = ALIASES_STAND_FOR * len(text) + ALIASES_ALLOWANCE
-    if expanded_shape(data)[0] > allowed:
-        raise LibraryError(
-            "Its aliases (*name) stand for too much: written out, as the engine reads"
-            f" them, it would hold more than {allowed:,} values and characters, from"
-            f" {len(text):,} characters of YAML. Write it without aliases."
+    size = expanded_shape(data)[0]
+    if size <= allowed:
+        return
+    if size == math.inf:
+        why = (
+            "one holds itself, so written out, as the engine reads them, it would never"
+            " end"
         )
+    else:
+        why = (
+            f"written out, as the engine reads them, it would hold {size:,} values and"
+            f" characters, where its {len(text):,} characters of YAML may stand for"
+            f" {allowed:,} at most"
+        )
+    raise LibraryError(
+        f"Its aliases (*name) stand for too much: {why}. Write it without aliases."
+    )
 
 
-def fields_in(text):
+def fields_in(text, repeated=None):
     """The fields a namespace's YAML *text* sets, none when it is blank; a LibraryError
-    when it isn't a mapping of them."""
-    data = loaded(text)
+    when it isn't a mapping of them. A key given twice as loaded() takes *repeated*."""
+    data = loaded(text, repeated)
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -1981,9 +2069,10 @@ def fields_in(text):
     return data
 
 
-def decomposition_in(text):
-    """The decomposition the YAML *text* describes, as the engine's own model reads it."""
-    data = loaded(text)
+def decomposition_in(text, repeated=None):
+    """The decomposition the YAML *text* describes, as the engine's own model reads it; a
+    key given twice as loaded() takes *repeated*."""
+    data = loaded(text, repeated)
     if not isinstance(data, dict):
         raise LibraryError(
             "The YAML should be a mapping: a name: line, then messages:, as in the template."
@@ -2027,7 +2116,7 @@ def check_decomposition_name(name):
                 each for each in word if each.isalpha() and script_of(each) != main
             )
             raise LibraryError(
-                f"The name mixes alphabets in the word {word!a} (U+{ord(odd):04X}), so it"
+                f"The name mixes alphabets in the word {word!a} ({code_point(odd)}), so it"
                 " could pass for another; write each word in one alphabet, so it reads as"
                 " it looks."
             )
@@ -2048,9 +2137,14 @@ def script_of(letter):
     return unicodedata.name(letter, "").partition(" ")[0]
 
 
+def code_point(char):
+    """*char* as Unicode writes it, as U+0007."""
+    return f"U+{ord(char):04X}"
+
+
 def first_char(text, test):
     """The first character of *text* that passes *test*, as U+ writes it; None for none."""
-    return next((f"U+{ord(char):04X}" for char in text if test(char)), None)
+    return next((code_point(char) for char in text if test(char)), None)
 
 
 def invisible(char):
@@ -2543,7 +2637,7 @@ def stored_decomposition(connection, namespace, name):
         return None
     try:
         text = row_text(*found)
-        decomposition_in(text)
+        decomposition_in(text, unsaid)
     except LibraryError as error:
         return left_out_note(str(error))
     return text
@@ -2614,11 +2708,11 @@ def namespace_problem(error):
     return f"{'.'.join(map(str, error['loc']))}: {error['msg']}."
 
 
-def authored(name, text):
+def authored(name, text, repeated=None):
     """Namespace *name* as its YAML *text* describes it, checked by the engine's own model,
-    and the YAML to store for it."""
+    and the YAML to store for it; a key given twice as loaded() takes *repeated*."""
     check_size(text, "A namespace's YAML")
-    data = fields_in(text)
+    data = fields_in(text, repeated)
     problems = [NAMED_ELSEWHERE[key] for key in NAMED_ELSEWHERE if key in data]
     fields = {key: value for key, value in data.items() if key not in NAMED_ELSEWHERE}
     try:
@@ -2868,10 +2962,10 @@ def check_name(name):
     child, none of them root by another spelling, as root is every namespace's parent."""
     if not name:
         raise LibraryError(NAME_IT)
-    if odd := first_char(name, not_plain):
+    if odd := next(filter(not_plain, name), None):
         raise LibraryError(
-            f"The name holds a character a namespace's name can't ({odd}), so it could"
-            f" pass for another namespace in the menu. {NAME_SHAPE}"
+            f"The name holds a character a namespace's name can't ({code_point(odd)})"
+            f"{beyond_ascii(odd)} {NAME_SHAPE}"
         )
     if not NAMESPACE_NAME.fullmatch(name):
         raise LibraryError(NAME_SHAPE)
@@ -2884,6 +2978,27 @@ def check_name(name):
 
 def not_plain(char):
     return not (char.isascii() and char.isprintable())
+
+
+def beyond_ascii(char):
+    """Why a namespace's name can't hold *char*, outside printable ASCII: it could pass
+    for another if it reads as printable ASCII or as nothing (a Cyrillic or Armenian
+    letter, a styled or full-width one, another kind of space, one you can't see)."""
+    looks_plain = (
+        invisible(char)
+        or char.isspace()
+        or script_of(char) in LOOK_ALIKE_SCRIPTS
+        or styled_latin(char)
+        or unicodedata.normalize("NFKC", char).isascii()
+    )
+    return PASSES_FOR_ANOTHER if looks_plain else ASCII_ONLY
+
+
+def styled_latin(char):
+    """Whether *char* is a Latin letter drawn as another, as a small capital ʀ or a
+    dotless ı are, and not one with a mark, as é is."""
+    name = unicodedata.name(char, "")
+    return name.startswith(f"{LATIN} ") and " WITH " not in name
 
 
 def reads_as_root(name):
@@ -2905,17 +3020,15 @@ def check_stored_name(name):
     Library's names stay."""
     if name == ROOT:
         return
-    if odd := first_char(name, not_plain):
-        why = f"holds characters a saved name can't ({odd})"
+    if odd := next(filter(not_plain, name), None):
+        why = f"holds characters a saved name can't ({code_point(odd)}){beyond_ascii(odd)}"
     elif name.split(".")[0].strip().lower() == ROOT:
-        why = "reads as root"
+        why = f"reads as root{PASSES_FOR_ANOTHER}"
     elif " " in name:
-        why = "holds a space"
+        why = f"holds a space{PASSES_FOR_ANOTHER}"
     else:
         return
-    raise LibraryError(
-        f"Its name, {name!a}, {why}, so it could pass for another namespace in the menu."
-    )
+    raise LibraryError(f"Its name, {name!a}, {why}")
 
 
 def check_place(connection, name):
@@ -2934,7 +3047,7 @@ def fields_of(text):
     """The fields a namespace's own YAML *text* sets: none when it sets none, or isn't
     YAML, as a change a cell logged may not be."""
     try:
-        fields = loaded(text) if type(text) is str else None
+        fields = loaded(text, unsaid) if type(text) is str else None
     except LibraryError:
         return {}
     return fields if isinstance(fields, dict) else {}
@@ -2969,7 +3082,8 @@ def change_namespace(connection, name, text, allowed=None, was=NOT_OPENED, merge
         read = read_library(connection)
         if merge:
             text = merged(own_text(read, name) or "", text)
-        namespace, stored = authored(name, text)
+        # A merge checked the fields given; the rest, if none changed, is as stored.
+        namespace, stored = authored(name, text, unsaid if merge else None)
         if allowed is not None:
             allowed(connection, namespace, read)
         before, vars_before = check_unchanged(read, name, was)
@@ -3038,7 +3152,7 @@ def built_grants(
             first(read)
         if merge:
             text = merged(own_text(read, name) or "", text)
-        namespace, _ = authored(name, text)
+        namespace, _ = authored(name, text, unsaid if merge else None)
         afresh = granted_afresh(read, namespace)
         if ignored := ignored_grants(read, namespace.tools):
             raise LibraryError("\n".join(ignored))

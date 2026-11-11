@@ -600,6 +600,26 @@ def test_import_refuses_a_tool_that_does_not_build_and_says_why(
     assert dumped(library) == before
 
 
+def test_import_of_a_tool_needing_a_package_says_to_run_the_app_with_it(
+    library, tmp_path
+):
+    (tmp_path / "mine.py").write_text(
+        "import no_such_package_q7\n\ndef build(client, params): ...\n"
+    )
+    config = config_file(
+        tmp_path,
+        "tools:\n  mine: {factory: build, factory_from: mine.py}\n"
+        "namespaces:\n  helper: {tools: [mine]}\n",
+    )
+    open_library(library).close()
+    with pytest.raises(LibraryError) as refused:
+        import_into(library, config)
+    said = str(refused.value)
+    assert "No module named 'no_such_package_q7'" in said
+    assert "`uv run --with PKG deep-reasoning import CONFIG.yaml`" in said
+    assert "and start the app the same way, `uv run --with PKG deep-reasoning`" in said
+
+
 def grants_mine(tmp_path, source, settings="{}"):
     """A config with tool mine, built from *source* with *settings*, granted in helper."""
     (tmp_path / "mine.py").write_text(source)
@@ -896,6 +916,10 @@ LOOKS_LIKE = (
     "The name holds a character a namespace's name can't (U+{}), so it could pass for"
     " another namespace in the menu."
 )
+ASCII_ONLY = (
+    "The name holds a character a namespace's name can't (U+{}): namespace names are"
+    " printable ASCII only."
+)
 
 
 @pytest.mark.parametrize(
@@ -905,7 +929,10 @@ LOOKS_LIKE = (
         ('"a\\nb"', f'Namespace "a\\nb": {LOOKS_LIKE.format("000A")}'),
         ('"a\\u200bb"', f'Namespace "a\\u200bb": {LOOKS_LIKE.format("200B")}'),
         ("a/b", f'Namespace "a/b": {SHAPE}'),
-        ('"a\\U0001F600"', f'Namespace "a\\U0001f600": {LOOKS_LIKE.format("1F600")}'),
+        (
+            '"a\\U0001F600"',
+            f'Namespace "a\\U0001f600": {ASCII_ONLY.format("1F600")}',
+        ),
         (
             '"h\\u0456storian"',
             f'Namespace "h\\u0456storian": {LOOKS_LIKE.format("0456")}',
@@ -1078,6 +1105,49 @@ def test_import_refuses_an_alias_bomb_without_writing_it_out(library, tmp_path, 
     started = time.monotonic()
     refused_unchanged(library, tmp_path / config, said)
     assert time.monotonic() - started < BOMB_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("files", "said"),
+    [
+        (
+            {
+                "config.yaml": "namespaces:\n  helper:\n    system_suffix: A.\n    system_suffix: B.\n"
+            },
+            "config.yaml: line 4: system_suffix is given twice; keep one",
+        ),
+        (
+            {
+                "config.yaml": "_compose: [parts/extra.yaml]\n",
+                "parts/extra.yaml": "max_iter: 3\nmax_iter: 4\n",
+            },
+            "extra.yaml: line 2: max_iter is given twice; keep one",
+        ),
+        (
+            {
+                "config.yaml": "namespaces_dir: parts\n",
+                "parts/helper.yaml": "name: helper\nvars: {a: 1, a: 2}\n",
+            },
+            "helper.yaml: line 2: a is given twice; keep one",
+        ),
+        (
+            {
+                "config.yaml": "namespaces_dir: parts\n",
+                "parts/helper.yaml": "name: helper\nvars:\n  table: {yes: 1, on: 2}\n",
+            },
+            "helper.yaml: line 3: on is the same key as yes on line 3; keep one",
+        ),
+    ],
+    ids=[
+        "itself",
+        "in-a-file-it-composes",
+        "in-its-namespaces-dir",
+        "written-otherwise",
+    ],
+)
+def test_import_refuses_a_key_given_twice_saying_where(library, tmp_path, files, said):
+    lay_out(tmp_path, files)
+    refused_unchanged(library, tmp_path / "config.yaml", said)
 
 
 def test_import_refuses_a_config_that_composes_itself_in_words(library, tmp_path):

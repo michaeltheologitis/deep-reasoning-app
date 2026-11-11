@@ -274,6 +274,15 @@ const MARKDOWN_ANSWERS = [
   ["emphasis in Chinese", "这是*斜体*的字。", /<p>这是<em>斜体<\/em>的字。<\/p>/],
 ];
 const anchors = (html) => html.match(/<a [^>]*>/g) ?? [];
+// DOMPurify's own rule for an attribute, on the page's settings; that rule reads no DOM, so its window is a stub
+const purify = createRequire(import.meta.url)("../src/deep_reasoning/web/vendor/purify.min.js")({ document: { nodeType: 9, createElement: () => ({}) }, Element: class {} });
+purify.setConfig(SANITIZE);
+// Each tag and attribute in marked's HTML that the sanitiser would drop.
+const dropped = (html) =>
+  [...html.matchAll(/<([a-z][a-z0-9]*)\b([^>]*)>/g)].flatMap(([, tag, attributes]) => [
+    ...(SANITIZE.ALLOWED_TAGS.includes(tag) ? [] : [tag]),
+    ...[...attributes.matchAll(/([a-z-]+)="([^"]*)"/g)].filter(([, name, value]) => !purify.isValidAttribute(tag, name, value)).map(([attribute]) => `${tag} ${attribute}`),
+  ]);
 
 for (const text of PLAIN_ANSWERS) {
   test(`an answer with no Markdown shows exactly as written: ${JSON.stringify(text)}`, () => {
@@ -309,6 +318,23 @@ test("every link in an answer opens in a new tab, with no opener or referrer", (
   const links = anchors(markdownHtml("[a](https://a.example), https://b.example, <https://c.example> and ![d](https://d.example/d.png)"));
   assert.equal(links.length, 4);
   for (const link of links) assert.match(link, /^<a target="_blank" rel="noopener noreferrer" href=/);
+});
+
+test("an answer's links, aligned columns, numbered list and task list pass the sanitiser whole", () => {
+  const html = markdownHtml("See [docs](https://a.example/docs), <mailto:me@a.example> and [below](#part).\n\n| n | sq |\n|:---:|---:|\n| 3 | 9 |\n\n3. third\n4. fourth\n\n- [x] done\n- [ ] todo");
+  assert.equal(anchors(html).length, 3);
+  for (const link of anchors(html)) assert.match(link, /^<a target="_blank" rel="noopener noreferrer" href=/);
+  assert.match(html, /<td align="center">3<\/td>\n<td align="right">9<\/td>/);
+  assert.match(html, /<ol start="3">/);
+  assert.match(html, /<input checked="" disabled="" type="checkbox">/);
+  assert.deepEqual(dropped(html), []);
+});
+
+test("a link to a file, a sandbox: or a javascript: address reaches the sanitiser as its text and address", () => {
+  const html = markdownHtml("# Saved\n\n[the CSV](squares.csv), [chart](sandbox:/mnt/data/chart.svg) and [run](javascript:alert(1)).");
+  assert.equal(anchors(html).length, 0);
+  assert.match(html, /<p>the CSV \(squares\.csv\), chart \(sandbox:\/mnt\/data\/chart\.svg\) and run \(javascript:alert\(1\)\)\.<\/p>/);
+  assert.deepEqual(dropped(html), []);
 });
 
 test("a long prompt shows its first lines with a toggle to show it all, and all of it once shown whole", () => {
@@ -368,12 +394,12 @@ test("a link to a file in the chat's folder, which the app doesn't serve, shows 
   assert.match(html, /Download the CSV \(first_20_squares\.csv\), cubes\.csv and chart \(\.\/out\/chart\.png\) page \(\/pages\/x\)\./);
 });
 
-test("an answer's links may be web, mail or a place in it only", () => {
+test("the sanitiser keeps an answer's link to the web, mail or a place in it only", () => {
   for (const href of ["https://a.example", "http://a.example/x?y", "mailto:me@a.example", "#part"]) {
-    assert.match(href, SANITIZE.ALLOWED_URI_REGEXP, href);
+    assert.ok(purify.isValidAttribute("a", "href", href), href);
   }
   for (const href of ["javascript:alert(1)", "JaVaScRiPt:x", "data:text/html,x", "vbscript:x", "file:///etc/passwd", "ftp://a.example", "/pages/x", "notes.html", "./a.csv", "//a.example"]) {
-    assert.doesNotMatch(href, SANITIZE.ALLOWED_URI_REGEXP, href);
+    assert.ok(!purify.isValidAttribute("a", "href", href), href);
   }
 });
 
