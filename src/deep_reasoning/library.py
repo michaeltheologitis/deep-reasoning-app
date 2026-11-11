@@ -1674,6 +1674,12 @@ def overrides(own, above, shown, swaps):
     }
 
 
+# Where the worked examples each namespace's agents see are stored, by namespace and
+# name, before a run copies some (without_impossible_hand_offs()): the worker names a
+# left-out one by it. A key of the run's config the engine ignores.
+EXAMPLES_STORED_IN = "examples_stored_in"
+
+
 def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     """The Library as one plain dict that V2Config accepts, for run *run* of *chat*, which
     enters *namespace*; the run's model and client are the chat's to put in.
@@ -1713,11 +1719,16 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     }
     for name in APP_TOOLS.keys() & config["tools"]:
         config["tools"][name] |= told
+    stored_in = {}
     try:
         resolved, registry = run_config_and_registry(config)
         editors = [
             name for name in registry.names if sees(registry, name, LIBRARY_TOOL)
         ]
+        stored_in = {
+            name: dict(registry.resolve(name).sources.decompositions)
+            for name in registry.names
+        }
         config = without_impossible_hand_offs(config, resolved, registry)
         config = with_run_lines(config, registry)
     except ValueError as error:
@@ -1726,7 +1737,7 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
         editors = []
     if LIBRARY_TOOL in config["tools"]:
         config["tools"][LIBRARY_TOOL]["editors"] = editors
-    return config | {"entry_namespace": namespace}
+    return config | {"entry_namespace": namespace, EXAMPLES_STORED_IN: stored_in}
 
 
 def with_run_lines(config, registry):

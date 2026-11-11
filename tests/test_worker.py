@@ -352,7 +352,7 @@ def test_a_worked_example_left_out_is_noted_for_the_agent_it_was_left_out_of_alo
     monkeypatch.setattr(base, "_start", base._start)
     out = io.StringIO()
     recorder = new_recorder(out)
-    worker.leaving_out_unrendered(recorder)
+    worker.leaving_out_unrendered(recorder, {"root": {"tally": "stored-here"}})
     failing, started = unstarted(tmp_path / "failing"), unstarted(tmp_path / "started")
 
     def no_model():
@@ -375,6 +375,7 @@ def test_a_worked_example_left_out_is_noted_for_the_agent_it_was_left_out_of_alo
         (LEFT_OUT, node),
     ]
     assert lines[-1]["why"] == "ZeroDivisionError: division by zero"
+    assert lines[-1]["from"] == "stored-here"
 
 
 def in_a_worker(code, *args):

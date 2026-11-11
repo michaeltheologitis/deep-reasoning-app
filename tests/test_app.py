@@ -1112,6 +1112,35 @@ async def test_a_worked_example_left_out_names_the_namespace_it_is_stored_in(
     ]
 
 
+@pytest.mark.anyio
+async def test_a_left_out_example_a_run_rewrote_for_a_namespace_names_where_it_is_stored(
+    library_on, connect
+):
+    template, _ = FAILING_AS_RENDERED["a division by zero"]
+    handing_on = repl("FinalAnswer(subagent(ctx.task, namespace='historian'))")
+    example = {
+        "name": "pass it on",
+        "messages": [
+            {"role": "user", "content": f"Tally them. {template}"},
+            {"role": "assistant", "content": handing_on},
+        ],
+    }
+    with FakeOpenAI(scripted({"Count.": [repl("FinalAnswer(4)")]})) as fake:
+        library = library_on(fake)
+        # Its spawn list leaves the historian out, so the run gives it its own copy.
+        stored(library, UPSERT_NAMESPACE, "stats", "spawn: []\n")
+        stored(library, UPSERT_DECOMPOSITION, ROOT, "pass it on", dump(example))
+        async with connect(library) as api:
+            chat = await chat_in(api, "stats")
+            events = await run_events(api, await send(api, chat, "Count."))
+    [left_out] = kinds(events, LEFT_OUT)
+    assert [left_out[key] for key in ("name", "namespace", "from")] == [
+        "pass it on",
+        "stats",
+        ROOT,
+    ]
+
+
 async def ask_plainly_to(library, connect, prompt):
     async with connect(library) as api:
         return await run_events(api, await send(api, await new_chat(api), prompt))

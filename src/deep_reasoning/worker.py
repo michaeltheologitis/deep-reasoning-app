@@ -46,7 +46,12 @@ from genai_prices import Usage, calc_price
 from openai.resources.chat.completions import AsyncCompletions
 
 from deep_reasoning.app_tools import CLAUDE_CODE
-from deep_reasoning.library import granted_in, in_chain_order, sandbox_templates
+from deep_reasoning.library import (
+    EXAMPLES_STORED_IN,
+    granted_in,
+    in_chain_order,
+    sandbox_templates,
+)
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
     FINAL_ANSWER,
@@ -445,25 +450,23 @@ def why_unrendered(error: Exception) -> str:
 
 
 def where_stored(
-    registry: NamespaceRegistry, left_out: tuple[dict[str, Any], ...]
+    stored_in: dict[str, dict[str, str]], left_out: tuple[dict[str, Any], ...]
 ) -> tuple[dict[str, Any], ...]:
-    """Each worked example *left_out* with the namespace it is stored in, from, as the
-    *registry* of the agent it was left out for resolves its namespace."""
+    """Each worked example *left_out* with the namespace it is stored in, from, by
+    *stored_in* (EXAMPLES_STORED_IN); None if it doesn't say."""
     return tuple(
-        each
-        | {
-            "from": registry.resolve(each["namespace"]).sources.decompositions.get(
-                each["name"]
-            )
-        }
+        each | {"from": stored_in.get(each["namespace"], {}).get(each["name"])}
         for each in left_out
     )
 
 
-def leaving_out_unrendered(recorder: Recorder) -> None:
+def leaving_out_unrendered(
+    recorder: Recorder, stored_in: dict[str, dict[str, str]]
+) -> None:
     """Leave each worked example that fails to render out of its agent's prompt, all its
-    turns, telling *recorder* which agent, once it started, so the run goes on, where
-    the engine would end it. A stop is no failure to render: it isn't an Exception."""
+    turns, telling *recorder* which agent, once it started, and where the example is
+    stored (*stored_in*), so the run goes on, where the engine would end it. A stop is
+    no failure to render: it isn't an Exception."""
     rendered_turns = agent._rendered_turns
     start = agent.DeepReasonerAgentBase._start
 
@@ -487,7 +490,7 @@ def leaving_out_unrendered(recorder: Recorder) -> None:
         try:
             start(self)
             if left_out := LEFT_OUT_NOW.get():
-                stored = where_stored(self._registry, left_out)
+                stored = where_stored(stored_in, left_out)
                 recorder.left_out(self._log_vars["node_id"], stored)
         finally:
             LEFT_OUT_NOW.reset(token)
@@ -611,7 +614,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     configure_structlog_fixture(console=False, extra_processors=[recorder])
     keep_app_logs_out_of_cells()
     counting_calls(recorder)
-    leaving_out_unrendered(recorder)
+    leaving_out_unrendered(recorder, spec["config"].get(EXAMPLES_STORED_IN, {}))
     threading.Thread(target=read_commands, args=(stdin, stop), daemon=True).start()
     # A tool that doesn't build while the run builds the config's tools, at its start,
     # stops every run; one that doesn't later is that run's own failure.
