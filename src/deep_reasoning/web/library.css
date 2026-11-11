@@ -33,6 +33,13 @@
 .lib-tabs { display: flex; flex-wrap: wrap; gap: 0 1ch; padding: 8px 16px; border-bottom: 1px solid var(--faint); }
 .lib-tab, .lib-dot { color: var(--dim); }
 .lib-tab:hover { color: var(--fg); }
+/* a finger's size on a touch screen, in the room its bar has (style.css) */
+@media (pointer: coarse) {
+  .lib-tab, .lib-close { min-width: 44px; min-height: 44px; margin-block: -8px; }
+  /* the room each tab reaches into, between rows of tabs that wrap */
+  .lib-tabs { row-gap: 16px; }
+  .lib-close { text-align: center; }
+}
 .lib-tab[aria-selected="true"] { color: var(--fg); font-weight: 600; }
 .lib-stale:not(:empty) { padding: 8px 16px 0; }
 .lib-body {
