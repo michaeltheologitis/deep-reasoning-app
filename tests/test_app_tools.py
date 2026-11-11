@@ -1454,6 +1454,25 @@ def own_fields(library, name):
     return yaml.safe_load(dict(stored_namespaces(library))[name]) or {}
 
 
+@pytest.mark.parametrize(
+    ("method", "args", "said"),
+    [
+        ("add_namespace", ("notes", "system_suffix: A.\nsystem_suffix: B.\n"), 2),
+        ("change_namespace", ("drafts", "vars: {city: Leeds, city: York}\n"), 1),
+        ("write_decomposition", ("drafts", f"{EXAMPLE}name: again\n"), 5),
+    ],
+)
+def test_the_library_tool_refuses_yaml_giving_a_key_twice_saying_where(
+    fresh, method, args, said
+):
+    before = stored_namespaces(fresh), stored(fresh)
+    with pytest.raises(
+        LibraryError, match=f"^line {said}: .* is given twice; keep one"
+    ):
+        getattr(library_tool(fresh), method)(*args)
+    assert (stored_namespaces(fresh), stored(fresh)) == before
+
+
 def test_a_change_keeping_the_repl_and_app_tools_the_user_set_is_written(fresh):
     set_by_the_user = "tools: [history]\nrepl: {type: local}\n"
     changed = "repl: {type: local}\ntools: [llm, history]\nsystem_suffix: Draft.\n"

@@ -1120,6 +1120,21 @@ async def test_a_shared_files_prompt_reading_python_internals_is_shown_as_writte
 
 
 @pytest.mark.anyio
+async def test_an_older_namespace_giving_a_key_twice_still_runs_on_the_last(
+    library_on, connect
+):
+    older = "tools: [llm]\nsystem_suffix: Be brief.\nsystem_suffix: Answer in French.\n"
+    with FakeOpenAI(scripted(PROBE_PLAN)) as fake:
+        library = library_on(fake)
+        stored(library, UPSERT_NAMESPACE, ROOT, older)
+        events = await ask_plainly(library, connect)
+    assert events[-1]["outcome"] == "answered", events[-1]
+    told = "\n".join(each["content"] for each in fake.calls[0].messages)
+    assert "Answer in French." in told
+    assert "Be brief." not in told
+
+
+@pytest.mark.anyio
 async def test_a_chats_earlier_messages_and_answers_are_never_rendered(
     library_on, connect
 ):

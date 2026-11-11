@@ -1108,6 +1108,37 @@ def test_import_refuses_an_alias_bomb_without_writing_it_out(library, tmp_path, 
     assert time.monotonic() - started < BOMB_SECONDS
 
 
+@pytest.mark.parametrize(
+    ("files", "said"),
+    [
+        (
+            {
+                "config.yaml": "namespaces:\n  helper:\n    system_suffix: A.\n    system_suffix: B.\n"
+            },
+            "config.yaml: line 4: system_suffix is given twice; keep one",
+        ),
+        (
+            {
+                "config.yaml": "_compose: [parts/extra.yaml]\n",
+                "parts/extra.yaml": "max_iter: 3\nmax_iter: 4\n",
+            },
+            "extra.yaml: line 2: max_iter is given twice; keep one",
+        ),
+        (
+            {
+                "config.yaml": "namespaces_dir: parts\n",
+                "parts/helper.yaml": "name: helper\nvars: {a: 1, a: 2}\n",
+            },
+            "helper.yaml: line 2: a is given twice; keep one",
+        ),
+    ],
+    ids=["itself", "in-a-file-it-composes", "in-its-namespaces-dir"],
+)
+def test_import_refuses_a_key_given_twice_saying_where(library, tmp_path, files, said):
+    lay_out(tmp_path, files)
+    refused_unchanged(library, tmp_path / "config.yaml", said)
+
+
 def test_import_refuses_a_config_that_composes_itself_in_words(library, tmp_path):
     (tmp_path / "sub").mkdir()
     config = config_file(tmp_path, "_compose: [sub/../config.yaml]\n")

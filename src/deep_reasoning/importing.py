@@ -36,6 +36,7 @@ from deep_reasoning.library import (
     LibraryError,
     accepted,
     check_decomposition_name,
+    check_keys_once,
     check_name,
     check_size,
     check_tool_block,
@@ -338,6 +339,7 @@ def check_composes_within(path, folder, stack=()):
     """Raise unless each file the config at *path*, a real path, composes, and each they
     compose, as conflit finds them, is in *folder*, each checked before it is read; what
     conflit refuses, such as a cycle, is left to it."""
+    keys_once(path)
     composed = read_yaml_strict(path).get(COMPOSE)
     for entry in composed if isinstance(composed, list) else []:
         given, _ = _parse_compose_entry(entry, COMPOSE)
@@ -356,9 +358,20 @@ def namespace_files(config, folder):
     found = inside(config.config_dir / given, given, folder, "Its namespaces_dir is")
     held = "Its namespaces_dir holds"
     return [
-        yaml.safe_load(inside(file, file, folder, held).read_text(encoding="utf-8"))
+        yaml.safe_load(keys_once(inside(file, file, folder, held)))
         for file in sorted(found.glob("**/*.yaml"))
     ]
+
+
+def keys_once(path):
+    """The text of the YAML file at *path*, refused, naming it, if it gives a key twice,
+    which the engine would read as the last."""
+    # Read from the file, so YAML that doesn't parse is said to be in it.
+    with path.open(encoding="utf-8") as stream:
+        composed = yaml.compose(stream, Loader=yaml.SafeLoader)
+    with about(path):
+        check_keys_once(composed)
+    return path.read_text(encoding="utf-8")
 
 
 def check_expanded(path, files, size=0):

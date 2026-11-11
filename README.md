@@ -177,8 +177,9 @@ imports too.
   anything but what it fills in (`task`, `vars`, `funcs`, `coroutines`, the run settings'
   `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`, or put a cell's code, an f-string's braces and
   all, between `{% raw %}` and `{% endraw %}`), includes another or reaches into Python internals; over 1,000,000
-  characters; YAML whose aliases (`*name`) stand for far more than it holds; a line in the words of one the app adds
-  at run time (below) whose namespace, REPL or hand-offs aren't so there, in a suffix, a var or a worked example,
+  characters; YAML whose aliases (`*name`) stand for far more than it holds, or giving a key twice (only the last
+  would be read; a row an older version stored so reads as before); a line in the words of one the app adds at run
+  time (below) whose namespace, REPL or hand-offs aren't so there, in a suffix, a var or a worked example,
   however spaced, cased or split (other wording claims nothing); a name with outer, doubled or odd spaces,
   invisible characters or a word mixing Latin letters with Cyrillic or Armenian ones (a Cyrillic `а`); a namespace
   named oddly, with a backbone the engine doesn't know, or with a var whose name isn't a Python name, starts with

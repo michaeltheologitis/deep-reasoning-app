@@ -1185,7 +1185,7 @@ def check_writable(namespace: str, text: str, key_names: list[str]) -> None:
     check_size(text, "The YAML")
     check_whole([text])
     # Parsed too, as an escape such as "\x73k-" spells a key the raw text doesn't hold.
-    check_no_key([namespace, text, *texts_in(loaded(text))], key_names)
+    check_no_key([namespace, text, *texts_in(loaded(text, keys_once=True))], key_names)
 
 
 def code_problems(text: str) -> list[str]:

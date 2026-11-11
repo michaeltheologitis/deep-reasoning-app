@@ -726,6 +726,7 @@ LOOK_ALIKE_SCRIPTS = {"CYRILLIC", "ARMENIAN"}
 LATIN_LOOKING = {LATIN, "GREEK", *LOOK_ALIKE_SCRIPTS}
 PASSES_FOR_ANOTHER = ", so it could pass for another namespace in the menu."
 ASCII_ONLY = ": namespace names are printable ASCII only."
+MERGE_TAG = "tag:yaml.org,2002:merge"
 # Characters that don't show: controls and formats, such as a zero-width space.
 INVISIBLE = ("Cc", "Cf")
 # What the engine renders a turn's template against, beside prompt_template_variables.
@@ -1927,11 +1928,58 @@ def problem(error):
     return f"{'.'.join(map(str, error['loc']))}: {error['msg']}."
 
 
-def loaded(text):
+class RepeatsLoader(yaml.SafeLoader):
+    """yaml.safe_load's loader, noting where a mapping first gives a key twice, which it
+    reads as the last."""
+
+    repeated = None
+
+    def construct_document(self, node):
+        self.repeated = repeated_key(node)
+        return super().construct_document(node)
+
+
+def repeated_key(node):
+    """Where a mapping in the composed YAML *node* first gives a key twice, in words; None
+    when none does. A key given over one merged in (<<) is the merge's own. Each node is
+    visited once, so it takes as long as composing did, whatever its aliases stand for."""
+    seen_nodes, stack = set(), [] if node is None else [node]
+    while stack:
+        node = stack.pop()
+        if id(node) in seen_nodes or isinstance(node, yaml.ScalarNode):
+            continue
+        seen_nodes.add(id(node))
+        if isinstance(node, yaml.SequenceNode):
+            stack += node.value
+            continue
+        keys = set()
+        for key, value in node.value:
+            stack += [key, value]
+            if not isinstance(key, yaml.ScalarNode) or key.tag == MERGE_TAG:
+                continue
+            if (key.tag, key.value) in keys:
+                return (
+                    f"line {key.start_mark.line + 1}: {key.value} is given twice; keep"
+                    " one, as only the last would be read."
+                )
+            keys.add((key.tag, key.value))
+    return None
+
+
+def check_keys_once(node):
+    """Raise if a mapping in the composed YAML *node* gives a key twice, saying where."""
+    if why := repeated_key(node):
+        raise LibraryError(why)
+
+
+def loaded(text, keys_once=False):
     """The YAML *text* as data, or a LibraryError saying where it doesn't parse or why it
-    holds what no text can."""
+    holds what no text can. A key given twice reads as the last, as the engine reads it,
+    with a warning, so what an older version stored reads as before; with *keys_once*,
+    as every save takes text, it is refused."""
+    loader = RepeatsLoader(text)
     try:
-        data = yaml.safe_load(text)
+        data = loader.get_single_data()
     except yaml.YAMLError as error:
         mark = getattr(error, "problem_mark", None)
         where = f"line {mark.line + 1}: " if mark else ""
@@ -1941,6 +1989,12 @@ def loaded(text):
         ) from error
     except RecursionError as error:
         raise LibraryError("The YAML is nested too deeply to read.") from error
+    finally:
+        loader.dispose()
+    if repeated := loader.repeated:
+        if keys_once:
+            raise LibraryError(repeated)
+        log.warning("library.key_given_twice", why=repeated)
     check_aliases(data, text)
     half = next(filter(None, map(SURROGATE.search, texts_in(data))), None)
     if half:
@@ -2066,10 +2120,10 @@ def check_aliases(data, text):
     )
 
 
-def fields_in(text):
+def fields_in(text, keys_once=False):
     """The fields a namespace's YAML *text* sets, none when it is blank; a LibraryError
-    when it isn't a mapping of them."""
-    data = loaded(text)
+    when it isn't a mapping of them, or with *keys_once* gives a key twice."""
+    data = loaded(text, keys_once)
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -2077,9 +2131,10 @@ def fields_in(text):
     return data
 
 
-def decomposition_in(text):
-    """The decomposition the YAML *text* describes, as the engine's own model reads it."""
-    data = loaded(text)
+def decomposition_in(text, keys_once=False):
+    """The decomposition the YAML *text* describes, as the engine's own model reads it;
+    with *keys_once*, refused if it gives a key twice."""
+    data = loaded(text, keys_once)
     if not isinstance(data, dict):
         raise LibraryError(
             "The YAML should be a mapping: a name: line, then messages:, as in the template."
@@ -2093,7 +2148,7 @@ def decomposition_in(text):
 def parsed(text):
     """The decomposition the YAML *text* describes, checked by the engine's own model, its
     name as the panel saves one."""
-    decomposition = decomposition_in(text)
+    decomposition = decomposition_in(text, keys_once=True)
     check_decomposition_name(decomposition.name)
     return decomposition
 
@@ -2716,11 +2771,11 @@ def namespace_problem(error):
     return f"{'.'.join(map(str, error['loc']))}: {error['msg']}."
 
 
-def authored(name, text):
+def authored(name, text, keys_once=True):
     """Namespace *name* as its YAML *text* describes it, checked by the engine's own model,
-    and the YAML to store for it."""
+    and the YAML to store for it; *keys_once* as loaded() takes it."""
     check_size(text, "A namespace's YAML")
-    data = fields_in(text)
+    data = fields_in(text, keys_once)
     problems = [NAMED_ELSEWHERE[key] for key in NAMED_ELSEWHERE if key in data]
     fields = {key: value for key, value in data.items() if key not in NAMED_ELSEWHERE}
     try:
@@ -3061,7 +3116,7 @@ def merged(before, text):
     """A namespace's own YAML *before* with each field the YAML *text* sets in place of
     its own, and each it sets to null taken out; the rest kept, as typed when none
     changes."""
-    given = fields_in(text)
+    given = fields_in(text, keys_once=True)
     own = fields_of(before)
     fields = dict(own)
     for key, value in given.items():
@@ -3086,7 +3141,8 @@ def change_namespace(connection, name, text, allowed=None, was=NOT_OPENED, merge
         read = read_library(connection)
         if merge:
             text = merged(own_text(read, name) or "", text)
-        namespace, stored = authored(name, text)
+        # A merge checked the fields given; the rest, if none changed, is as stored.
+        namespace, stored = authored(name, text, keys_once=not merge)
         if allowed is not None:
             allowed(connection, namespace, read)
         before, vars_before = check_unchanged(read, name, was)
@@ -3155,7 +3211,7 @@ def built_grants(
             first(read)
         if merge:
             text = merged(own_text(read, name) or "", text)
-        namespace, _ = authored(name, text)
+        namespace, _ = authored(name, text, keys_once=not merge)
         afresh = granted_afresh(read, namespace)
         if ignored := ignored_grants(read, namespace.tools):
             raise LibraryError("\n".join(ignored))
