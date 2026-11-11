@@ -109,8 +109,9 @@ function element(tag, props = {}, ...kids) {
 const known = (table, key) => (Object.hasOwn(table, key) ? table[key] : []);
 const join = (items, separator) => items.flatMap((item, i) => (i ? [separator, item] : [item]));
 const since = (start) => Date.now() / MS_PER_SECOND - start;
-// a cell that raised, or was stopped or cut off, gave no answer, whatever its code starts with
-const NO_ANSWER = ["failed", "stopped", CUT_OFF];
+// a cell stopped or cut off ended before it could, and one that raised failed: none gave an answer, whatever its code starts with
+const CUT_SHORT = ["stopped", CUT_OFF];
+const NO_ANSWER = ["failed", ...CUT_SHORT];
 const isFinal = (cell) => !NO_ANSWER.includes(cell.status) && cell.code.startsWith("FinalAnswer(");
 const formatCount = (count) => counter.format(count);
 const plural = (count, noun) => `${formatCount(count)} ${noun}${count === 1 ? "" : "s"}`;
@@ -281,8 +282,8 @@ function renderOutput(cell, full, root) {
   return out(lines[0] || "(no output)", { more });
 }
 
-// "cut off" as one class, cut-off
-const glyph = (cell) => element("span", { class: `glyph ${asText(cell.status).replaceAll(" ", "-")}` }, decor("●"), SPOKEN_STATUS.has(cell.status) && element("span", { class: "sr-only" }, ` ${cell.status}`));
+// "cut off" as one class, cut-off; a cell stopped or cut off is hollow, so it reads apart from one done by more than colour
+const glyph = (cell) => element("span", { class: `glyph ${asText(cell.status).replaceAll(" ", "-")}` }, decor(CUT_SHORT.includes(cell.status) ? "○" : "●"), SPOKEN_STATUS.has(cell.status) && element("span", { class: "sr-only" }, ` ${cell.status}`));
 
 function renderThink(step) {
   const open = opened.has(step);

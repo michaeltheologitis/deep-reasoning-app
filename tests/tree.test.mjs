@@ -137,10 +137,10 @@ test("an opened failed cell shows its traceback without the engine's frame that 
   }
 });
 
-test("a cell's line says how it ended in words as well as colour, for a screen reader", () => {
-  for (const [status, word] of [["failed", "failed"], ["stopped", "stopped"], ["cut off", "cut off"], ["running", "running"]]) {
+test("a cell's line says how it ended in words as well as colour, for a screen reader, and one stopped or cut off is hollow", () => {
+  for (const [status, glyph] of [["failed", "●"], ["stopped", "○"], ["cut off", "○"], ["running", "●"]]) {
     const line = renderStep({ kind: "cell", code: "print(1/0)", output: null, status, agents: [] }, false).children[0];
-    assert.match(textOf(line), new RegExp(`● ${word}Python\\(print\\(1/0\\)\\)`));
+    assert.match(textOf(line), new RegExp(`${glyph} ${status}Python\\(print\\(1/0\\)\\)`));
   }
   const done = renderStep({ kind: "cell", code: "print(1)", output: "1", status: "done", agents: [] }, false).children[0];
   assert.equal(textOf(done), "●Python(print(1))");
