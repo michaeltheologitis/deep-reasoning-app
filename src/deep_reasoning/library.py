@@ -1043,6 +1043,16 @@ def shown_text(text, size):
         return None
 
 
+def warn_given_twice(table, key, where):
+    """*where* the stored row *key* of *table* gives a key twice, which reads as the last,
+    logged."""
+    log.warning("library.key_given_twice", table=table, row=repr(key), why=where)
+
+
+def unsaid(where):
+    """A stored row's key given twice, read as the last, left unsaid: its reader says so."""
+
+
 def warn_left_out(table, key, why):
     """*why* the row *key* of *table* is left out, logged."""
     log.warning("library.row_left_out", table=table, row=repr(key), why=why)
@@ -1063,11 +1073,11 @@ def unreadable(error):
 
 
 def setting_value(key, text):
-    """Run setting *key*'s value, from its YAML *text*, if the engine reads it so; else a
-    LibraryError saying why not."""
+    """Run setting *key*'s value, from its stored YAML *text*, if the engine reads it so;
+    else a LibraryError saying why not."""
     if key in NOT_RUN_SETTINGS:
         raise LibraryError(NOT_A_RUN_SETTING)
-    value = loaded(text)
+    value = loaded(text, partial(warn_given_twice, "settings", key))
     try:
         V2Config.model_validate({key: value})
     except ValidationError as error:
@@ -1151,7 +1161,7 @@ def tool_block(name, text, source):
     """Tool *name*'s block, from its YAML *text*, if it is one the app stores: with its
     Python *source*, or without for one the engine builds; else a LibraryError saying
     why not."""
-    block = loaded(text)
+    block = loaded(text, partial(warn_given_twice, "tools", name))
     try:
         V2Config.model_validate({"tools": {name: block}})
     except ValidationError as error:
@@ -1199,7 +1209,7 @@ def own_fields(name, text):
     """Namespace *name*'s own fields, from its YAML *text*, if the engine reads them so;
     else a LibraryError saying why not. Its name and decompositions are the app's to put
     in."""
-    data = fields_in(text)
+    data = fields_in(text, partial(warn_given_twice, "namespaces", name))
     fields = {key: value for key, value in data.items() if key not in NAMED_ELSEWHERE}
     try:
         NamespaceConfig.model_validate(fields | {"name": name})
@@ -1251,7 +1261,7 @@ def read_decompositions(connection, names):
         if type(namespace) is not str or type(name) is not str:
             warn_left_out("decompositions", (namespace, name), NAME_NOT_TEXT)
             continue
-        decomposition, why = decomposition_read(text, size, name, names)
+        decomposition, why = decomposition_read(text, size, namespace, name, names)
         if why:
             warn_left_out("decompositions", (namespace, name), why)
         row = {"namespace": namespace, "name": name, "yaml": shown_text(text, size)}
@@ -1260,15 +1270,16 @@ def read_decompositions(connection, names):
 
 
 @lru_cache(maxsize=DECOMPOSITIONS_KEPT)
-def decomposition_read(text, size, name, names):
+def decomposition_read(text, size, namespace, name, names):
     """A stored decomposition, read from its row's *text* and *size* (as fitting() reads
-    them) and the *name* the row is stored under, and why it is left out: the
+    them) and the *namespace* and *name* the row is stored under, and why it is left out: the
     decomposition and None when agents can be shown it; None and why, as the panel lists
     it, when the engine can't read it, a save wouldn't store it so, or a run can't render
     one of its turns, whose templates may read only *names*. Kept for the next read of
     the Library, which most requests and every run make."""
     try:
-        decomposition = decomposition_in(row_text(text, size))
+        repeated = partial(warn_given_twice, "decompositions", (namespace, name))
+        decomposition = decomposition_in(row_text(text, size), repeated)
     except LibraryError as error:
         return None, f"{UNREAD_DECOMPOSITION}\n{error}"
     try:
@@ -1979,13 +1990,13 @@ def yaml_data(source):
         loader.dispose()
 
 
-def loaded(text, keys_once=False):
+def loaded(text, repeated=None):
     """The YAML *text* as data, or a LibraryError saying where it doesn't parse or why it
-    holds what no text can. A key given twice reads as the last, as the engine reads it,
-    with a warning, so what an older version stored reads as before; with *keys_once*,
-    as every save takes text, it is refused."""
+    holds what no text can. A key given twice is refused, as every save takes text; given
+    *repeated*, as a stored row reads, it reads as the last, as the engine reads it, and
+    *repeated* is called with where, so what an older version stored reads as before."""
     try:
-        data, repeated = yaml_data(text)
+        data, where = yaml_data(text)
     except yaml.reader.ReaderError as error:
         line = text.count("\n", 0, error.position) + 1
         raise LibraryError(
@@ -2001,10 +2012,10 @@ def loaded(text, keys_once=False):
         ) from error
     except RecursionError as error:
         raise LibraryError("The YAML is nested too deeply to read.") from error
-    if repeated:
-        if keys_once:
-            raise LibraryError(repeated)
-        log.warning("library.key_given_twice", why=repeated)
+    if where and repeated is None:
+        raise LibraryError(where)
+    if where:
+        repeated(where)
     check_aliases(data, text)
     half = next(filter(None, map(SURROGATE.search, texts_in(data))), None)
     if half:
@@ -2130,10 +2141,10 @@ def check_aliases(data, text):
     )
 
 
-def fields_in(text, keys_once=False):
+def fields_in(text, repeated=None):
     """The fields a namespace's YAML *text* sets, none when it is blank; a LibraryError
-    when it isn't a mapping of them, or with *keys_once* gives a key twice."""
-    data = loaded(text, keys_once)
+    when it isn't a mapping of them. A key given twice as loaded() takes *repeated*."""
+    data = loaded(text, repeated)
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -2141,10 +2152,10 @@ def fields_in(text, keys_once=False):
     return data
 
 
-def decomposition_in(text, keys_once=False):
-    """The decomposition the YAML *text* describes, as the engine's own model reads it;
-    with *keys_once*, refused if it gives a key twice."""
-    data = loaded(text, keys_once)
+def decomposition_in(text, repeated=None):
+    """The decomposition the YAML *text* describes, as the engine's own model reads it; a
+    key given twice as loaded() takes *repeated*."""
+    data = loaded(text, repeated)
     if not isinstance(data, dict):
         raise LibraryError(
             "The YAML should be a mapping: a name: line, then messages:, as in the template."
@@ -2158,7 +2169,7 @@ def decomposition_in(text, keys_once=False):
 def parsed(text):
     """The decomposition the YAML *text* describes, checked by the engine's own model, its
     name as the panel saves one."""
-    decomposition = decomposition_in(text, keys_once=True)
+    decomposition = decomposition_in(text)
     check_decomposition_name(decomposition.name)
     return decomposition
 
@@ -2715,7 +2726,7 @@ def stored_decomposition(connection, namespace, name):
         return None
     try:
         text = row_text(*found)
-        decomposition_in(text)
+        decomposition_in(text, unsaid)
     except LibraryError as error:
         return left_out_note(str(error))
     return text
@@ -2786,11 +2797,11 @@ def namespace_problem(error):
     return f"{'.'.join(map(str, error['loc']))}: {error['msg']}."
 
 
-def authored(name, text, keys_once=True):
+def authored(name, text, repeated=None):
     """Namespace *name* as its YAML *text* describes it, checked by the engine's own model,
-    and the YAML to store for it; *keys_once* as loaded() takes it."""
+    and the YAML to store for it; a key given twice as loaded() takes *repeated*."""
     check_size(text, "A namespace's YAML")
-    data = fields_in(text, keys_once)
+    data = fields_in(text, repeated)
     problems = [NAMED_ELSEWHERE[key] for key in NAMED_ELSEWHERE if key in data]
     fields = {key: value for key, value in data.items() if key not in NAMED_ELSEWHERE}
     try:
@@ -3121,7 +3132,7 @@ def fields_of(text):
     """The fields a namespace's own YAML *text* sets: none when it sets none, or isn't
     YAML, as a change a cell logged may not be."""
     try:
-        fields = loaded(text) if type(text) is str else None
+        fields = loaded(text, unsaid) if type(text) is str else None
     except LibraryError:
         return {}
     return fields if isinstance(fields, dict) else {}
@@ -3131,7 +3142,7 @@ def merged(before, text):
     """A namespace's own YAML *before* with each field the YAML *text* sets in place of
     its own, and each it sets to null taken out; the rest kept, as typed when none
     changes."""
-    given = fields_in(text, keys_once=True)
+    given = fields_in(text)
     own = fields_of(before)
     fields = dict(own)
     for key, value in given.items():
@@ -3157,7 +3168,7 @@ def change_namespace(connection, name, text, allowed=None, was=NOT_OPENED, merge
         if merge:
             text = merged(own_text(read, name) or "", text)
         # A merge checked the fields given; the rest, if none changed, is as stored.
-        namespace, stored = authored(name, text, keys_once=not merge)
+        namespace, stored = authored(name, text, unsaid if merge else None)
         if allowed is not None:
             allowed(connection, namespace, read)
         before, vars_before = check_unchanged(read, name, was)
@@ -3226,7 +3237,7 @@ def built_grants(
             first(read)
         if merge:
             text = merged(own_text(read, name) or "", text)
-        namespace, _ = authored(name, text, keys_once=not merge)
+        namespace, _ = authored(name, text, unsaid if merge else None)
         afresh = granted_afresh(read, namespace)
         if ignored := ignored_grants(read, namespace.tools):
             raise LibraryError("\n".join(ignored))

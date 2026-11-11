@@ -81,6 +81,7 @@ from deep_reasoning.library import (
     add_decomposition,
     add_namespace,
     change_namespace,
+    decomposition_read,
     default_namespace,
     delete_decomposition,
     delete_namespace,
@@ -90,6 +91,7 @@ from deep_reasoning.library import (
     edit_decomposition,
     engine_config,
     example_calls,
+    fields_of,
     fitting,
     hand_off,
     handed_to,
@@ -1696,6 +1698,8 @@ def plant_older_repeats(library):
 
 def test_an_older_row_giving_a_key_twice_reads_as_the_last_with_a_warning(library):
     plant_older_repeats(library)
+    # Kept between reads, so an earlier test may have read the same row.
+    decomposition_read.cache_clear()
     with capture_logs() as logs, closing(open_library(library)) as connection:
         config = stored_config(connection)
         shown = panel(connection)
@@ -1707,13 +1711,22 @@ def test_an_older_row_giving_a_key_twice_reads_as_the_last_with_a_warning(librar
     rows = [*shown["namespaces"], *shown["tools"], *shown["run_settings"]]
     assert [row["problems"] for row in rows if row.get("problems")] == []
     assert {
-        entry["why"] for entry in logs if entry["event"] == "library.key_given_twice"
+        (entry["table"], entry["row"], entry["why"])
+        for entry in logs
+        if entry["event"] == "library.key_given_twice"
     } == {
-        f"line 3: system_suffix {GIVEN_TWICE}",
-        f"line 5: name {GIVEN_TWICE}",
-        f"line 2: type {GIVEN_TWICE}",
-        f"line 3: system_prompt {GIVEN_TWICE}",
+        ("namespaces", "'notes'", f"line 3: system_suffix {GIVEN_TWICE}"),
+        ("decompositions", "('root', 'no think')", f"line 5: name {GIVEN_TWICE}"),
+        ("settings", "'repl'", f"line 2: type {GIVEN_TWICE}"),
+        ("tools", "'sanitizer'", f"line 3: system_prompt {GIVEN_TWICE}"),
     }
+
+
+def test_yaml_giving_a_key_twice_read_outside_a_row_reader_logs_nothing():
+    with capture_logs() as logs:
+        fields = fields_of(OLDER_REPEATS["namespaces"][1])
+    assert fields["system_suffix"] == "Be long."
+    assert logs == []
 
 
 def test_an_older_namespace_giving_a_key_twice_changes_by_merge_but_not_as_typed(
