@@ -62,14 +62,12 @@ from deep_reasoning.library import (
     LIBRARIAN_HAND_OFFS,
     LIBRARIAN_SUFFIX,
     LIBRARIANS_EXAMPLES,
-    LOCAL_REPL,
     MAX_YAML_CHARS,
     NO_SUB_AGENTS,
     PAGE_DESCRIPTION,
     PAST_THE_LIMIT,
     ROOT,
     ROOT_SUFFIX,
-    SANDBOX_LINE,
     SPAWN_LINE,
     TOO_LONG_ROW,
     TOO_SLOW,
@@ -109,9 +107,7 @@ from deep_reasoning.settings import (
 
 pytestmark = pytest.mark.usefixtures("no_vendor_keys")
 
-# The lines a run adds after a fresh Library's suffixes: where Python runs, and where the
-# historian's agents are.
-LOCAL_LINE = SANDBOX_LINE.render(type=LOCAL_REPL, local=LOCAL_REPL)
+# The line a run adds after the historian's suffix in a fresh Library, saying where it is.
 HISTORIANS_HERE = HERE_LINE.render(name=HISTORIAN, above=False, loops=False)
 
 
@@ -347,14 +343,9 @@ def test_a_fresh_library_shows_llm_granted_at_root_history_and_page_in_the_histo
     ]
     assert field(by_name[HISTORIAN], "System suffix") == [
         {"value": ROOT_SUFFIX.strip(), "source": "inherited from root", "here": False},
-        {
-            "value": LOCAL_LINE,
-            "source": "added by the app at run time, inherited from root",
-            "here": False,
-        },
         {"value": HISTORIAN_SUFFIX.strip(), "source": "set here", "here": True},
         {
-            "value": f"{HISTORIANS_HERE} {LOCAL_LINE} {NO_SUB_AGENTS}",
+            "value": f"{HISTORIANS_HERE} {NO_SUB_AGENTS}",
             "source": "added by the app at run time",
             "here": True,
         },
@@ -2423,9 +2414,8 @@ async def test_root_hands_a_question_about_the_library_to_the_librarian_which_ma
     # Each suffix its agents get, root's first, with where it comes from.
     assert events[-1]["answer"] == (
         f"The historian's agents are told:\n\n{ROOT_SUFFIX.strip()}\n(inherited from"
-        f" root)\n\n{LOCAL_LINE}\n(added by the app at run time, inherited from root)"
-        f"\n\n{HISTORIAN_SUFFIX.strip()}\n(set here)\n\n"
-        f"{HISTORIANS_HERE} {LOCAL_LINE} {NO_SUB_AGENTS}\n(added by the app at run time)"
+        f" root)\n\n{HISTORIAN_SUFFIX.strip()}\n(set here)\n\n"
+        f"{HISTORIANS_HERE} {NO_SUB_AGENTS}\n(added by the app at run time)"
     )
     librarians_prompt = system_prompts(fake.calls[-1:])[0]
     assert "In this chat you may only read the Library: its namespace, root," in (

@@ -193,10 +193,10 @@ imports too.
   what you wrote. A delete the panel knows would be refused says why at once. The panel and the
   namespace menu read the Library again when you open the panel or come back to the window.
 - Each run tells the agents of every namespace but root which namespace they are in, so "hand this to stats" reaching
-  `stats` is done there; of every namespace, root's included, where their Python runs; and, when it sets `spawn`,
-  where they can hand work. The panel shows that line under its System suffix, "added by
-  the app at run time", and marks a listed namespace that is gone. It comes after the namespace's own suffix, so a
-  line there in its words, copied or shared, is followed by the true one, which agents believe.
+  `stats` is done there; of one whose REPL isn't the one above it (root: the local one), where their Python runs,
+  whatever is said above; and, when it sets `spawn`, where they can hand work. The panel shows that line under its
+  System suffix, "added by the app at run time", and marks a listed namespace that is gone. Saving takes any text,
+  a line in these words included: what a shared Library's text tells agents is for you to trust or not.
 - A shared Library's rows the engine can't read are left out, so the rest works, and so is a row that could pass for
   another or hides a mismatch: a worked example with a template no save takes, named with a hidden character, or
   stored under a name its YAML doesn't give; a namespace named with a space, a

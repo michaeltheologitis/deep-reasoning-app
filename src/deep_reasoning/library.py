@@ -306,7 +306,7 @@ HERE_LINE = jinja2.Template(
     " where it was sent, so do it here rather than hand it on{% endif %}.",
     undefined=jinja2.StrictUndefined,
 )
-# The REPL that runs Python unsandboxed, as root's suffix says; any other is a sandbox.
+# Root's suffix says Python runs unsandboxed, as the local REPL does; any other is a sandbox.
 LOCAL_REPL = "local"
 SANDBOX_LINE = jinja2.Template(
     "Here your Python runs {% if type == local %}unsandboxed, in the local REPL{% else %}"
@@ -1549,30 +1549,32 @@ def here_line(registry, name):
 
 
 def sandbox_line(registry, name):
-    """What the agents of namespace *name* are told of where their Python runs: after
-    its own suffix, so a line there passing for this one is always followed by the true
-    one."""
+    """What the agents of namespace *name* are told of where their Python runs, when its
+    REPL is another than the one above it, or than the local REPL root's suffix speaks of;
+    None otherwise."""
+    chain = registry.chain(name)
+    above = registry.resolve(chain[-2]).repl.type if len(chain) > 1 else LOCAL_REPL
     repl = registry.resolve(name).repl.type
+    if repl == above:
+        return None
     return SANDBOX_LINE.render(type=repl, local=LOCAL_REPL)
 
 
 def run_lines(registry):
     """What the agents of each namespace are told at run time, after its own
-    system_suffix, by namespace: which namespace they are in (but root's), where their
-    Python runs, and where they can hand work."""
+    system_suffix, by namespace, for those told any: which namespace they are in, where
+    their Python runs, and where they can hand work."""
     spawns = spawn_lines(registry)
-    return {
-        name: " ".join(
-            filter(
-                None,
-                [
-                    here_line(registry, name),
-                    sandbox_line(registry, name),
-                    spawns.get(name),
-                ],
-            )
-        )
+    parts = {
+        name: [
+            here_line(registry, name),
+            sandbox_line(registry, name),
+            spawns.get(name),
+        ]
         for name in registry.names
+    }
+    return {
+        name: " ".join(filter(None, each)) for name, each in parts.items() if any(each)
     }
 
 

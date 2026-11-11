@@ -23,10 +23,8 @@ from deep_reasoning.library import (
     HERE_LINE,
     HISTORIAN,
     LIBRARIAN,
-    LOCAL_REPL,
     MAX_YAML_CHARS,
     ROOTS_EXAMPLES,
-    SANDBOX_LINE,
     UPSERT_NAMESPACE,
     LibraryError,
     add_namespace,
@@ -502,8 +500,7 @@ def test_an_imported_suffix_may_read_the_configs_own_template_variables(
     import_into(library, written)
     namespace = run_config(library, tmp_path).namespaces["research"]
     here = HERE_LINE.render(name="research", above=False, loops=True)
-    local = SANDBOX_LINE.render(type=LOCAL_REPL, local=LOCAL_REPL)
-    assert namespace.system_suffix == f"Answer for {{{{ dept }}}}.\n\n{here} {local}"
+    assert namespace.system_suffix == f"Answer for {{{{ dept }}}}.\n\n{here}"
 
 
 NOT_A_MAPPING = 'is not a deep_reasoner config: it should be a mapping of settings, like "max_iter: 20".'
