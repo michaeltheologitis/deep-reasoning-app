@@ -537,9 +537,10 @@ the last <repl> block in your reply is the one that runs, and refuses a text hol
 Give each code as a raw string over several lines (r\"\"\"…\"\"\"), so the escapes you \
 type stay in its Python. To fix or change one, write it again from turns. \
 write_decomposition(namespace, yaml) takes a decomposition's whole YAML instead, as \
-show(name) and changes() give it, each repl tag as [repl] or [/repl] so a copy never \
-ends your cell, and writes a placeholder alone on a line of an assistant turn back as \
-the tag. To change a few words of a stored one, .replace(...) them in its yaml in your cell, never with text holding a tag. \
+show(name) and changes() give it. Every text this tool gives writes <repl> and </repl> \
+as ⟦repl⟧ and ⟦/repl⟧, so a copy never ends your cell, and every text it takes reads \
+them back as the tags. To change a few words of a stored one, .replace(...) them in its \
+yaml in your cell, never with text holding a tag. \
 It is stored even when it isn't yet a worked example like that: the \
 result's problems lists each way it isn't (empty when none), and until you write it \
 again without them the Library panel marks it ✗. The result's code_problems, when \

@@ -68,6 +68,7 @@ from deep_reasoning.library import (
     LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
     MAX_YAML_CHARS,
+    ROOTS_EXAMPLES,
     TOO_LONG_ROW,
     UNREAD_DECOMPOSITION,
     UPSERT_DECOMPOSITION,
@@ -1215,11 +1216,22 @@ def stored_yaml(library, namespace, name):
     return text
 
 
-def as_placeholders(text):
-    return text.replace("<repl>", "[repl]").replace("</repl>", "[/repl]")
+# How the tool gives each repl tag, which typed into a cell would end the cell there.
+GIVEN_TAGS = {"<repl>": "⟦repl⟧", "</repl>": "⟦/repl⟧"}
 
 
-def test_the_tool_gives_an_examples_repl_tags_as_placeholders(fresh):
+def as_given(text):
+    """*text*, holding no ⟦ or [repl], as the tool gives it."""
+    for tag, mark in GIVEN_TAGS.items():
+        text = text.replace(tag, mark)
+    return text
+
+
+def holds_a_real_tag(given):
+    return any(tag in json.dumps(given, ensure_ascii=False) for tag in GIVEN_TAGS)
+
+
+def test_the_tool_gives_an_examples_repl_tags_marked(fresh):
     tool = library_tool(fresh)
     # It ends on a step that doesn't answer, so its problem names the <repl> too.
     done = tool.write_decomposition("drafts", "light-years", LIGHT_YEARS[:2])
@@ -1228,35 +1240,113 @@ def test_the_tool_gives_an_examples_repl_tags_as_placeholders(fresh):
     whole = tool.show("drafts", whole=True)["decompositions"]
     [whole_shown] = [each for each in whole if each["from"] == "drafts"]
     assert "<repl>" in stored_text and "</repl>" in stored_text
-    assert shown["yaml"] == whole_shown["yaml"] == as_placeholders(stored_text)
+    assert shown["yaml"] == whole_shown["yaml"] == as_given(stored_text)
     assert (
         done["problems"]
         == shown["problems"]
-        == ["Turn 2 (assistant), the last, should call FinalAnswer(...) in its [repl]."]
+        == ["Turn 2 (assistant), the last, should call FinalAnswer(...) in its ⟦repl⟧."]
     )
-    assert "repl>" not in json.dumps([done, tool.show("drafts"), whole])
+    assert not holds_a_real_tag([done, tool.show("drafts"), whole])
 
 
-def test_an_examples_change_gives_its_repl_tags_as_placeholders(fresh):
-    after = yaml.safe_dump({"name": "x", "messages": LIGHT_YEARS_MESSAGES})
-    added = {"kind": "library.change", "what": "decomposition", "name": "x"}
-    added |= {"namespace": "drafts", "before": after, "after": after}
-    plant(fresh, CHAT, crafted(added))
-    [change] = library_tool(fresh).changes(1)
-    assert change["before"] == change["after"] == as_placeholders(after)
+# Worked examples as the panel or a shared file may store them: tags inline, a user's turn
+# naming the tags and the marks, and a draft holding only [repl] lines.
+INLINE = (
+    "name: inline\nmessages:\n- {role: user, content: Answer 1.}\n"
+    '- {role: assistant, content: "<think>t</think><repl>FinalAnswer(1)</repl>"}\n'
+)
+MENTIONING = (
+    "name: mentioning\nmessages:\n"
+    '- {role: user, content: "Explain <repl>, [repl], ⟦repl⟧ and ⟦⟦."}\n'
+    "- role: assistant\n  content: |-\n    <think>t</think>\n    <repl>\n"
+    '    FinalAnswer("[repl] then <repl>")\n    </repl>\n'
+)
+DRAFTED = (
+    "name: drafted\nmessages:\n- {role: user, content: Answer 3.}\n"
+    "- role: assistant\n  content: |\n    [repl]\n    FinalAnswer(3)\n    [/repl]\n"
+)
+STORED_EXAMPLES = [
+    INLINE,
+    MENTIONING,
+    DRAFTED,
+    *ROOTS_EXAMPLES,
+    *HISTORIANS_EXAMPLES,
+    *LIBRARIANS_EXAMPLES,
+]
 
 
-def test_an_example_copied_from_show_into_a_write_round_trips(fresh):
+def planted_example(library, text):
+    """The worked example *text* stored in drafts as it is; its name."""
+    name = yaml.safe_load(text)["name"]
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_DECOMPOSITION, ("drafts", name, text))
+    return name
+
+
+@pytest.mark.parametrize("text", STORED_EXAMPLES, ids=lambda text: parsed(text).name)
+def test_a_stored_example_given_whole_and_written_back_is_stored_byte_for_byte(
+    fresh, text
+):
+    name = planted_example(fresh, text)
     tool = library_tool(fresh)
-    tool.write_decomposition("drafts", "light-years", LIGHT_YEARS)
-    tool.add_namespace("astronomy", {})
-    copies = [*own_decompositions(tool, "drafts"), *own_decompositions(tool, HISTORIAN)]
-    for copy in copies:
-        tool.write_decomposition("astronomy", copy["yaml"])
-    for copy in copies:
-        original = stored_yaml(fresh, copy["from"], copy["name"])
-        assert stored_yaml(fresh, "astronomy", copy["name"]) == original
-        assert "<repl>" in original
+    whole = tool.show("drafts", whole=True)
+    [given] = [
+        each
+        for each in whole["decompositions"]
+        if (each["name"], each["from"]) == (name, "drafts")
+    ]
+    assert not holds_a_real_tag(whole)
+    tool.write_decomposition("drafts", given["yaml"])
+    assert stored_yaml(fresh, "drafts", name) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [INLINE, MENTIONING, DRAFTED, LIBRARIANS_EXAMPLES[1]],
+    ids=lambda text: parsed(text).name,
+)
+def test_an_examples_before_from_changes_undoes_it_byte_for_byte(fresh, text):
+    name = planted_example(fresh, text)
+    change = {"kind": "library.change", "what": "decomposition", "name": name}
+    change |= {"namespace": "drafts", "before": text, "after": EXAMPLE}
+    plant(fresh, CHAT, crafted(change))
+    tool = library_tool(fresh)
+    tool.write_decomposition("drafts", EXAMPLE.replace("count the tickets", name))
+    [given] = tool.changes(1)
+    assert not holds_a_real_tag([given, tool.changes()])
+    tool.write_decomposition("drafts", given["before"])
+    assert stored_yaml(fresh, "drafts", name) == text
+
+
+def test_no_text_the_library_tool_gives_holds_a_real_repl_tag(fresh):
+    suffix = "Never end a <repl> block early."
+    source = 'NOTE = "<repl> ends a cell"\n\ndef build(client, params):\n    return 1\n'
+    with closing(open_library(fresh)) as connection, writing(connection):
+        connection.execute(
+            UPSERT_NAMESPACE, ("drafts", dump({"system_suffix": suffix}))
+        )
+        block = {"factory": "build", "factory_from": "noted.py"}
+        connection.execute(UPSERT_TOOL, ("noted", dump(block), source))
+    planted_example(fresh, INLINE)
+    changed = {"kind": "library.change", "what": "namespace", "namespace": "drafts"}
+    changed |= {
+        "name": "drafts",
+        "before": None,
+        "after": dump({"system_suffix": suffix}),
+    }
+    plant(fresh, CHAT, crafted(changed))
+    tool = library_tool(fresh)
+    given = [
+        tool.show(),
+        tool.show("drafts"),
+        tool.show("drafts", whole=True),
+        tool.tools(),
+        tool.tools("noted"),
+        tool.changes(),
+        tool.changes(1),
+    ]
+    assert not holds_a_real_tag(given)
+    assert tool.tools("noted")["source"] == as_given(source)
 
 
 @pytest.mark.parametrize(

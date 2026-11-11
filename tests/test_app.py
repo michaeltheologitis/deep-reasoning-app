@@ -1596,9 +1596,9 @@ EXAMPLE_PROBLEMS = [
 
 
 def as_the_tool_gives(texts):
-    """*texts* as the library tool gives them, each repl tag as its placeholder."""
+    """*texts* as the library tool gives them, each repl tag marked."""
     return [
-        text.replace("<repl>", "[repl]").replace("</repl>", "[/repl]") for text in texts
+        text.replace("<repl>", "⟦repl⟧").replace("</repl>", "⟦/repl⟧") for text in texts
     ]
 
 

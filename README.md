@@ -235,7 +235,8 @@ imports too.
   to root's suffix, which you edit in the panel, rather than spreading it over namespaces.
 - It writes a worked example from its steps (the task; each step's reasoning and code; what the code printed), so
   it never types the tags that would run the example's code in place of its own: a step holding one is refused, and
-  it reads worked examples with `[repl]` for each `<repl>`, so copying one never ends its cell.
+  every text it reads gives each `<repl>` as `⟦repl⟧`, read back when it writes, so copying a worked example never
+  ends its cell and writing one back changes nothing.
 - Each change shows under its answer and in the tree, opens onto its YAML (or a tool's Python) before and after, and
   applies from your next message; the panel and namespace menu show it at once. Ask it to undo one and it writes the
   before back from the record.

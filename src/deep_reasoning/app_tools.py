@@ -39,7 +39,7 @@ from concurrent.futures import Future
 from contextlib import closing, contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass, field
-from functools import cached_property, partial
+from functools import cached_property, partial, wraps
 from importlib.util import find_spec
 from pathlib import Path
 from types import SimpleNamespace
@@ -167,10 +167,24 @@ CUT_SHORT = (
     " cut short: write the whole of it, from show(name, whole=True), tools(name) or"
     " changes()."
 )
-# An example's cell tags, each on a line of its own, as the tool gives them and a cell
-# writes them, as placeholders: a reply's last real <repl> is the one that runs.
+# An example's cell tags, each on a line of its own, as a cell may type them, as
+# placeholders: a reply's last real <repl> is the one that runs.
 REAL_TAGS = {"[repl]": "<repl>", "[/repl]": "</repl>"}
 LONE_PLACEHOLDER = re.compile(r"^([ \t]*)\[(/?)repl\]([ \t]*)$", re.MULTILINE)
+# How every text the tool gives writes a repl tag, which typed into a cell would end the
+# cell there, and how every text it takes is read back: as a mark nobody types. A typed
+# placeholder, which a write takes for a tag, and the mark's own bracket are marked too,
+# so a text given and written back is the same to the byte.
+MARKS = {
+    "<repl>": "⟦repl⟧",
+    "</repl>": "⟦/repl⟧",
+    "[repl]": "⟦[repl]⟧",
+    "[/repl]": "⟦[/repl]⟧",
+    "⟦": "⟦⟦",
+}
+UNMARKS = {mark: text for text, mark in MARKS.items()}
+TO_MARK = re.compile("|".join(map(re.escape, MARKS)))
+TO_UNMARK = re.compile("|".join(map(re.escape, UNMARKS)))
 # The tags the engine reads as a turn's parts: inside a turn's text, one would end its
 # part there or start another.
 TAG = re.compile(r"</?(?:repl|think|observation)>", re.IGNORECASE)
@@ -1094,7 +1108,10 @@ def check_no_key(texts: list[str], key_names: list[str]) -> None:
 def with_real_tags(text: str) -> str:
     """The decomposition written as YAML *text* with each line of an assistant turn that
     is a placeholder tag alone, [repl] or [/repl], written as the real one; *text* as it
-    is when it has none, or doesn't read as a decomposition, which the store refuses."""
+    is when it has none, holds a real tag, so wasn't typed, or doesn't read as a
+    decomposition, which the store refuses."""
+    if "<repl>" in text or not any(map(text.__contains__, REAL_TAGS)):
+        return text
     try:
         decomposition = yaml.safe_load(text)
     except yaml.YAMLError:
@@ -1121,24 +1138,31 @@ def with_real_tags(text: str) -> str:
     )
 
 
-def placeheld(text: Any) -> Any:
-    """*text* with each real repl tag written as its placeholder, as the tool gives a worked
-    example: copied into a cell, a real one would end the cell there; anything but text as
-    it is."""
-    if type(text) is not str:
-        return text
-    for placeholder, tag in REAL_TAGS.items():
-        text = text.replace(tag, placeholder)
-    return text
+def marked(value: Any) -> Any:
+    """*value*, as the tool gives it: each text in it, at any depth, keys included, with
+    each repl tag marked (MARKS)."""
+    return each_text(value, partial(TO_MARK.sub, lambda found: MARKS[found.group()]))
 
 
-def example_as_given(entry: dict[str, Any]) -> dict[str, Any]:
-    """A worked example's *entry*, as show() lists it, with each of its texts, and each
-    text of its lists, placeheld()."""
-    return {
-        key: [*map(placeheld, value)] if type(value) is list else placeheld(value)
-        for key, value in entry.items()
-    }
+def unmarked(value: Any) -> Any:
+    """*value*, as given to the tool, with each mark read back: marked()'s inverse."""
+    return each_text(
+        value, partial(TO_UNMARK.sub, lambda found: UNMARKS[found.group()])
+    )
+
+
+def each_text(value: Any, change: Callable[[str], str]) -> Any:
+    """*value* with each text in it, at any depth, keys included, made *change*(text)."""
+    if type(value) is str:
+        return change(value)
+    if type(value) is dict:
+        return {
+            each_text(key, change): each_text(item, change)
+            for key, item in value.items()
+        }
+    if type(value) in (list, tuple):
+        return [each_text(item, change) for item in value]
+    return value
 
 
 def tag_written(line: str) -> str:
@@ -1174,6 +1198,7 @@ def from_turns(name: Any, turns: Any) -> str:
     turn whose text holds a tag."""
     if type(name) is not str or type(turns) is not list:
         raise LibraryError(NOT_TURNS)
+    name = unmarked(name)
     messages = [turn_message(turn) for turn in turns]
     for number, turn in enumerate(turns, start=1):
         for field_name, text in turn.items():
@@ -1209,15 +1234,18 @@ def turn_message(turn: Any) -> dict[str, str]:
     return {"role": "assistant", "content": f"{think}<repl>\n{code}\n</repl>"}
 
 
-def yaml_text(value: Any) -> str:
+def yaml_text(value: Any, typed: Callable[[str], str] = str) -> str:
     """*value*, YAML text or a dict of plain values, as YAML text, from its first line
-    that isn't blank."""
+    that isn't blank, its marks read back (unmarked()) once *typed* has written what was
+    typed."""
     if type(value) is dict and plain(value):
-        return written_out(value, "The YAML")
+        # Read back once checked, as a dict holding itself never ends.
+        written_out(value, "The YAML")
+        return typed(dump(unmarked(value)))
     # Exactly str: a subclass could compare unequal to "root" and still name it.
     if type(value) is not str:
         raise LibraryError(NOT_TEXT)
-    return value.lstrip("\n")
+    return unmarked(typed(value.lstrip("\n")))
 
 
 def check_whole(texts: Iterable[str]) -> None:
@@ -1537,8 +1565,8 @@ def in_full(
         "depth": row["depth"],
         "yaml": left_out_note(left[name]) if name in left else row["yaml"],
         "fields": row["fields"],
-        "decompositions": [*map(example_as_given, decompositions)],
-        "decompositions_left_out": [*map(example_as_given, left_out)],
+        "decompositions": decompositions,
+        "decompositions_left_out": left_out,
     }
 
 
@@ -1625,9 +1653,6 @@ def as_written(event: Event) -> dict[str, Any]:
     if change["what"] == "tool":
         for key in ("before", "after"):
             change[key] = tool_fields(change["name"], change[key])
-    if change["what"] == "decomposition":
-        for key in ("before", "after"):
-            change[key] = placeheld(change[key])
     return change
 
 
@@ -1706,6 +1731,16 @@ def module_notes(refusal: str) -> list[str]:
         elif module == package:
             notes.append(IN_FOLDER_ONLY.render(module=module))
     return notes
+
+
+def giving_marks(method: Callable[..., Any]) -> Callable[..., Any]:
+    """The library tool's *method*, its result given with each repl tag marked."""
+
+    @wraps(method)
+    def given(*args: Any, **kwargs: Any) -> Any:
+        return marked(method(*args, **kwargs))
+
+    return given
 
 
 def build_library(client: Any, params: dict[str, Any]) -> Func:
@@ -1828,12 +1863,8 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         if turns is not None:
             text = from_turns(yaml if name is None else name, turns)
         else:
-            text = yaml_text(yaml)
+            text = yaml_text(yaml, typed=with_real_tags)
         check_writable(namespace, text, key_names)
-        # The tool gives none, so a text holding a real tag was made otherwise: its
-        # [repl] is the example's own.
-        if "<repl>" not in text:
-            text = with_real_tags(text)
 
         def write() -> tuple[dict[str, Any], Event]:
             stored, before = written(
@@ -1856,11 +1887,9 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             return stored, change
 
         stored, change = stop_proof(write)
-        done = example_as_given(
-            {"problems": stored["problems"], "code_problems": code_problems(text)}
-        )
-        return {**change, "problems": done["problems"]} | (
-            {"code_problems": done["code_problems"]} if done["code_problems"] else {}
+        broken = code_problems(text)
+        return {**change, "problems": stored["problems"]} | (
+            {"code_problems": broken} if broken else {}
         )
 
     def add(name: str, yaml: Any) -> dict[str, Any]:
@@ -1904,7 +1933,10 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     ) -> dict[str, Any]:
         """Add tool *name*, built by the function *factory* in the Python *source* with
         *settings* as its params, or replace the one of its name."""
+        source = unmarked(source)
         check_tool(name, source, factory, settings, key_names)
+        # Read back once checked, as settings holding themselves never end.
+        settings = unmarked(settings)
         # The grant and the locks first, before the tool's code runs; the build holds no
         # write lock, so they are checked again under it.
         with app_file(library, "ro") as connection:
@@ -1926,13 +1958,13 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         return stop_proof(write)
 
     tool = SimpleNamespace(
-        show=show,
-        tools=tools,
-        changes=changes,
-        write_decomposition=write_decomposition,
-        add_namespace=add,
-        change_namespace=change,
-        write_tool=write_tool,
+        show=giving_marks(show),
+        tools=giving_marks(tools),
+        changes=giving_marks(changes),
+        write_decomposition=giving_marks(write_decomposition),
+        add_namespace=giving_marks(add),
+        change_namespace=giving_marks(change),
+        write_tool=giving_marks(write_tool),
     )
     description = LIBRARY_DESCRIPTION
     if chat_namespace not in editors:
