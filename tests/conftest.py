@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from fake_model import SERVER_KEY, SERVER_NAME
 
+from deep_reasoning import library as library_module
 from deep_reasoning.importing import import_config
 from deep_reasoning.library import open_library
 from deep_reasoning.settings import VENDORS, add_server, remember_pick
@@ -19,6 +20,15 @@ def home(tmp_path, monkeypatch):
     path.mkdir()
     monkeypatch.setenv("HOME", str(path))
     return path
+
+
+@pytest.fixture(autouse=True)
+def reads_afresh(monkeypatch):
+    """Each test reads the Library as a process's first read would: nothing kept from
+    another test's, and each warning logged."""
+    monkeypatch.setattr(library_module, "WARNED", set())
+    library_module.namespace_read.cache_clear()
+    library_module.decomposition_read.cache_clear()
 
 
 @pytest.fixture

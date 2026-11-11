@@ -10,6 +10,7 @@ the app's settings; this module lays the whole file out.
 
 import ast
 import builtins
+import hashlib
 import inspect
 import json
 import keyword
@@ -22,7 +23,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Hashable, Sequence
 from contextlib import closing, contextmanager
-from functools import lru_cache, partial, update_wrapper, wraps
+from functools import partial, update_wrapper, wraps
 from pathlib import Path
 
 import deep_reasoner.llm
@@ -77,6 +78,11 @@ from markupsafe import EscapeFormatter, Markup
 from pydantic import ValidationError
 
 log = structlog.get_logger()
+# The warnings of rows left out and grants ignored this process has logged, by digest:
+# every read of the Library meets them again, so each is logged once, and again only for
+# a new reason, or once WARNINGS_KEPT have been logged and they start afresh.
+WARNED = set()
+WARNINGS_KEPT = 4096
 
 SCHEMA_VERSION = 4
 # Version 1 held the Library alone, version 2 added the chats and the app's settings, and
@@ -701,6 +707,9 @@ UNSAVED_DECOMPOSITION = "Agents aren't shown it: no save would store it so."
 # How many stored decompositions' readings are kept, so a read of the Library parses only
 # those that changed; a Library holds a few dozen.
 DECOMPOSITIONS_KEPT = 256
+# How many stored namespaces' fields are kept, likewise: the namespace menu, the panel and
+# every run read them all.
+NAMESPACES_KEPT = 256
 FIELDS_MAPPING = 'The YAML should be a mapping of fields, like "tools: [llm]".'
 # A var named as one of these hides it from the agent's code, as max: 10 breaks max(numbers).
 BUILTIN_NAMES = frozenset(dir(builtins))
@@ -1041,10 +1050,51 @@ def shown_text(text, size):
         return None
 
 
+def warn_once(event, **said):
+    """Log warning *event*, saying *said*, unless this process has logged it so already."""
+    warning = digested(repr((event, said)))
+    if warning in WARNED:
+        return
+    if len(WARNED) >= WARNINGS_KEPT:
+        WARNED.clear()
+    WARNED.add(warning)
+    log.warning(event, **said)
+
+
+def digested(value):
+    """*value*, or, for a text, its SHA-256 digest, which is all a key needs of it."""
+    if type(value) is not str:
+        return value
+    return hashlib.sha256(value.encode(errors="surrogatepass")).digest()
+
+
+class Kept:
+    """*function*'s results, kept as lru_cache keeps them but by its arguments with each
+    text as its digest, never the text, which may be a million characters; past *limit*
+    results they start afresh."""
+
+    def __init__(self, function, limit):
+        self.function = function
+        self.limit = limit
+        self.results = {}
+
+    def __call__(self, *arguments):
+        key = tuple(map(digested, arguments))
+        found = self.results.get(key)
+        if found is None:
+            if len(self.results) >= self.limit:
+                self.results.clear()
+            found = self.results[key] = self.function(*arguments)
+        return found
+
+    def cache_clear(self):
+        self.results.clear()
+
+
 def warn_given_twice(table, key, where):
     """*where* the stored row *key* of *table* gives a key twice, which reads as the last,
-    logged."""
-    log.warning("library.key_given_twice", table=table, row=repr(key), why=where)
+    logged once a process."""
+    warn_once("library.key_given_twice", table=table, row=repr(key), why=where)
 
 
 def unsaid(where):
@@ -1052,8 +1102,8 @@ def unsaid(where):
 
 
 def warn_left_out(table, key, why):
-    """*why* the row *key* of *table* is left out, logged."""
-    log.warning("library.row_left_out", table=table, row=repr(key), why=why)
+    """*why* the row *key* of *table* is left out, logged once a process."""
+    warn_once("library.row_left_out", table=table, row=repr(key), why=why)
     return why
 
 
@@ -1083,11 +1133,12 @@ def setting_value(key, text):
     return value
 
 
-def read_run_settings(connection, namespaces):
+def read_run_settings(connection, namespaces=None):
     """The run settings that load, as {key: value}, and those left out, as {key: why}.
     Each chat picks its model and client, so an older file's go unread. An
     entry_namespace naming neither root nor one of *namespaces*, those the engine reads,
-    is left out too, as the engine would refuse every run and every write."""
+    is left out too, as the engine would refuse every run and every write; without
+    *namespaces*, only the one it names and those above it are read for that."""
     settings, left = {}, {}
     query = f"SELECT key, {fitting('yaml')} FROM settings ORDER BY rowid"
     for key, text, size in connection.execute(query):
@@ -1101,6 +1152,8 @@ def read_run_settings(connection, namespaces):
         except LibraryError as error:
             left[key] = warn_left_out("settings", key, str(error))
     entry = settings.get(ENTRY_NAMESPACE, ROOT)
+    if namespaces is None:
+        namespaces = read_namespaces(connection, deciding=entry)[0]
     if entry != ROOT and entry not in namespaces:
         del settings[ENTRY_NAMESPACE]
         why = f'It names namespace "{entry}", which the engine doesn\'t read.'
@@ -1109,7 +1162,7 @@ def read_run_settings(connection, namespaces):
 
 
 def stored_settings(connection):
-    return read_run_settings(connection, read_namespaces(connection)[0])[0]
+    return read_run_settings(connection)[0]
 
 
 def check_tool_block(name, block):
@@ -1216,15 +1269,21 @@ def own_fields(name, text):
     return fields
 
 
-def read_namespaces(connection):
+def read_namespaces(connection, deciding=None):
     """The namespaces that load, as {name: own fields}; those left out, as {name: why};
     and each one's own YAML as the panel shows it, None for one too long or not text.
     One named so it could pass for another (check_stored_name()) goes too. One under a
     namespace left out or not there goes too, as the engine can't resolve it; root's
-    stay, as the engine supplies a bare root for a file without one."""
+    stay, as the engine supplies a bare root for a file without one. Given the name of
+    one *deciding*, only the rows deciding whether it loads are read: its own and those
+    above it but root's."""
     query = f"SELECT name, {fitting('yaml')} FROM namespaces ORDER BY rowid"
     namespaces, left, shown = {}, {}, {}
+    # A !!binary name, as a setting may hold, names none.
+    only = chain_of(deciding)[1:] if type(deciding) is str else []
     for name, text, size in connection.execute(query):
+        if deciding is not None and name not in only:
+            continue
         if type(name) is not str:
             warn_left_out("namespaces", name, NAME_NOT_TEXT)
             continue
@@ -1232,7 +1291,7 @@ def read_namespaces(connection):
         try:
             shown[name] = row_text(text, size)
             check_stored_name(name)
-            namespaces[name] = own_fields(name, shown[name])
+            namespaces[name] = namespace_read(name, shown[name])
         except LibraryError as error:
             left[name] = warn_left_out("namespaces", name, str(error))
     # Parents first, as each has a dot fewer.
@@ -1245,6 +1304,15 @@ def read_namespaces(connection):
         why = f'The namespace it goes under, "{parent}", {gone}.'
         left[name] = warn_left_out("namespaces", name, why)
     return namespaces, left, shown
+
+
+@partial(Kept, limit=NAMESPACES_KEPT)
+def namespace_read(name, text):
+    """Namespace *name*'s own fields from its stored YAML *text* (own_fields()), kept for
+    the next read of the Library: by the text read from the file, so never stale. Every
+    reader shares them, so none changes them: config_of() gives each run its own copy of
+    each namespace's fields to add to."""
+    return own_fields(name, text)
 
 
 def read_decompositions(connection, names):
@@ -1267,7 +1335,7 @@ def read_decompositions(connection, names):
     return rows
 
 
-@lru_cache(maxsize=DECOMPOSITIONS_KEPT)
+@partial(Kept, limit=DECOMPOSITIONS_KEPT)
 def decomposition_read(text, size, namespace, name, names):
     """A stored decomposition, read from its row's *text* and *size* (as fitting() reads
     them) and the *namespace* and *name* the row is stored under, and why it is left out: the
@@ -1356,7 +1424,7 @@ def without_grants(name, fields, known):
     tools = fields.get("tools", [])
     ignored = [tool for tool in tools if tool not in known]
     for tool in ignored:
-        log.warning("library.grant_ignored", namespace=name, tool=tool)
+        warn_once("library.grant_ignored", namespace=name, tool=tool)
     if not ignored:
         return fields
     return fields | {"tools": [tool for tool in tools if tool in known]}
@@ -1758,7 +1826,9 @@ def with_run_lines(config, registry):
 
 
 def default_namespace(library_path):
-    """Where a new chat starts: the run settings' entry_namespace, root unless one is set."""
+    """Where a new chat starts: the run settings' entry_namespace, root unless one is set
+    that the engine reads. Every chat the API gives says it, so only the namespaces
+    deciding that are read."""
     with closing(open_library(library_path)) as connection:
         return stored_settings(connection).get(ENTRY_NAMESPACE, ROOT)
 
@@ -3339,7 +3409,7 @@ def delete_setting(connection, key):
     """Delete run setting *key*, or raise LibraryError saying why not: the engine reads it,
     as it does each it knows but one left out."""
     with writing(connection):
-        left = read_run_settings(connection, read_namespaces(connection)[0])[1]
+        left = read_run_settings(connection)[1]
         if key in ENGINE_SETTINGS and key not in left:
             raise LibraryError(
                 f"{key} is a run setting the engine reads, so it stays; only one it"

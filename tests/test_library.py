@@ -2,6 +2,7 @@ import json
 import re
 import socket
 import sqlite3
+import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +32,7 @@ from deep_reasoner.v2.messages import func, var
 from jinja2.sandbox import SecurityError
 from structlog.testing import capture_logs
 
+from deep_reasoning import library as library_module
 from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
     APP_TOOLS_FILE,
@@ -97,6 +99,8 @@ from deep_reasoning.library import (
     handed_to,
     has_namespace,
     library_tools,
+    menu_of,
+    namespace_read,
     namespace_yaml,
     open_library,
     panel,
@@ -231,6 +235,113 @@ def test_a_fresh_library_has_root_and_leaves_the_model_and_its_key_to_the_chat(
     assert "model" not in config and "client" not in config
     assert resolve_api_key(run_config(library, tmp_path).client) == FAKE_KEY
     assert FAKE_KEY.encode() not in library.read_bytes()
+
+
+def left_out_rows(logs):
+    return {
+        (entry["table"], entry["row"])
+        for entry in logs
+        if entry["event"] == "library.row_left_out"
+    }
+
+
+def test_where_new_chats_start_reads_only_the_namespaces_deciding_it(library):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("team", ""))
+        connection.execute(UPSERT_NAMESPACE, ("team.coder", ""))
+        connection.execute(UPSERT_NAMESPACE, ("broken", "vars: [unclosed\n"))
+        connection.execute(UPSERT_SETTING, ("entry_namespace", "team.coder\n"))
+    with capture_logs() as logs:
+        assert default_namespace(library) == "team.coder"
+    assert logs == []
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("team", "vars: [unclosed\n"))
+    with capture_logs() as logs:
+        assert default_namespace(library) == ROOT
+    assert left_out_rows(logs) == {
+        ("namespaces", repr("team")),
+        ("namespaces", repr("team.coder")),
+        ("settings", repr("entry_namespace")),
+    }
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_SETTING, ("entry_namespace", "!!binary dGVhbQ==\n"))
+    assert default_namespace(library) == ROOT
+
+
+def test_a_row_left_out_is_logged_once_a_process_and_again_for_a_new_reason(library):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("broken", "vars: [unclosed\n"))
+        connection.execute(UPSERT_TOOL, ("tally", "- not a mapping\n", None))
+        connection.execute(UPSERT_NAMESPACE, ("counting", dump({"tools": ["tally"]})))
+
+    def read_three_times():
+        for _ in range(3):
+            with closing(open_library(library)) as connection:
+                panel(connection)
+
+    with capture_logs() as logs:
+        read_three_times()
+        with closing(open_library(library)) as connection, writing(connection):
+            connection.execute(UPSERT_NAMESPACE, ("broken", "- not a mapping\n"))
+            grants = dump({"tools": ["tally", "ghost"]})
+            connection.execute(UPSERT_NAMESPACE, ("counting", grants))
+        read_three_times()
+    left_out = [
+        (entry["row"], entry["why"])
+        for entry in logs
+        if entry["event"] == "library.row_left_out"
+    ]
+    ignored = [
+        entry["tool"] for entry in logs if entry["event"] == "library.grant_ignored"
+    ]
+    assert [row for row, _ in left_out] == [
+        repr("broken"),
+        repr("tally"),
+        repr("broken"),
+    ]
+    assert left_out[0][1] != left_out[2][1]
+    assert ignored == ["tally", "ghost"]
+
+
+def test_the_namespaces_read_as_the_file_holds_them_whoever_wrote_it_last(
+    library, tmp_path
+):
+    suffix = "Answer in one line. " * 5_000
+
+    def usable():
+        with closing(open_library(library)) as connection:
+            menu = menu_of(connection)["namespaces"]
+        return {each["name"]: each["usable"] for each in menu}["team"]
+
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("team", dump({"system_suffix": suffix})))
+    for run in ("first", "second"):
+        config = engine_config(library, "team", tmp_path / run, CHAT, RUN)
+    with closing(open_library(library)) as connection:
+        assert (
+            stored_config(connection)["namespaces"]["team"]["system_suffix"] == suffix
+        )
+    assert config["namespaces"]["team"]["system_suffix"].count("You are in") == 1
+    assert all(len(repr(key)) < len(suffix) for key in namespace_read.results)
+    assert usable()
+    breaking = (
+        f"import sqlite3; c = sqlite3.connect({str(library)!r});"
+        " c.execute(\"UPDATE namespaces SET yaml = 'vars: [' WHERE name = 'team'\");"
+        " c.commit()"
+    )
+    subprocess.run([sys.executable, "-c", breaking], check=True)
+    assert not usable()
+
+
+def test_the_warnings_logged_start_afresh_past_their_limit(library, monkeypatch):
+    monkeypatch.setattr(library_module, "WARNINGS_KEPT", 2)
+    with closing(open_library(library)) as connection, writing(connection):
+        for name in ("one", "two", "three", "four"):
+            connection.execute(UPSERT_NAMESPACE, (name, "vars: [unclosed\n"))
+    with capture_logs() as logs, closing(open_library(library)) as connection:
+        panel(connection)
+    assert len(left_out_rows(logs)) == 4
+    assert len(library_module.WARNED) <= 2
 
 
 def test_a_fresh_library_grants_llm_at_root_history_and_page_to_the_historian_and_library_to_the_librarian(
