@@ -83,7 +83,6 @@ from deep_reasoning.library import (
     literals,
     loaded,
     namespace_rows,
-    parsed,
     parsed_python,
     read_library,
     reading,
@@ -1271,9 +1270,9 @@ def check_whole(texts: Iterable[str]) -> None:
         raise LibraryError(CUT_SHORT)
 
 
-def check_writable(namespace: str, text: str, key_names: list[str]) -> None:
+def check_writable(namespace: str, text: str, key_names: list[str]) -> Any:
     """Raise unless the tool may write the YAML *text* for the namespace named
-    *namespace*."""
+    *namespace*; *text* as data."""
     if type(namespace) is not str:
         raise LibraryError(NOT_TEXT)
     if namespace == ROOT:
@@ -1281,19 +1280,21 @@ def check_writable(namespace: str, text: str, key_names: list[str]) -> None:
     check_size(text, "The YAML")
     check_whole([text])
     # Parsed too, as an escape such as "\x73k-" spells a key the raw text doesn't hold.
-    check_no_key([namespace, text, *texts_in(loaded(text))], key_names)
+    data = loaded(text)
+    check_no_key([namespace, text, *texts_in(data)], key_names)
+    return data
 
 
-def code_problems(text: str) -> list[str]:
-    """Each assistant turn of the decomposition written as YAML *text* whose code, the
+def code_problems(decomposition: dict[str, Any]) -> list[str]:
+    """Each assistant turn of *decomposition*, as data the store took, whose code, the
     <repl> block the engine runs, isn't valid Python."""
     problems = []
-    for number, turn in enumerate(parsed(text).messages, start=1):
-        if turn.role != "assistant":
+    for number, turn in enumerate(decomposition["messages"], start=1):
+        if turn["role"] != "assistant":
             continue
         try:
             parsed_python(
-                running_code(turn.content), f"Turn {number} (assistant)'s code"
+                running_code(turn["content"]), f"Turn {number} (assistant)'s code"
             )
         except LibraryError as error:
             problems.append(str(error))
@@ -1887,7 +1888,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             text = from_turns(yaml if name is None else name, turns)
         else:
             text = yaml_text(yaml, typed=with_real_tags)
-        check_writable(namespace, text, key_names)
+        data = check_writable(namespace, text, key_names)
 
         def write() -> tuple[dict[str, Any], Event]:
             stored, before = written(
@@ -1910,7 +1911,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             return stored, change
 
         stored, change = stop_proof(write)
-        broken = code_problems(text)
+        broken = code_problems(data)
         return {**change, "problems": stored["problems"]} | (
             {"code_problems": broken} if broken else {}
         )
