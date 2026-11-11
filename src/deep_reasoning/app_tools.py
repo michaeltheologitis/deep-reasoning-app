@@ -208,7 +208,7 @@ SECRET_LIKE = jinja2.Template(
     " it without those words.",
     undefined=jinja2.StrictUndefined,
 )
-# The variable a refusal suggests for a secret held under a name of no ASCII words.
+# The variable a refusal suggests for a secret whose name makes no variable's.
 ANY_VARIABLE = "SECRET"
 # write_decomposition's turns, each in one of these shapes.
 NOT_TURNS = (
@@ -1252,12 +1252,13 @@ def stored_at(stored: Any, path: tuple[Any, ...]) -> Any:
 def check_no_secrets(field: str, values: dict[str, Any], stored: Any) -> None:
     """Raise if *values*, a namespace's vars or a tool's settings, holds anywhere text
     shaped like a key under a name like a secret's, its own or one it is held under,
-    unless *stored* holds it in the same place: the user's own stays."""
+    unless *stored* holds it in the same place: the user's own stays. The refusal names,
+    for each, the nearest name over it like a secret's."""
     found = set()
-    stack = [((name,), name, value, False) for name, value in values.items()]
+    stack = [((name,), name, value, None) for name, value in values.items()]
     while stack:
         path, name, value, under = stack.pop()
-        under = under or secret_like(name)
+        under = name if secret_like(name) else under
         if type(value) is dict:
             stack.extend(
                 ((*path, key), key, each, under) for key, each in value.items()
@@ -1267,18 +1268,20 @@ def check_no_secrets(field: str, values: dict[str, Any], stored: Any) -> None:
                 ((*path, at), name, each, under) for at, each in enumerate(value)
             )
         elif under and secret_shaped(name, value) and stored_at(stored, path) != value:
-            found.add(str(name))
+            found.add(str(under))
     if found:
         raise LibraryError(secret_refusal(field, sorted(found)))
 
 
 def secret_refusal(field: str, names: list[str]) -> str:
-    """Why *field* may not set *names* to secrets, keeping the first in a variable named
-    as its words in capitals, less a last env."""
+    """Why *field* may not set *names*, named like secrets, to secrets, keeping the first
+    in a variable named as its words in capitals, less a last env, if that names one."""
     words = WORD_PART.findall(names[0])
     if words and words[-1].lower() == NAMES_A_VARIABLE:
         words.pop()
-    variable = "_".join(words).upper() or ANY_VARIABLE
+    variable = "_".join(words).upper()
+    if not VARIABLE_NAME.fullmatch(variable):
+        variable = ANY_VARIABLE
     return SECRET_LIKE.render(field=field, names=names, variable=variable)
 
 

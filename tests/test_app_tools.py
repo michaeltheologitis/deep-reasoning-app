@@ -1633,6 +1633,20 @@ def test_a_var_named_like_a_secret_holding_one_is_refused_saying_where_secrets_g
         ({"owmApiKey": OWM_KEY}, "OWM_API_KEY"),
         ({"api_key_env": OWM_KEY}, "API_KEY"),
         ({"stripe": {"Password": OWM_KEY}}, "PASSWORD"),
+        ({"api_keys": {"primary": OWM_KEY}}, "API_KEYS"),
+        ({"tokens": [{"1": OWM_KEY}]}, "TOKENS"),
+        ({"2fa_token": OWM_KEY}, "SECRET"),
+        ({"\u043a\u043b\u044e\u0447_token": OWM_KEY}, "TOKEN"),
+    ],
+    ids=[
+        "snake",
+        "camel",
+        "named-as-a-variable",
+        "nested",
+        "held-under-it",
+        "in-a-list-under-it",
+        "starting-with-a-digit",
+        "partly-ascii",
     ],
 )
 def test_a_secret_refusal_says_to_keep_it_in_a_variable_named_after_its_var(
@@ -1644,7 +1658,7 @@ def test_a_secret_refusal_says_to_keep_it_in_a_variable_named_after_its_var(
     assert f"(export {variable}=… before uv run deep-reasoning)" in said
     assert f'os.environ["{variable}"]' in said
     assert f"as {variable.lower()}_env: {variable}." in said
-    assert "WEATHER" not in said
+    assert "WEATHER" not in said and "PRIMARY" not in said
 
 
 @pytest.mark.parametrize(
