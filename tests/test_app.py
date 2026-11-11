@@ -45,7 +45,7 @@ from structlog.testing import capture_logs
 
 from deep_reasoning import settings as settings_module
 from deep_reasoning.app import NO_PAGE, WEB, create_app
-from deep_reasoning.chats import TITLE_CHARS, create_chat
+from deep_reasoning.chats import TITLE_CHARS, choose, create_chat
 from deep_reasoning.folders import data_folder
 from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
@@ -587,24 +587,28 @@ async def test_a_chat_whose_namespace_was_deleted_is_refused_on_its_next_run(
         ("rоot", "system_suffix: Answer as root.\n", "'r\\u043eot'"),
     ],
 )
-async def test_a_chat_in_a_namespace_left_out_is_refused_saying_so(
+async def test_a_namespace_left_out_is_refused_when_picked_and_when_run(
     library_on, connect, name, yaml, shown
 ):
+    unreadable = f"{shown} is left out of the Library (the Library panel says why)"
     with FakeOpenAI(scripted(PLAN)) as fake:
         library = library_on(fake)
         plant_row(library, "namespaces", (name, yaml))
         async with connect(library) as api:
             chat = await new_chat(api)
-            await api.patch(f"/api/chats/{chat}", json={"namespace": name})
+            picked = await api.patch(f"/api/chats/{chat}", json={"namespace": name})
+            # as a shared file's chat may be on it
+            choose(library, chat, name)
             refused = await api.post(
                 f"/api/chats/{chat}/runs", json={"prompt": "Count to two."}
             )
+    assert (picked.status_code, picked.json()) == (
+        400,
+        {"detail": f"Namespace {unreadable} — pick another."},
+    )
     assert (refused.status_code, refused.json()) == (
         400,
-        {
-            "detail": f"This chat's namespace {shown} is left out of the Library"
-            " (the Library panel says why) — pick another."
-        },
+        {"detail": f"This chat's namespace {unreadable} — pick another."},
     )
     assert fake.calls == []
 
@@ -1113,6 +1117,40 @@ async def test_a_shared_files_prompt_reading_python_internals_is_shown_as_writte
         events = await ask_plainly(library, connect)
     assert events[-1]["outcome"] == "answered", events[-1]
     assert any(text in each["content"] for each in fake.calls[0].messages)
+
+
+@pytest.mark.anyio
+async def test_an_older_namespace_giving_a_key_twice_still_runs_on_the_last(
+    library_on, connect
+):
+    older = "tools: [llm]\nsystem_suffix: Be brief.\nsystem_suffix: Answer in French.\n"
+    with FakeOpenAI(scripted(PROBE_PLAN)) as fake:
+        library = library_on(fake)
+        stored(library, UPSERT_NAMESPACE, ROOT, older)
+        events = await ask_plainly(library, connect)
+    assert events[-1]["outcome"] == "answered", events[-1]
+    told = "\n".join(each["content"] for each in fake.calls[0].messages)
+    assert "Answer in French." in told
+    assert "Be brief." not in told
+
+
+@pytest.mark.parametrize(
+    ("text", "where"),
+    [
+        ("system_suffix: ring\x07\n", "U+0007, line 1"),
+        ("a: 1\nb: \x1b[0m\n", "U+001B, line 2"),
+    ],
+)
+def test_yaml_holding_a_character_yaml_cant_is_left_out_stored_and_refused_saved(
+    client, imported, text, where
+):
+    plant_row(imported, "namespaces", ("ringing", text))
+    read = client.get("/api/library")
+    saved = client.post("/api/namespaces", json={"name": "rung", "yaml": text})
+    said = f"The YAML holds a character it can't hold ({where}); take it out."
+    assert read.status_code == 200
+    assert by_name(read.json()["namespaces"])["ringing"]["problems"] == [said]
+    assert (saved.status_code, saved.json()) == (400, {"detail": said})
 
 
 @pytest.mark.anyio
@@ -3836,7 +3874,9 @@ def test_a_namespace_or_model_the_app_does_not_have_is_refused(client):
         400,
         422,
     )
-    assert nowhere.json()["detail"].startswith('The Library has no namespace "nowhere"')
+    assert (
+        nowhere.json()["detail"] == "Namespace nowhere no longer exists — pick another."
+    )
     assert nobody.json()["detail"] == (
         "There is no provider Nobody any more; pick another model."
     )

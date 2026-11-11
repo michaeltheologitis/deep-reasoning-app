@@ -52,7 +52,6 @@ from deep_reasoning.library import (
     add_namespace,
     built_grants,
     change_namespace,
-    check_namespace,
     default_namespace,
     delete_decomposition,
     delete_namespace,
@@ -169,6 +168,17 @@ def same_origin(
 def gone_provider(name):
     """Why a chat's model can't be picked or run: its provider was removed from settings."""
     return f"There is no provider {name} any more; pick another model."
+
+
+def unrunnable(connection, namespace):
+    """Why a chat can't run in *namespace*, said after its name; None when it can. The
+    engine supplies a bare root when the file's is left out or missing."""
+    readable, left_out, _ = read_namespaces(connection)
+    if namespace == ROOT or namespace in readable:
+        return None
+    if namespace in left_out:
+        return "is left out of the Library (the Library panel says why)"
+    return "no longer exists"
 
 
 def create_app(library, home):
@@ -484,7 +494,11 @@ def create_app(library, home):
     async def patch_chat(chat: KnownChat, change: ChatChange):
         if change.namespace is not None:
             with closing(open_library(library)) as connection:
-                check_namespace(connection, change.namespace)
+                why = unrunnable(connection, change.namespace)
+            if why:
+                raise LibraryError(
+                    f"Namespace {shown_name(change.namespace)} {why} — pick another."
+                )
         model = change.model
         if model is not None and find_provider(library, model.provider) is None:
             raise SettingsError(gone_provider(model.provider))
@@ -524,16 +538,9 @@ def create_app(library, home):
         chosen = shown(chat, starting_points())
         namespace, model = chosen["namespace"], chosen["model"]
         with closing(open_library(library)) as connection:
-            readable, left_out, _ = read_namespaces(connection)
-            # The engine supplies a bare root when the file's is left out or missing.
-            if namespace != ROOT and namespace not in readable:
-                gone = (
-                    "is left out of the Library (the Library panel says why)"
-                    if namespace in left_out
-                    else "no longer exists"
-                )
+            if why := unrunnable(connection, namespace):
                 raise LibraryError(
-                    f"This chat's namespace {shown_name(namespace)} {gone} — pick another."
+                    f"This chat's namespace {shown_name(namespace)} {why} — pick another."
                 )
             turns = [
                 read_turn(connection, run) for run in chat_runs(connection, chat["id"])
