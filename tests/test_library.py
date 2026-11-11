@@ -32,6 +32,7 @@ from deep_reasoner.v2.messages import func, var
 from jinja2.sandbox import SecurityError
 from structlog.testing import capture_logs
 
+from deep_reasoning import library as library_module
 from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
     APP_TOOLS_FILE,
@@ -97,6 +98,7 @@ from deep_reasoning.library import (
     has_namespace,
     library_tools,
     menu_of,
+    namespace_read,
     namespace_yaml,
     open_library,
     panel,
@@ -299,17 +301,26 @@ def test_a_row_left_out_is_logged_once_a_process_and_again_for_a_new_reason(libr
     assert ignored == ["tally", "ghost"]
 
 
-def test_the_namespaces_read_as_the_file_holds_them_whoever_wrote_it_last(library):
+def test_the_namespaces_read_as_the_file_holds_them_whoever_wrote_it_last(
+    library, tmp_path
+):
+    suffix = "Answer in one line. " * 5_000
+
     def usable():
         with closing(open_library(library)) as connection:
             menu = menu_of(connection)["namespaces"]
         return {each["name"]: each["usable"] for each in menu}["team"]
 
     with closing(open_library(library)) as connection, writing(connection):
-        connection.execute(UPSERT_NAMESPACE, ("team", dump({"vars": {"level": 1}})))
+        connection.execute(UPSERT_NAMESPACE, ("team", dump({"system_suffix": suffix})))
+    for run in ("first", "second"):
+        config = engine_config(library, "team", tmp_path / run, CHAT, RUN)
     with closing(open_library(library)) as connection:
-        stored_config(connection)["namespaces"]["team"]["vars"]["level"] = 2
-        assert stored_config(connection)["namespaces"]["team"]["vars"] == {"level": 1}
+        assert (
+            stored_config(connection)["namespaces"]["team"]["system_suffix"] == suffix
+        )
+    assert config["namespaces"]["team"]["system_suffix"].count("You are in") == 1
+    assert all(len(repr(key)) < len(suffix) for key in namespace_read.results)
     assert usable()
     breaking = (
         f"import sqlite3; c = sqlite3.connect({str(library)!r});"
@@ -318,6 +329,17 @@ def test_the_namespaces_read_as_the_file_holds_them_whoever_wrote_it_last(librar
     )
     subprocess.run([sys.executable, "-c", breaking], check=True)
     assert not usable()
+
+
+def test_the_warnings_logged_start_afresh_past_their_limit(library, monkeypatch):
+    monkeypatch.setattr(library_module, "WARNINGS_KEPT", 2)
+    with closing(open_library(library)) as connection, writing(connection):
+        for name in ("one", "two", "three", "four"):
+            connection.execute(UPSERT_NAMESPACE, (name, "vars: [unclosed\n"))
+    with capture_logs() as logs, closing(open_library(library)) as connection:
+        panel(connection)
+    assert len(left_out_rows(logs)) == 4
+    assert len(library_module.WARNED) <= 2
 
 
 def test_a_fresh_library_grants_llm_at_root_history_and_page_to_the_historian_and_library_to_the_librarian(

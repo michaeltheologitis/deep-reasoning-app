@@ -331,7 +331,7 @@ async def record(home, name, scenario):
             return told | config_on(fake, scenario.get("settings", {}))
 
         runs = Runs(library, home, stop_grace_s=KILL_AFTER_S)
-        run = await runs.start(CHAT, scenario["prompt"], config_for, [])
+        run = runs.start(CHAT, scenario["prompt"], config_for, [])
         await read_to_the_end(runs, run, scenario.get("stop_at"))
     with closing(open_library(library)) as connection:
         events = read_events(connection, run)

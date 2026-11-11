@@ -10,7 +10,7 @@ the app's settings; this module lays the whole file out.
 
 import ast
 import builtins
-import copy
+import hashlib
 import inspect
 import json
 import keyword
@@ -23,7 +23,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from contextlib import closing, contextmanager
-from functools import lru_cache, partial, update_wrapper, wraps
+from functools import partial, update_wrapper, wraps
 from pathlib import Path
 
 import deep_reasoner.llm
@@ -78,9 +78,11 @@ from markupsafe import EscapeFormatter, Markup
 from pydantic import ValidationError
 
 log = structlog.get_logger()
-# The warnings of rows left out and grants ignored this process has logged: every read of
-# the Library meets them again, so each is logged once, and again only for a new reason.
+# The warnings of rows left out and grants ignored this process has logged, by digest:
+# every read of the Library meets them again, so each is logged once, and again only for
+# a new reason, or once WARNINGS_KEPT have been logged and they start afresh.
 WARNED = set()
+WARNINGS_KEPT = 4096
 
 SCHEMA_VERSION = 4
 # Version 1 held the Library alone, version 2 added the chats and the app's settings, and
@@ -1047,10 +1049,40 @@ def shown_text(text, size):
 
 def warn_once(event, **said):
     """Log warning *event*, saying *said*, unless this process has logged it so already."""
-    warning = (event, *said.items())
-    if warning not in WARNED:
-        WARNED.add(warning)
-        log.warning(event, **said)
+    warning = digested(repr((event, said)))
+    if warning in WARNED:
+        return
+    if len(WARNED) >= WARNINGS_KEPT:
+        WARNED.clear()
+    WARNED.add(warning)
+    log.warning(event, **said)
+
+
+def digested(value):
+    """*value*, or, for a text, its SHA-256 digest, which is all a key needs of it."""
+    if type(value) is not str:
+        return value
+    return hashlib.sha256(value.encode(errors="surrogatepass")).digest()
+
+
+class Kept:
+    """*function*'s results, kept as lru_cache keeps them but by its arguments with each
+    text as its digest, never the text, which may be a million characters; past *limit*
+    results they start afresh."""
+
+    def __init__(self, function, limit):
+        self.function = function
+        self.limit = limit
+        self.results = {}
+
+    def __call__(self, *arguments):
+        key = tuple(map(digested, arguments))
+        found = self.results.get(key)
+        if found is None:
+            if len(self.results) >= self.limit:
+                self.results.clear()
+            found = self.results[key] = self.function(*arguments)
+        return found
 
 
 def warn_left_out(table, key, why):
@@ -1243,8 +1275,7 @@ def read_namespaces(connection, deciding=None):
         try:
             shown[name] = row_text(text, size)
             check_stored_name(name)
-            # A copy, as readers change what they are given.
-            namespaces[name] = copy.deepcopy(namespace_read(name, shown[name]))
+            namespaces[name] = namespace_read(name, shown[name])
         except LibraryError as error:
             left[name] = warn_left_out("namespaces", name, str(error))
     # Parents first, as each has a dot fewer.
@@ -1259,10 +1290,12 @@ def read_namespaces(connection, deciding=None):
     return namespaces, left, shown
 
 
-@lru_cache(maxsize=NAMESPACES_KEPT)
+@partial(Kept, limit=NAMESPACES_KEPT)
 def namespace_read(name, text):
     """Namespace *name*'s own fields from its stored YAML *text* (own_fields()), kept for
-    the next read of the Library: keyed by the text read from the file, never stale."""
+    the next read of the Library: by the text read from the file, so never stale. Every
+    reader shares them, so none changes them: config_of() gives each run its own copy of
+    each namespace's fields to add to."""
     return own_fields(name, text)
 
 
@@ -1286,7 +1319,7 @@ def read_decompositions(connection, names):
     return rows
 
 
-@lru_cache(maxsize=DECOMPOSITIONS_KEPT)
+@partial(Kept, limit=DECOMPOSITIONS_KEPT)
 def decomposition_read(text, size, name, names):
     """A stored decomposition, read from its row's *text* and *size* (as fitting() reads
     them) and the *name* the row is stored under, and why it is left out: the

@@ -516,29 +516,6 @@ def forget_specs(home: Path) -> None:
         spec.unlink(missing_ok=True)
 
 
-def write_spec(
-    run_folder: Path,
-    chat: str,
-    prompt: str,
-    config_for: Callable[[Path], dict[str, Any]],
-    earlier: Sequence[Turn],
-) -> dict[str, Any]:
-    """The engine config *config_for* gives for *run_folder*, written there into the
-    run's spec, what the worker runs, with *chat*, *prompt* and the chat's *earlier*
-    turns."""
-    config = config_for(run_folder)
-    spec = {
-        "chat": chat,
-        "prompt": prompt,
-        "earlier": earlier_messages(earlier),
-        "config": config,
-    }
-    # YAML keeps dates and int keys; ASCII, as a raw NEL would read back as a space.
-    spec_yaml = yaml.dump(spec, Dumper=YAML_DUMPER, sort_keys=False)
-    (run_folder / SPEC).write_text(spec_yaml)
-    return config
-
-
 def new_run_id() -> str:
     """The start time in UTC, to the microsecond: run ids sort in the order the runs
     began, across a change of the local clock."""
@@ -572,8 +549,6 @@ class Runs:
         self.home = home
         self._stop_grace_s = stop_grace_s
         self._live: dict[str, _Live] = {}
-        # The chats with a run starting, each set once it has started or failed to.
-        self._starting: dict[str, asyncio.Event] = {}
 
     def live(self, chat: str) -> str | None:
         """The chat's run that is going, if one is: one whose turn has not ended."""
@@ -591,7 +566,7 @@ class Runs:
             found = connection.execute("SELECT 1 FROM runs WHERE id = ?", (run,))
             return found.fetchone() is not None
 
-    async def start(
+    def start(
         self,
         chat: str,
         prompt: str,
@@ -608,22 +583,27 @@ class Runs:
         worker's environment only. The values of *keys* and of *key_names* in that
         environment are withheld from the run's events. The worker works in *folder*,
         the run's own folder unless given. Raises RunInProgress while the chat has a
-        run going or starting. The config is made and the spec written off the event
-        loop, as they read the whole Library, so other requests go on meanwhile."""
-        if self.live(chat) is not None or chat in self._starting:
+        run going."""
+        if self.live(chat) is not None:
             raise RunInProgress(chat)
         run = new_run_id()
         run_folder = self.home / RUNS / run
         run_folder.mkdir(parents=True)
         db = None
-        starting = self._starting[chat] = asyncio.Event()
         # A start that fails leaves nothing behind, and as the run is listed only once its
         # turn.start is saved, holds up no chat.
         try:
-            config = await asyncio.to_thread(
-                write_spec, run_folder, chat, prompt, config_for, earlier
-            )
+            config = config_for(run_folder)
             namespace = config.get("entry_namespace")
+            spec = {
+                "chat": chat,
+                "prompt": prompt,
+                "earlier": earlier_messages(earlier),
+                "config": config,
+            }
+            # YAML keeps dates and int keys; ASCII, as a raw NEL would read back as a space.
+            spec_yaml = yaml.dump(spec, Dumper=YAML_DUMPER, sort_keys=False)
+            (run_folder / SPEC).write_text(spec_yaml)
             db = open_events(self.library)
             live = _Live(chat, folder or run_folder, db, keys or {}, key_names)
             start = {
@@ -642,12 +622,8 @@ class Runs:
                 db.close()
             shutil.rmtree(run_folder, ignore_errors=True)
             raise
-        else:
-            self._live[run] = live
-            live.pump = asyncio.create_task(self._pump(run, live))
-        finally:
-            del self._starting[chat]
-            starting.set()
+        self._live[run] = live
+        live.pump = asyncio.create_task(self._pump(run, live))
         return run
 
     def stop(self, run: str) -> bool:
@@ -694,9 +670,6 @@ class Runs:
         once each of their workers has exited: a worker writes into its run's folder until
         then, even after turn.end. A run's folder that is or holds a folder in *keep* is
         kept."""
-        # A run starting is stopped once started, so its worker never outlives the chat.
-        if (starting := self._starting.get(chat)) is not None:
-            await starting.wait()
         workers = []
         for run, live in self._live.items():
             if live.chat == chat:
@@ -711,10 +684,7 @@ class Runs:
             remove_unless_kept(self.home / RUNS / run, keep)
 
     async def close(self) -> None:
-        """End every run that is going, those starting once started: the app is
-        shutting down."""
-        for starting in list(self._starting.values()):
-            await starting.wait()
+        """End every run that is going: the app is shutting down."""
         lives = list(self._live.values())
         for live in lives:
             live.detail = SHUT_DOWN

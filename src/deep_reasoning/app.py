@@ -558,9 +558,7 @@ def create_app(library, home):
             config = engine_config(library, namespace, tools, chat["id"], run, names)
             return config | {"model": model["name"], "client": client}
 
-        # Before the start yields the loop, so a pick made meanwhile isn't undone.
-        choose(library, chat["id"], namespace, provider.name, model["name"])
-        run = await runs.start(
+        run = runs.start(
             chat["id"],
             prompt,
             config_for,
@@ -570,6 +568,7 @@ def create_app(library, home):
             folder,
             names,
         )
+        choose(library, chat["id"], namespace, provider.name, model["name"])
         titled = None if earlier else title_new_chat(library, chat["id"], prompt)
         return {"run": run, "title": titled or chat["title"]}
 
