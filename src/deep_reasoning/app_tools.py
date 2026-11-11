@@ -167,9 +167,19 @@ CUT_SHORT = (
     " cut short: write the whole of it, from show(name, whole=True), tools(name) or"
     " changes()."
 )
-# An example's cell tags, each on a line of its own, which a cell writes as placeholders,
-# as a reply's last real <repl> is the one that runs.
+# An example's cell tags, each on a line of its own, as the tool gives them and a cell
+# writes them, as placeholders: a reply's last real <repl> is the one that runs.
 REAL_TAGS = {"[repl]": "<repl>", "[/repl]": "</repl>"}
+LONE_PLACEHOLDER = re.compile(r"^([ \t]*)\[(/?)repl\]([ \t]*)$", re.MULTILINE)
+# The tags the engine reads as a turn's parts: inside a turn's text, one would end its
+# part there or start another.
+TAG = re.compile(r"</?(?:repl|think|observation)>", re.IGNORECASE)
+TAG_IN_TURN = jinja2.Template(
+    "Turn {{ number }}'s {{ field }} holds {{ tag }}, a tag the engine reads, which would"
+    " end the turn's part there or start another: type no tags in turns, as the tool"
+    " writes them. To show one in a text, write {{ placeholder }} instead.",
+    undefined=jinja2.StrictUndefined,
+)
 HOLDS_A_KEY = (
     "What you wrote holds a provider's key, and the Library file is shared, so keys never"
     " go in it. Take the key out."
@@ -1099,7 +1109,34 @@ def with_real_tags(text: str) -> str:
             lines = content.splitlines(keepends=True)
             turn["content"] = "".join(map(tag_written, lines))
             changed = changed or turn["content"] != content
-    return dump(decomposition) if changed else text
+    if not changed:
+        return text
+    # Written in place where that writes the same, as for a block of text, so a copy of
+    # one the tool gave keeps its layout and comments.
+    in_place = LONE_PLACEHOLDER.sub(r"\1<\2repl>\3", text)
+    return (
+        in_place if yaml.safe_load(in_place) == decomposition else dump(decomposition)
+    )
+
+
+def placeheld(text: Any) -> Any:
+    """*text* with each real repl tag written as its placeholder, as the tool gives a worked
+    example: copied into a cell, a real one would end the cell there; anything but text as
+    it is."""
+    if type(text) is not str:
+        return text
+    for placeholder, tag in REAL_TAGS.items():
+        text = text.replace(tag, placeholder)
+    return text
+
+
+def example_as_given(entry: dict[str, Any]) -> dict[str, Any]:
+    """A worked example's *entry*, as show() lists it, with each of its texts, and each
+    text of its lists, placeheld()."""
+    return {
+        key: [*map(placeheld, value)] if type(value) is list else placeheld(value)
+        for key, value in entry.items()
+    }
 
 
 def tag_written(line: str) -> str:
@@ -1131,10 +1168,24 @@ def written_out(value: Any, what: str) -> str:
 
 def from_turns(name: Any, turns: Any) -> str:
     """The worked example *name* written as YAML from its *turns*, as write_decomposition
-    takes them, each as the engine's message, the tags written in."""
+    takes them, each as the engine's message, the tags written in; a LibraryError for a
+    turn whose text holds a tag."""
     if type(name) is not str or type(turns) is not list:
         raise LibraryError(NOT_TURNS)
-    return dump({"name": name, "messages": [turn_message(turn) for turn in turns]})
+    messages = [turn_message(turn) for turn in turns]
+    for number, turn in enumerate(turns, start=1):
+        for field_name, text in turn.items():
+            if found := TAG.search(text):
+                tag = found.group()
+                raise LibraryError(
+                    TAG_IN_TURN.render(
+                        number=number,
+                        field=field_name,
+                        tag=tag,
+                        placeholder=f"[{tag[1:-1]}]",
+                    )
+                )
+    return dump({"name": name, "messages": messages})
 
 
 def turn_message(turn: Any) -> dict[str, str]:
@@ -1475,8 +1526,8 @@ def in_full(
         "depth": row["depth"],
         "yaml": left_out_note(left[name]) if name in left else row["yaml"],
         "fields": row["fields"],
-        "decompositions": decompositions,
-        "decompositions_left_out": left_out,
+        "decompositions": [*map(example_as_given, decompositions)],
+        "decompositions_left_out": [*map(example_as_given, left_out)],
     }
 
 
@@ -1563,6 +1614,9 @@ def as_written(event: Event) -> dict[str, Any]:
     if change["what"] == "tool":
         for key in ("before", "after"):
             change[key] = tool_fields(change["name"], change[key])
+    if change["what"] == "decomposition":
+        for key in ("before", "after"):
+            change[key] = placeheld(change[key])
     return change
 
 
@@ -1764,10 +1818,11 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             text = from_turns(yaml if name is None else name, turns)
         else:
             text = yaml_text(yaml)
-        # A text with a real tag was read back, not typed, so its [repl] is the example's.
+        check_writable(namespace, text, key_names)
+        # The tool gives none, so a text holding a real tag was made otherwise: its
+        # [repl] is the example's own.
         if "<repl>" not in text:
             text = with_real_tags(text)
-        check_writable(namespace, text, key_names)
 
         def write() -> tuple[dict[str, Any], Event]:
             stored, before = written(
@@ -1790,9 +1845,11 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             return stored, change
 
         stored, change = stop_proof(write)
-        broken = code_problems(text)
-        return {**change, "problems": stored["problems"]} | (
-            {"code_problems": broken} if broken else {}
+        done = example_as_given(
+            {"problems": stored["problems"], "code_problems": code_problems(text)}
+        )
+        return {**change, "problems": done["problems"]} | (
+            {"code_problems": done["code_problems"]} if done["code_problems"] else {}
         )
 
     def add(name: str, yaml: Any) -> dict[str, Any]:

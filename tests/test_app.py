@@ -1568,6 +1568,15 @@ EXAMPLE_PROBLEMS = [
     "Turn 2 (assistant) has no <repl>…</repl> block.",
     "Turn 2 (assistant), the last, should call FinalAnswer(...) in its <repl>.",
 ]
+
+
+def as_the_tool_gives(texts):
+    """*texts* as the library tool gives them, each repl tag as its placeholder."""
+    return [
+        text.replace("<repl>", "[repl]").replace("</repl>", "[/repl]") for text in texts
+    ]
+
+
 LIBRARY_PLAN = {
     "Save the example.": [write("librarian", EXAMPLE), repl("FinalAnswer('saved')")],
     "Reword it.": [write("librarian", REWORDED), repl("FinalAnswer('reworded')")],
@@ -1634,7 +1643,7 @@ async def test_the_library_tool_adds_a_decomposition_then_replaces_it_each_chang
     assert [changes(turn["events"]) for turn in turns] == [[first], [second]]
     librarian = next(each for each in namespaces if each["name"] == "librarian")
     output = kinds(replaced, "cell.end")[0]["output"]
-    assert f"'problems': {EXAMPLE_PROBLEMS}" in output
+    assert f"'problems': {as_the_tool_gives(EXAMPLE_PROBLEMS)}" in output
     assert librarian["decompositions"] == [
         *LIBRARIANS_SEEDED,
         {"name": "count the tickets", "yaml": REWORDED, "problems": EXAMPLE_PROBLEMS}

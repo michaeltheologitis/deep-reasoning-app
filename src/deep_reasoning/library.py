@@ -531,13 +531,15 @@ to namespace `namespace`, or replaces the one of that name there. Agents copy it
 write it as they work. turns is a list of dicts, in order: {"user": the task}; then \
 each step, {"think": its reasoning, "code": the Python it runs}, each but the last \
 followed by {"observation": what its code printed}; the last step's code calls \
-FinalAnswer(...), which ends the run, so no observation follows it. Type no tags: the tool writes the engine's <think>, <repl> and \
-<observation> around them, as the last <repl> block in your reply is the one that runs. \
+FinalAnswer(...), which ends the run, so no observation follows it. Type no tags, in \
+any text: the tool writes the engine's <think>, <repl> and <observation> around them, as \
+the last <repl> block in your reply is the one that runs, and refuses a text holding one. \
 Give each code as a raw string over several lines (r\"\"\"…\"\"\"), so the escapes you \
 type stay in its Python. To fix or change one, write it again from turns. \
 write_decomposition(namespace, yaml) takes a decomposition's whole YAML instead, as \
-show(name) and changes() give it, and writes it as it is: to change a few words of a \
-stored one, .replace(...) them in its yaml in your cell, never with text holding a tag. \
+show(name) and changes() give it, each repl tag as [repl] or [/repl] so a copy never \
+ends your cell, and writes a placeholder alone on a line of an assistant turn back as \
+the tag. To change a few words of a stored one, .replace(...) them in its yaml in your cell, never with text holding a tag. \
 It is stored even when it isn't yet a worked example like that: the \
 result's problems lists each way it isn't (empty when none), and until you write it \
 again without them the Library panel marks it ✗. The result's code_problems, when \
