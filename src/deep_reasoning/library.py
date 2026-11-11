@@ -2020,7 +2020,7 @@ def loaded(text, repeated=None):
     half = next(filter(None, map(SURROGATE.search, texts_in(data))), None)
     if half:
         raise LibraryError(
-            f"The YAML escapes half of a character (U+{ord(half[0]):04X}), which no text"
+            f"The YAML escapes half of a character ({code_point(half[0])}), which no text"
             " can hold; write the whole character instead."
         )
     return data
@@ -2199,7 +2199,7 @@ def check_decomposition_name(name):
                 each for each in word if each.isalpha() and script_of(each) != main
             )
             raise LibraryError(
-                f"The name mixes alphabets in the word {word!a} (U+{ord(odd):04X}), so it"
+                f"The name mixes alphabets in the word {word!a} ({code_point(odd)}), so it"
                 " could pass for another; write each word in one alphabet, so it reads as"
                 " it looks."
             )
@@ -2227,7 +2227,7 @@ def code_point(char):
 
 def first_char(text, test):
     """The first character of *text* that passes *test*, as U+ writes it; None for none."""
-    return next((f"U+{ord(char):04X}" for char in text if test(char)), None)
+    return next((code_point(char) for char in text if test(char)), None)
 
 
 def invisible(char):
@@ -3055,7 +3055,7 @@ def check_name(name):
         raise LibraryError(NAME_IT)
     if odd := next(filter(not_plain, name), None):
         raise LibraryError(
-            f"The name holds a character a namespace's name can't (U+{ord(odd):04X})"
+            f"The name holds a character a namespace's name can't ({code_point(odd)})"
             f"{beyond_ascii(odd)} {NAME_SHAPE}"
         )
     if not NAMESPACE_NAME.fullmatch(name):
@@ -3104,9 +3104,7 @@ def check_stored_name(name):
     if name == ROOT:
         return
     if odd := next(filter(not_plain, name), None):
-        why = (
-            f"holds characters a saved name can't (U+{ord(odd):04X}){beyond_ascii(odd)}"
-        )
+        why = f"holds characters a saved name can't ({code_point(odd)}){beyond_ascii(odd)}"
     elif name.split(".")[0].strip().lower() == ROOT:
         why = f"reads as root{PASSES_FOR_ANOTHER}"
     elif " " in name:
