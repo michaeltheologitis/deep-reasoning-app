@@ -12,6 +12,7 @@ import asyncio
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import select
@@ -116,9 +117,11 @@ def cost_of(model: str, usage: dict[str, Any], base_url: str) -> float | None:
     """One model call's cost in USD: the provider's own figure when it sends one, else
     genai-prices' price of the model at the vendor whose address *base_url* is, with cached
     input at its rate; None for any other address, as a server of your own may serve a
-    model under a vendor's name, or a model the vendor doesn't price."""
+    model under a vendor's name, or a model the vendor doesn't price, or a figure below
+    zero or past any number, which prices nothing."""
     if usage.get("cost") is not None:
-        return float(usage["cost"])
+        cost = float(usage["cost"])
+        return cost if 0 <= cost < math.inf else None
     cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
     tokens = Usage(
         input_tokens=usage.get("prompt_tokens") or 0,

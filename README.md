@@ -99,7 +99,7 @@ imports too.
   Anthropic, Google). "cost N/A" means a call was cut off before it finished, or its price isn't known, as for a
   vendor's model on a server of your own; a run that made no call costs $0. Costs read to a hundredth of a cent
   under a dollar ($0.0123; one less than $0.0001 as <$0.0001) and to the cent from a dollar ($1,234.56), so a
-  chat's runs add up to its total.
+  chat's runs add up to its total as near as rounding allows. A server's figure below zero is no price: N/A.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
   its own words after.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,

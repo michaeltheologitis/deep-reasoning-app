@@ -455,6 +455,12 @@ def test_the_providers_own_cost_wins():
     assert cost_of("gpt-6-luna", usage, OPENAI_URL) == 0.5
 
 
+@pytest.mark.parametrize("cost", [-0.01, "inf", 1e999])
+def test_a_providers_cost_below_zero_or_past_any_number_is_unknown(cost):
+    usage = {"prompt_tokens": 10, "completion_tokens": 2, "cost": cost}
+    assert cost_of("gpt-6-luna", usage, OPENAI_URL) is None
+
+
 def test_an_unknown_models_cost_is_none_not_zero():
     usage = {"prompt_tokens": 10, "completion_tokens": 2}
     assert cost_of("no-such-model", usage, OPENAI_URL) is None

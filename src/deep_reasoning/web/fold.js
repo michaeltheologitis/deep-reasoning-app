@@ -111,12 +111,15 @@ function endCell(fold, event) {
   if (cell) Object.assign(cell, { code: event.code, output: event.output, status: event.status });
 }
 
+// A cost that isn't a number, or is below zero or past any number, as a shared file may hold, is unknown.
+const isCost = (cost) => Number.isFinite(cost) && cost >= 0;
+
 // A call's cost counts for its agent, every agent above it and the turn; once one call is unpriced, so is each of their totals
-// (unpriced, cost null), unlike a holder with no calls yet (cost null alone). A cost that isn't a number, as a shared file may hold, is unknown.
+// (unpriced, cost null), unlike a holder with no calls yet (cost null alone).
 // A sub-agent's own call names the model it asked for on its row, when that isn't the run's.
 function addUsage(fold, event) {
   for (const { holder } of lineage(fold, event.node)) {
-    holder.unpriced ||= typeof event.cost !== "number";
+    holder.unpriced ||= !isCost(event.cost);
     holder.cost = holder.unpriced ? null : (holder.cost ?? 0) + event.cost;
   }
   const row = fold.nodes.get(event.node)?.holder;
@@ -134,7 +137,7 @@ function endAgent(fold, event) {
 function endTurn(fold, event) {
   const { outcome, answer, detail, cost, seconds } = event;
   const unfinished = cost === 0 && event.unfinished_calls > 0;
-  const priced = typeof cost === "number" && !unfinished;
+  const priced = isCost(cost) && !unfinished;
   Object.assign(fold.turn, { outcome, answer, detail, cost: priced ? cost : null, unpriced: !priced && !unfinished, unfinished, seconds });
   markLeftGoing(fold.turn, event.t, outcome === STOPPED ? STOPPED : CUT_OFF);
 }

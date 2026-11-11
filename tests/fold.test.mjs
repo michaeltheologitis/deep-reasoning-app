@@ -267,8 +267,8 @@ test("a sub-agent with no calls yet has no cost, unlike one whose call was unpri
   assert.deepEqual([row(late).cost, row(late).unpriced], [null, false]);
 });
 
-for (const cost of ["0.5", "abc"]) {
-  test(`a cost that isn't a number (${JSON.stringify(cost)}), as a crafted file may hold, reads as unknown`, () => {
+for (const cost of ["0.5", "abc", -0.01, Infinity]) {
+  test(`a cost that isn't a number, or is below zero or past any number (${String(cost)}), as a crafted file or a server may send, reads as unknown`, () => {
     const events = [
       ...parentCycle.slice(0, 3),
       { seq: 4, t: 2, kind: "agent.start", node: 2, parent: 1, cell: 1, task: "A.", drive: 1 },
