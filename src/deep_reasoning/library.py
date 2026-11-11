@@ -3147,10 +3147,10 @@ def ignored_grants(read, tools):
     """Why each of *tools*, a namespace's grants, may not be granted, as runs of the
     Library *read* would ignore it (known_tools()): left out, with why, or not there."""
     return [
-        f"{read['tools_left'][tool]} It is left out, so runs ignore a grant of it: fix"
-        " or delete it in the Tools tab, or take it out of tools."
+        f"{read['tools_left'][tool]} It is left out, so runs ignore any grant of it:"
+        " fix or delete it in the Tools tab, or take it out of tools."
         if tool in read["tools_left"]
-        else f'Tool "{tool}" isn\'t in the Library, so runs would ignore a grant of it:'
+        else f'Tool "{tool}" isn\'t in the Library, so runs ignore any grant of it:'
         " add the tool first, or take it out of tools."
         for tool in tools
         if tool not in known_tools(read)
@@ -3917,13 +3917,19 @@ def problems_of(row):
 def listed_tools(read, config, registry, names):
     """Each tool of the Library *read* (read_library()) as the panel lists it: those runs
     declare (tool_rows()), then each left out, saying why and where it is granted, so it
-    can be taken out and the tool deleted. One runs declare all the same, the llm a model
-    brings, is listed once, saying why its own row is left out."""
+    can be taken out and the tool deleted. The llm a model brings, which runs declare all
+    the same, is listed once, saying why its own row is left out; a row under an app
+    tool's name is listed apart, after it, with none of the grants, which are the app
+    tool's (tool_refusal())."""
     sources = {name: source for name, (_, source) in read["tools"].items()}
     rows = {row["name"]: row for row in tool_rows(config, registry, names, sources)}
+    apart = []
     for name, why in read["tools_left"].items():
         granting = grants_of(read["namespaces"], name)
         problems = why.splitlines()
+        if name in APP_TOOLS:
+            apart.append(listed_tool(name, [], True, problems=problems))
+            continue
         if name in rows:
             refusal = tool_refusal(name, granting, True)
             rows[name] |= {"stored": True, "refusal": refusal, "problems": problems}
@@ -3932,7 +3938,7 @@ def listed_tools(read, config, registry, names):
         problems = [*problems, *ignored]
         # Runs ignore its grants, so it deletes though granted (delete_tool()).
         rows[name] = listed_tool(name, granting, True, problems=problems, refusal=None)
-    return list(rows.values())
+    return [*rows.values(), *apart]
 
 
 def chats_on(connection):

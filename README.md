@@ -174,8 +174,9 @@ imports too.
   fail at that call. Where it hands the whole question on (a last cell ending `FinalAnswer(subagent(...,
   namespace=…))`), agents are shown it answering themselves if they can instead (for `historian`, saying they
   can't); one handing on a step whose answer it works on isn't changed, so edit it. A namespace's Hand-offs field
-  lists both, saving a namespace names the examples it gave a note, and a namespace's Delete says how many worked
-  examples hand work to it and how many chats are on it, which are refused until they pick another.
+  lists both, its row in the list counts its own examples' notes, saving a namespace names the examples it gave a
+  note, and a namespace's Delete says how many worked examples hand work to it and how many chats are on it, which
+  are refused until they pick another.
 - Saving refuses what would fail every run there: a template (`{{` or `{%`) the engine can't render, that names
   anything but what it fills in (`task`, `vars`, `funcs`, `coroutines`, the run settings'
   `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`, or put a cell's code, an f-string's braces and
@@ -209,7 +210,7 @@ imports too.
   or delete; an older Library's other names read as before. A false line in a run line's words stays, marked with
   a ◆ warning. Runs ignore a grant of a tool left out or not there, and the panel warns of it; a left-out tool
   deletes though granted, its grants left in their YAML, still ignored. A row named as one of the app's own tools
-  is listed under it, and Delete removes only the row. Its templates run sandboxed, reaching no Python internals.
+  is listed apart, after the app's, and Delete removes only the row. Its templates run sandboxed, reaching no Python internals.
 - Every run builds every tool some namespace grants, whatever its chat's namespace: a granted tool's code runs at the
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never

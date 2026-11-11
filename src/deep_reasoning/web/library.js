@@ -109,7 +109,8 @@ const usable = (name) => Boolean(namespaceNamed(name)?.usable);
 const problemList = (problems) => problems.length > 0 && element("div", { class: "lib-problems lib-warning" }, problems.map((text) => element("p", {}, text)));
 const decompositionKey = (namespace, name) => `d:${namespace}:${name}`;
 const namespaceKey = (name) => `n:${name}`;
-const toolKey = (name) => `t:${name}`;
+// a row a shared file holds under an app tool's name is listed apart from that tool's, by the same name
+const toolKey = (tool) => `t:${tool.stored ? "stored:" : ""}${tool.name}`;
 const settingKey = (name) => `s:${name}`;
 const parentOf = (name) => (name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : ROOT);
 
@@ -759,7 +760,8 @@ function checkMark(problems) {
   return element("span", { class: `lib-check ${count ? "failed" : "passed"}`, role: "img", "aria-label": label, title: label }, count ? "✗" : "✓");
 }
 
-// a call in its code its agents can't make, as the server found it: not a problem, so no ✗, but agents copying it fail there
+// a call in its code its agents can't make, as the server found it: not a problem, so no ✗, but agents copying it fail there;
+// on a namespace's row, its own worked examples' notes
 function noteMark(notes) {
   const label = `${notes.length} note${notes.length === 1 ? "" : "s"}`;
   return notes.length > 0 && element("span", { class: "lib-check lib-detail" }, label);
@@ -835,7 +837,8 @@ function renderNamespaces() {
   const tree = library.namespaces.map((namespace) => {
     const star = namespace.name === library.default_namespace && element("span", { class: "lib-star" }, "★ new chats start here");
     const name = element("span", { class: "lib-name ns-name", title: namespace.name }, nameParts(namespace.name));
-    const head = [name, star, namespace.problems.length > 0 ? checkMark(namespace.problems) : warningMark(namespace.warnings)];
+    const notes = namespace.decompositions.flatMap((each) => each.notes);
+    const head = [name, star, namespace.problems.length > 0 ? checkMark(namespace.problems) : warningMark(namespace.warnings), noteMark(notes)];
     const content = () => [problemList(namespace.problems), warningList(namespace.warnings), namespaceFields([...namespace.fields, decompositionsField(namespace.name)]), namespaceActions(namespace)];
     return element("div", { style: `--depth: ${namespace.depth}` }, disclosure(namespaceKey(namespace.name), head, content));
   });
@@ -862,7 +865,7 @@ const toolsSaid = element("p", { class: "lib-confirm", role: "status" });
 function renderTool(tool) {
   const remove = async () => {
     await changeLibrary("DELETE", `${TOOLS_URL}/${encodeURIComponent(tool.name)}`);
-    opened.delete(toolKey(tool.name));
+    opened.delete(toolKey(tool));
     return { text: `Deleted tool "${tool.name}"` };
   };
   const stored = () => library.tools.some((each) => each.name === tool.name && each.stored);
@@ -876,14 +879,14 @@ function renderTool(tool) {
     // What the agent is told it does, for a custom tool as far as its source says; it wraps, as one may run long.
     tool.description && element("pre", { class: "code lib-doc" }, tool.description),
     tool.source != null && [element("p", { class: "lib-note" }, `Its Python, ${tool.file}:`), sideways(`${tool.name}'s Python`, tool.source)],
-    tool.stored && deletable(toolKey(tool.name), [], { question: `Delete tool ${tool.name}?`, refusal: () => tool.refusal, remove, said: toolsSaid, stored }),
+    tool.stored && deletable(toolKey(tool), [], { question: `Delete tool ${tool.name}?`, refusal: () => tool.refusal, remove, said: toolsSaid, stored }),
   ];
 }
 
 function renderTools() {
   const rows = library.tools.map((tool) => {
     const granted = tool.granted_in.length ? `granted in ${tool.granted_in.join(", ")}` : "not granted";
-    return disclosure(toolKey(tool.name), rowHead(tool.name, granted, tool.problems.length ? checkMark(tool.problems) : tool.badge), () => renderTool(tool));
+    return disclosure(toolKey(tool), rowHead(tool.name, granted, tool.problems.length ? checkMark(tool.problems) : tool.badge), () => renderTool(tool));
   });
   return [element("div", { class: "lib-rows" }, toolsSaid, rows)];
 }

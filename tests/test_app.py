@@ -492,7 +492,7 @@ def test_deleting_a_namespace_says_how_many_chats_are_on_it(client):
             "PUT",
             "/api/namespaces/root",
             {"yaml": "tools: [ghost]\n", "was": dump(FRESH_NAMESPACES["root"])},
-            'Tool "ghost" isn\'t in the Library, so runs would ignore a grant of it',
+            'Tool "ghost" isn\'t in the Library, so runs ignore any grant of it',
         ),
         (
             "DELETE",
@@ -1859,7 +1859,7 @@ NAMESPACE_REFUSALS = [
     ),
     (
         library_cell("add_namespace", "research", "tools: [no_such_tool]\n"),
-        'Tool "no_such_tool" isn\'t in the Library, so runs would ignore a grant of',
+        'Tool "no_such_tool" isn\'t in the Library, so runs ignore any grant of it',
     ),
     (
         library_cell("add_namespace", "research", f"system_suffix: {SERVER_KEY}\n"),
@@ -4507,7 +4507,7 @@ async def test_a_granted_tool_left_out_is_ignored_so_runs_and_writes_go_on(
     drafts = by_name(after["namespaces"])["drafts"]
     assert drafts["yaml"] == dump({"tools": [name]})
     missing = (
-        f'Tool "{name}" isn\'t in the Library, so runs would ignore a grant of it: add'
+        f'Tool "{name}" isn\'t in the Library, so runs ignore any grant of it: add'
         " the tool first, or take it out of tools."
     )
     assert drafts["warnings"] == [missing]

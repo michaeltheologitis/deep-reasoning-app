@@ -1530,7 +1530,7 @@ def test_a_runs_config_tells_each_app_tool_the_app_file_the_chat_and_the_run(
         ("page", PAGE_DESCRIPTION),
     ],
 )
-def test_a_shared_files_tool_named_as_an_app_tool_is_left_out_and_deleted_alone(
+def test_a_shared_files_tool_named_as_an_app_tool_is_left_out_listed_apart_and_deleted_alone(
     library, tmp_path, tool, description
 ):
     with closing(open_library(library)) as connection:
@@ -1539,24 +1539,28 @@ def test_a_shared_files_tool_named_as_an_app_tool_is_left_out_and_deleted_alone(
             "INSERT INTO tools VALUES (?, ?, ?)",
             (tool, f"factory: build\nfactory_from: {tool}.py\n", "def build(): 1\n"),
         )
+
+    def named(tools):
+        return [each for each in tools if each["name"] == tool]
+
     with capture_logs() as logs:
         config = engine_config(library, ROOT, tmp_path / "tools", CHAT, RUN)
         with closing(open_library(library)) as connection:
-            tools = {each["name"]: each for each in panel(connection)["tools"]}
+            app, row = named(panel(connection)["tools"])
     assert config["tools"][tool]["factory_from"] == str(APP_TOOLS_FILE)
     assert tool in config["namespaces"]["granting"]["tools"]
     assert not (tmp_path / "tools" / f"{tool}.py").exists()
-    assert tools[tool]["file"] == "deep_reasoning.app_tools"
-    assert tools[tool]["description"] == description
-    assert (tools[tool]["stored"], tools[tool]["refusal"]) == (True, None)
-    assert tools[tool]["problems"] == [SHADOWS_AN_APP_TOOL.format(tool)]
+    assert app["file"] == "deep_reasoning.app_tools"
+    assert app["description"] == description
+    assert (app["stored"], app["problems"]) == (False, [])
+    assert "granting" in app["granted_in"]
+    assert (row["stored"], row["refusal"], row["granted_in"]) == (True, None, [])
+    assert row["problems"] == [SHADOWS_AN_APP_TOOL.format(tool)]
     assert ("tools", repr(tool)) in {
         (entry.get("table"), entry.get("row")) for entry in logs
     }
     change(library, delete_tool, tool)
-    tools = {each["name"]: each for each in panel_of(library)["tools"]}
-    assert (tools[tool]["stored"], tools[tool]["problems"]) == (False, [])
-    assert "granting" in tools[tool]["granted_in"]
+    assert named(panel_of(library)["tools"]) == [app]
 
 
 def test_the_engine_config_builds_a_registry_and_a_reasoner_without_a_model_call(
@@ -1675,7 +1679,7 @@ def test_a_namespace_the_panel_cannot_take_is_refused_with_a_plain_message(
     [
         (
             "tools: [ghost]\n",
-            'Tool "ghost" isn\'t in the Library, so runs would ignore a grant of it',
+            'Tool "ghost" isn\'t in the Library, so runs ignore any grant of it',
         ),
         (
             "spawn: [nowhere]\n",
@@ -2979,8 +2983,8 @@ def test_a_save_granting_a_tool_runs_would_ignore_says_why(library):
     with closing(open_library(library)) as connection, writing(connection):
         connection.execute(UPSERT_TOOL, ("tally", "- not a mapping\n", None))
         connection.execute(UPSERT_NAMESPACE, ("drafts", "tools: [tally, ghost]\n"))
-    left_out = "It is left out, so runs ignore a grant of it: fix or delete it"
-    missing = 'Tool "ghost" isn\'t in the Library, so runs would ignore a grant of it'
+    left_out = "It is left out, so runs ignore any grant of it: fix or delete it"
+    missing = 'Tool "ghost" isn\'t in the Library, so runs ignore any grant of it'
     with pytest.raises(LibraryError, match=left_out):
         change(library, add_namespace, "notes", "tools: [tally]\n")
     with pytest.raises(LibraryError, match=missing):
