@@ -45,7 +45,7 @@ from structlog.testing import capture_logs
 
 from deep_reasoning import settings as settings_module
 from deep_reasoning.app import NO_PAGE, WEB, create_app
-from deep_reasoning.chats import TITLE_CHARS, create_chat
+from deep_reasoning.chats import TITLE_CHARS, choose, create_chat
 from deep_reasoning.folders import data_folder
 from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
@@ -587,24 +587,28 @@ async def test_a_chat_whose_namespace_was_deleted_is_refused_on_its_next_run(
         ("rоot", "system_suffix: Answer as root.\n", "'r\\u043eot'"),
     ],
 )
-async def test_a_chat_in_a_namespace_the_engine_cant_read_is_refused_saying_so(
+async def test_a_namespace_the_engine_cant_read_is_refused_when_picked_and_when_run(
     library_on, connect, name, yaml, shown
 ):
+    unreadable = f"{shown} is one the engine can't read (the Library panel says why)"
     with FakeOpenAI(scripted(PLAN)) as fake:
         library = library_on(fake)
         plant_row(library, "namespaces", (name, yaml))
         async with connect(library) as api:
             chat = await new_chat(api)
-            await api.patch(f"/api/chats/{chat}", json={"namespace": name})
+            picked = await api.patch(f"/api/chats/{chat}", json={"namespace": name})
+            # as a shared file's chat may be on it
+            choose(library, chat, name)
             refused = await api.post(
                 f"/api/chats/{chat}/runs", json={"prompt": "Count to two."}
             )
+    assert (picked.status_code, picked.json()) == (
+        400,
+        {"detail": f"Namespace {unreadable} — pick another."},
+    )
     assert (refused.status_code, refused.json()) == (
         400,
-        {
-            "detail": f"This chat's namespace {shown} is one the engine can't read"
-            " (the Library panel says why) — pick another."
-        },
+        {"detail": f"This chat's namespace {unreadable} — pick another."},
     )
     assert fake.calls == []
 
