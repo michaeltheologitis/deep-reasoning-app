@@ -1972,14 +1972,29 @@ def check_keys_once(node):
         raise LibraryError(why)
 
 
+def yaml_data(source):
+    """The YAML *source*, text or an open file, as data, as yaml.safe_load reads it, and
+    where it first gives a key twice, in words; None when it doesn't."""
+    loader = RepeatsLoader(source)
+    try:
+        return loader.get_single_data(), loader.repeated
+    finally:
+        loader.dispose()
+
+
 def loaded(text, keys_once=False):
     """The YAML *text* as data, or a LibraryError saying where it doesn't parse or why it
     holds what no text can. A key given twice reads as the last, as the engine reads it,
     with a warning, so what an older version stored reads as before; with *keys_once*,
     as every save takes text, it is refused."""
-    loader = RepeatsLoader(text)
     try:
-        data = loader.get_single_data()
+        data, repeated = yaml_data(text)
+    except yaml.reader.ReaderError as error:
+        line = text.count("\n", 0, error.position) + 1
+        raise LibraryError(
+            f"The YAML holds a character it can't hold ({code_point(chr(error.character))},"
+            f" line {line}); take it out."
+        ) from error
     except yaml.YAMLError as error:
         mark = getattr(error, "problem_mark", None)
         where = f"line {mark.line + 1}: " if mark else ""
@@ -1989,9 +2004,7 @@ def loaded(text, keys_once=False):
         ) from error
     except RecursionError as error:
         raise LibraryError("The YAML is nested too deeply to read.") from error
-    finally:
-        loader.dispose()
-    if repeated := loader.repeated:
+    if repeated:
         if keys_once:
             raise LibraryError(repeated)
         log.warning("library.key_given_twice", why=repeated)
@@ -2197,6 +2210,11 @@ def check_visible(name):
 def script_of(letter):
     """The alphabet *letter* is of, as its Unicode name begins: LATIN, CYRILLIC, ..."""
     return unicodedata.name(letter, "").partition(" ")[0]
+
+
+def code_point(char):
+    """*char* as Unicode writes it, as U+0007."""
+    return f"U+{ord(char):04X}"
 
 
 def first_char(text, test):

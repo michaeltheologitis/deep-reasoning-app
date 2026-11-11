@@ -1134,6 +1134,25 @@ async def test_an_older_namespace_giving_a_key_twice_still_runs_on_the_last(
     assert "Be brief." not in told
 
 
+@pytest.mark.parametrize(
+    ("text", "where"),
+    [
+        ("system_suffix: ring\x07\n", "U+0007, line 1"),
+        ("a: 1\nb: \x1b[0m\n", "U+001B, line 2"),
+    ],
+)
+def test_yaml_holding_a_character_yaml_cant_is_left_out_stored_and_refused_saved(
+    client, imported, text, where
+):
+    plant_row(imported, "namespaces", ("ringing", text))
+    read = client.get("/api/library")
+    saved = client.post("/api/namespaces", json={"name": "rung", "yaml": text})
+    said = f"The YAML holds a character it can't hold ({where}); take it out."
+    assert read.status_code == 200
+    assert by_name(read.json()["namespaces"])["ringing"]["problems"] == [said]
+    assert (saved.status_code, saved.json()) == (400, {"detail": said})
+
+
 @pytest.mark.anyio
 async def test_a_chats_earlier_messages_and_answers_are_never_rendered(
     library_on, connect
