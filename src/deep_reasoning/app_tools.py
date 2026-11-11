@@ -424,6 +424,13 @@ def add_logged(kind: str, fields: tuple[str, ...], tree: Tree, event: Event) -> 
     add_step(tree, event.get("node"), step)
 
 
+def add_change(tree: Tree, event: Event) -> None:
+    """A change the library tool made, its before and after marked as the tool gives
+    them (marked())."""
+    texts = {key: marked(event.get(key)) for key in ("before", "after")}
+    add_logged("change", CHANGE_FIELDS, tree, event | texts)
+
+
 def end_cell(tree: Tree, event: Event) -> None:
     cell = tree.cells.get(event.get("cell"))
     if cell is not None:
@@ -476,7 +483,7 @@ FOLDS = {
     "think": think,
     "cell.start": start_cell,
     "cell.end": end_cell,
-    "library.change": partial(add_logged, "change", CHANGE_FIELDS),
+    "library.change": add_change,
     "page.open": partial(add_logged, "page", PAGE_FIELDS),
     LEFT_OUT: partial(add_logged, "left_out", LEFT_OUT_FIELDS),
     "usage": add_usage,

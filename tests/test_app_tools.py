@@ -247,6 +247,14 @@ def as_change_step(event):
     )
 
 
+def test_steps_give_a_library_changes_repl_tags_marked(library):
+    change = {"kind": "library.change", "node": 1, "what": "decomposition"}
+    change |= {"namespace": "drafts", "name": "inline", "before": None, "after": INLINE}
+    plant(library, CHAT, crafted(ROOT_AND_CELL[0], change))
+    [step] = history_of(library).steps(1)
+    assert (step["before"], step["after"]) == (None, as_given(INLINE))
+
+
 def test_steps_list_each_library_change_with_the_agent_that_made_it(library):
     events = recorded("librarian")
     plant(library, CHAT, events)
