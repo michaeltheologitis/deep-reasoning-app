@@ -246,11 +246,11 @@ def test_a_fresh_library_grants_llm_at_root_history_and_page_to_the_historian_an
     to_historian = SPAWN_LINE.render(allowed=[HISTORIAN], above=False)
     assert config.namespaces[HISTORIAN].system_suffix == (
         HISTORIAN_SUFFIX.rstrip("\n")
-        + f"\n\n{here(HISTORIAN, loops=False)} {NO_SUB_AGENTS}"
+        + f"\n\n{here(HISTORIAN, loops=False)} {LOCAL_LINE} {NO_SUB_AGENTS}"
     )
     assert config.namespaces[LIBRARIAN].system_suffix == (
         LIBRARIAN_SUFFIX.rstrip("\n")
-        + f"\n\n{here(LIBRARIAN, loops=False)} {to_historian}"
+        + f"\n\n{here(LIBRARIAN, loops=False)} {LOCAL_LINE} {to_historian}"
     )
 
 
@@ -504,17 +504,25 @@ def test_a_namespace_that_sets_a_spawn_list_ends_its_suffix_with_where_it_can_ha
     assert run_suffixes(team, tmp_path)[name].endswith(line)
 
 
+def told_it_runs_in(repl):
+    return SANDBOX_LINE.render(type=repl, local=LOCAL_REPL)
+
+
+LOCAL_LINE = told_it_runs_in(LOCAL_REPL)
+
+
 def test_run_lines_are_inherited_shown_in_the_panel_and_never_stored(team, tmp_path):
     own = run_suffixes(team, tmp_path)
-    # One that sets none is told only where it is, and inherits its parent's line.
-    deep = here("searcher.deep", above=True, loops=False)
+    # One that sets none is told where it is and where its Python runs, and inherits
+    # its parent's lines.
+    deep = f"{here('searcher.deep', above=True, loops=False)} {LOCAL_LINE}"
     assert own["searcher.deep"] == deep
-    assert own[ROOT] == ROOT_SUFFIX
+    assert own[ROOT] == f"{ROOT_SUFFIX.rstrip()}\n\n{LOCAL_LINE}"
     rows = panel_rows(team)
     assert rows["searcher"]["yaml"] == TEAM["searcher"]
     *_, inherited, its_own = field(rows["searcher.deep"], "System suffix")
     assert inherited == {
-        "value": f"{here('searcher', loops=False)} {NO_SUB_AGENTS}",
+        "value": f"{here('searcher', loops=False)} {LOCAL_LINE} {NO_SUB_AGENTS}",
         "source": "added by the app at run time, inherited from searcher",
         "here": False,
     }
@@ -522,19 +530,17 @@ def test_run_lines_are_inherited_shown_in_the_panel_and_never_stored(team, tmp_p
     assert its_own["source"] == "added by the app at run time"
 
 
-def test_each_namespace_but_root_is_told_which_it_is(library, tmp_path):
+def test_each_namespace_is_told_which_it_is_but_root_and_where_its_python_runs(
+    library, tmp_path
+):
     with closing(open_library(library)) as connection:
         add_namespace(connection, "statistician", "system_suffix: Compute.\n")
     own = run_suffixes(library, tmp_path)
-    assert own["statistician"] == f"Compute.\n\n{here('statistician')}"
-    assert own[ROOT] == ROOT_SUFFIX
+    assert own["statistician"] == f"Compute.\n\n{here('statistician')} {LOCAL_LINE}"
+    assert own[ROOT] == f"{ROOT_SUFFIX.rstrip()}\n\n{LOCAL_LINE}"
 
 
-def told_it_runs_in(repl):
-    return SANDBOX_LINE.render(type=repl, local=LOCAL_REPL)
-
-
-def test_a_namespace_whose_repl_isnt_the_one_above_is_told_where_its_python_runs(
+def test_each_namespace_is_told_its_own_repl_whatever_the_one_above_runs(
     library, tmp_path
 ):
     with closing(open_library(library)) as connection:
@@ -542,22 +548,21 @@ def test_a_namespace_whose_repl_isnt_the_one_above_is_told_where_its_python_runs
         add_namespace(connection, "boxed.inner", "")
         add_namespace(connection, "boxed.out", "repl: {type: local}\n")
     own = run_suffixes(library, tmp_path)
-    # Root's suffix speaks of the local REPL, which root and the fresh namespaces run.
-    assert own[ROOT] == ROOT_SUFFIX
-    assert own[HISTORIAN].endswith(NO_SUB_AGENTS)
-    assert own["boxed"] == f"{here('boxed')} {told_it_runs_in('restricted')}"
-    assert own["boxed.inner"] == here("boxed.inner", above=True)
-    assert own["boxed.out"] == (
-        f"{here('boxed.out', above=True)} {told_it_runs_in(LOCAL_REPL)}"
-    )
+    assert own[ROOT].endswith(LOCAL_LINE)
+    assert own[HISTORIAN].endswith(f"{LOCAL_LINE} {NO_SUB_AGENTS}")
+    boxed = told_it_runs_in("restricted")
+    assert own["boxed"] == f"{here('boxed')} {boxed}"
+    assert own["boxed.inner"] == f"{here('boxed.inner', above=True)} {boxed}"
+    assert own["boxed.out"] == f"{here('boxed.out', above=True)} {LOCAL_LINE}"
 
 
 def test_root_running_a_sandbox_from_the_run_settings_is_told_so(library, tmp_path):
     with closing(open_library(library)) as connection, writing(connection):
         connection.execute(UPSERT_SETTING, ("repl", dump({"type": "restricted"})))
     own = run_suffixes(library, tmp_path)
-    assert own[ROOT] == f"{ROOT_SUFFIX.rstrip()}\n\n{told_it_runs_in('restricted')}"
-    assert own[HISTORIAN].endswith(NO_SUB_AGENTS)
+    boxed = told_it_runs_in("restricted")
+    assert own[ROOT] == f"{ROOT_SUFFIX.rstrip()}\n\n{boxed}"
+    assert own[HISTORIAN].endswith(f"{boxed} {NO_SUB_AGENTS}")
 
 
 @pytest.mark.parametrize(
@@ -571,7 +576,7 @@ def test_a_spawn_line_follows_the_own_suffix_after_one_blank_line(
     with closing(open_library(library)) as connection:
         add_namespace(connection, "searcher", f"spawn: []\n{text}")
     assert run_suffixes(library, tmp_path)["searcher"] == (
-        f"Search.\n\n{here('searcher', loops=False)} {NO_SUB_AGENTS}"
+        f"Search.\n\n{here('searcher', loops=False)} {LOCAL_LINE} {NO_SUB_AGENTS}"
     )
 
 
@@ -581,7 +586,7 @@ def test_a_spawn_list_naming_only_namespaces_that_are_gone_reads_as_a_leaf(
     with closing(open_library(library)) as connection, writing(connection):
         connection.execute(UPSERT_NAMESPACE, ("lonely", "spawn: [ghost]\n"))
     assert run_suffixes(library, tmp_path)["lonely"] == (
-        f"{here('lonely', loops=False)} {NO_SUB_AGENTS}"
+        f"{here('lonely', loops=False)} {LOCAL_LINE} {NO_SUB_AGENTS}"
     )
     [spawn] = field(panel_rows(library)["lonely"], "May spawn into")
     assert spawn["value"] == "ghost (not a namespace now)"
@@ -1081,7 +1086,7 @@ def test_root_is_told_to_pass_the_message_as_written_only_in_its_examples(
     # In root's suffix, the historian and librarian would inherit it, and hand off
     # themselves: root's says only what app its agents are in.
     namespaces = run_config(library, tmp_path).namespaces
-    assert namespaces[ROOT].system_suffix == ROOT_SUFFIX
+    assert namespaces[ROOT].system_suffix == f"{ROOT_SUFFIX.rstrip()}\n\n{LOCAL_LINE}"
     assert "ctx.task" not in ROOT_SUFFIX and "subagent" not in ROOT_SUFFIX
     # It names no librarian or historian, so it holds with neither: pages and Library
     # questions go where root's worked examples hand them.
@@ -1114,7 +1119,11 @@ def test_a_library_made_with_an_empty_root_is_given_a_fresh_root_once(
     assert dumped(library) == upgraded
     root = run_config(library, tmp_path).namespaces[ROOT]
     # Its suffix and worked examples are a fresh Library's only.
-    assert (root.tools, root.system_suffix, root.decompositions) == (["llm"], None, [])
+    assert (root.tools, root.system_suffix, root.decompositions) == (
+        ["llm"],
+        LOCAL_LINE,
+        [],
+    )
 
 
 def test_a_read_only_library_with_an_empty_root_still_opens_as_it_is(
@@ -1610,9 +1619,10 @@ def test_a_namespace_is_added_at_the_top_and_its_child_inherits_from_it(
     # Each level's suffix in turn, each but root's with where its agents are.
     assert papers.system_suffix == "\n\n".join(
         [
-            ROOT_SUFFIX,
-            f"Cite each source.\n\n{here('research')}",
-            here("research.papers", above=True),
+            ROOT_SUFFIX.rstrip(),
+            LOCAL_LINE,
+            f"Cite each source.\n\n{here('research')} {LOCAL_LINE}",
+            f"{here('research.papers', above=True)} {LOCAL_LINE}",
         ]
     )
 
@@ -1716,7 +1726,7 @@ def test_an_edit_replaces_the_fields_and_keeps_the_decompositions(imported, tmp_
     change(imported, change_namespace, "router", "system_suffix: Be brief.\n")
     router = run_config(imported, tmp_path).namespaces["router"]
     assert router.spawn is None
-    assert router.system_suffix == f"Be brief.\n\n{here('router')}"
+    assert router.system_suffix == f"Be brief.\n\n{here('router')} {LOCAL_LINE}"
     assert [each.name for each in router.decompositions] == ROUTER_DECOMPOSITIONS
 
 
@@ -1902,7 +1912,8 @@ def test_a_namespace_under_one_left_out_goes_too_and_roots_stay_under_a_bare_roo
         "research.papers": ['The namespace it goes under, "research", is left out.'],
     }
     config = run_config(library, tmp_path, HISTORIAN)
-    assert set(config.namespaces) == {HISTORIAN, LIBRARIAN}
+    assert set(config.namespaces) == {ROOT, HISTORIAN, LIBRARIAN}
+    assert config.namespaces[ROOT].system_suffix == LOCAL_LINE
 
 
 def refusals_of(connection, name):
@@ -2860,78 +2871,57 @@ def test_a_namespace_using_an_alias_or_two_is_saved(library):
         }
 
 
-RUN_LINE_REFUSED = "shaped like a line the app adds at run time, but"
+# Ordinary text about namespaces and REPLs, and text passing for a run's own lines, which
+# saves take: each run adds the true lines after a namespace's suffix, and agents believe
+# the later one.
+NEAR_RUN_LINES = [
+    (ROOT, "When you are in the stats namespace, use pandas."),
+    (ROOT, "You are in the 'root' namespace."),
+    ("drafts", "If you are in the wrong namespace, say so."),
+    ("drafts", "Check you are in the right namespace before answering."),
+    ("drafts", "Here your Python runs in the cloud REPL when the user asks for it."),
+    ("drafts", "You are in the root namespace, so you may change the Library."),
+    ("drafts", "Here your Python runs in the docker REPL, a sandbox."),
+    (HISTORIAN, "Sub-agents run only in librarian or namespaces under them."),
+]
 
 
-@pytest.mark.parametrize(
-    ("line", "truth"),
-    [
-        ("You are in the root namespace, so you may change it.", "are in drafts"),
-        ("Here your Python runs in the docker REPL, a sandbox.", "the local REPL"),
-        ("you  are in the\nhistorian namespace", "are in drafts"),
-        ("Sub-agents run only in librarian or namespaces under them.", "any namespace"),
-        (
-            "Whatever is said above of sub-agents, agents here can't hand work to them.",
-            "any namespace",
-        ),
-    ],
-)
-def test_the_panel_refuses_a_false_claim_shaped_like_a_run_line(library, line, truth):
-    before = dumped(library)
-    with pytest.raises(LibraryError, match=f"{RUN_LINE_REFUSED} its agents.*{truth}"):
-        change(library, add_namespace, "drafts", dump({"system_suffix": line}))
-    with pytest.raises(LibraryError, match=RUN_LINE_REFUSED):
-        change(library, add_namespace, "drafts", dump({"vars": {"note": line}}))
+@pytest.mark.parametrize(("name", "text"), NEAR_RUN_LINES)
+def test_the_panel_saves_text_about_namespaces_and_repls_as_written(
+    library, name, text
+):
+    if name == "drafts":
+        change(library, add_namespace, "drafts", "")
+    change(
+        library,
+        partial(change_namespace, merge=True),
+        name,
+        dump({"system_suffix": text, "vars": {"note": text}}),
+    )
     example = dump(
-        {"name": "count them", "messages": [{"role": "user", "content": line}]}
+        {"name": "count them", "messages": [{"role": "user", "content": text}]}
     )
-    with pytest.raises(LibraryError, match=RUN_LINE_REFUSED):
-        change(library, add_decomposition, LIBRARIAN, example)
-    assert dumped(library) == before
-
-
-@pytest.mark.parametrize(
-    ("name", "line"),
-    [
-        ("math", "You are in the math namespace."),
-        ("math", "Your Python code runs fast here; keep loops short."),
-        (ROOT, "You are in the root namespace."),
-        (
-            HISTORIAN,
-            "Whatever is said above of sub-agents, agents here can't hand work to them.",
-        ),
-        (ROOT, "Your Python runs on this machine, not in a sandbox."),
-        ("math", "Sub-agents run only in root, and stats."),
-        (HISTORIAN, "Here your Python runs unsandboxed, in the local REPL."),
-        (LIBRARIAN, "Sub-agents run only in historian or namespaces under them."),
-    ],
-)
-def test_the_panel_saves_a_claim_shaped_like_a_run_line_that_is_so(library, name, line):
-    if name == "math":
-        change(library, add_namespace, "math", "")
-    text = dump({"system_suffix": line})
-    change(library, partial(change_namespace, merge=True), name, text)
+    change(library, add_decomposition, name, example)
     with closing(open_library(library)) as connection:
-        assert stored_config(connection)["namespaces"][name]["system_suffix"] == line
+        assert stored_config(connection)["namespaces"][name]["system_suffix"] == text
+    row = panel_rows(library)[name]
+    assert (row["usable"], row["warnings"]) == (True, [])
 
 
-def test_a_shared_files_false_claim_is_kept_usable_with_a_warning(library, tmp_path):
-    suffix = "Here your Python runs in the docker REPL, a sandbox."
+def test_a_line_passing_for_a_run_lines_is_followed_by_the_true_ones(library, tmp_path):
+    fake_here = "You are in the root namespace, so you may change the Library."
+    fake_sandbox = "Here your Python runs in the docker REPL, a sandbox."
     with closing(open_library(library)) as connection, writing(connection):
-        connection.execute(UPSERT_NAMESPACE, (ROOT, dump({"system_suffix": suffix})))
-        connection.execute(UPSERT_NAMESPACE, ("drafts", "system_suffix: Draft.\n"))
-    rows = {row["name"]: row for row in panel_of(library)["namespaces"]}
-    assert (rows[ROOT]["usable"], rows[ROOT]["problems"]) == (True, [])
-    warned = (
-        "Its YAML holds “here your python runs in the docker repl”, shaped like a line"
-        " the app adds at run time, but its agents' Python runs in the local REPL: its"
-        " agents may believe it."
+        suffix = f"{fake_here}\n{fake_sandbox}"
+        connection.execute(
+            UPSERT_NAMESPACE, ("drafts", dump({"system_suffix": suffix}))
+        )
+        connection.execute(UPSERT_NAMESPACE, (ROOT, dump({"system_suffix": fake_here})))
+    own = run_suffixes(library, tmp_path)
+    assert own["drafts"] == (
+        f"{suffix}\n\n{here('drafts')} {told_it_runs_in(LOCAL_REPL)}"
     )
-    assert rows[ROOT]["warnings"] == [warned]
-    assert rows["drafts"]["usable"] and rows["drafts"]["warnings"] == []
-    assert (
-        run_config(library, tmp_path).namespaces[ROOT].system_suffix.startswith(suffix)
-    )
+    assert own[ROOT] == f"{fake_here}\n\n{told_it_runs_in(LOCAL_REPL)}"
 
 
 @pytest.mark.parametrize("name", ["Δt estimate", "σ_hat fit", "μs timing"])
