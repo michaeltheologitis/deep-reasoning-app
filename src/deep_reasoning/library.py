@@ -722,8 +722,6 @@ COMMON_MODULES = frozenset(
 # Latin is ordinary in maths names, as "Δt estimate".
 LATIN = "LATIN"
 LOOK_ALIKE_SCRIPTS = {"CYRILLIC", "ARMENIAN"}
-# Alphabets whose letters may be drawn as Latin ones, as Greek ο and Cyrillic о are o.
-LATIN_LOOKING = {LATIN, "GREEK", *LOOK_ALIKE_SCRIPTS}
 PASSES_FOR_ANOTHER = ", so it could pass for another namespace in the menu."
 ASCII_ONLY = ": namespace names are printable ASCII only."
 MERGE_TAG = "tag:yaml.org,2002:merge"
@@ -3073,15 +3071,23 @@ def not_plain(char):
 
 def beyond_ascii(char):
     """Why a namespace's name can't hold *char*, outside printable ASCII: it could pass
-    for another if it reads as printable ASCII or as nothing (a letter drawn as Latin, a
-    styled or full-width one, another kind of space, one you can't see)."""
+    for another if it reads as printable ASCII or as nothing (a Cyrillic or Armenian
+    letter, a styled or full-width one, another kind of space, one you can't see)."""
     looks_plain = (
         invisible(char)
         or char.isspace()
-        or script_of(char) in LATIN_LOOKING
+        or script_of(char) in LOOK_ALIKE_SCRIPTS
+        or styled_latin(char)
         or unicodedata.normalize("NFKC", char).isascii()
     )
     return PASSES_FOR_ANOTHER if looks_plain else ASCII_ONLY
+
+
+def styled_latin(char):
+    """Whether *char* is a Latin letter drawn as another, as a small capital ʀ or a
+    dotless ı are, and not one with a mark, as é is."""
+    name = unicodedata.name(char, "")
+    return name.startswith(f"{LATIN} ") and " WITH " not in name
 
 
 def reads_as_root(name):
