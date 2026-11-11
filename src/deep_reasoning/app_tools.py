@@ -197,12 +197,14 @@ LOCKED_FIELDS = {
     ),
 }
 USERS_CHOICE = "the user's choice, in the Library panel's Namespaces tab (Edit YAML)."
-# A var's or tool setting's name with one of these as a word part reads as a secret's.
-SECRET_WORD = re.compile(r"(api)?(key|token|secret|password)s?", re.IGNORECASE)
+# A var's or tool setting's name holding one of these reads as a secret's.
+SECRET_WORD = re.compile(r"key|token|secret|password", re.IGNORECASE)
 WORD_PART = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
-# And a value shaped like a key: 16 or more characters of a token's alphabet, letters
-# and digits among them, as no id, date, name or column label is.
-SECRET_SHAPED = re.compile(r"(?=.*[A-Za-z])(?=.*\d)[\w.+/=~-]{16,}", re.ASCII)
+# And a value holding an unbroken run of letters and digits this long, switching between
+# them this often, reads as a key: random, as no id, date, path or label is.
+KEY_RUN = re.compile(r"[A-Za-z0-9]{16,}")
+LETTERS_OR_DIGITS = re.compile(r"[A-Za-z]+|[0-9]+")
+MIN_SWITCHES = 4
 # Unless the name ends in env and the value is an environment variable's name.
 NAMES_A_VARIABLE = "env"
 VARIABLE_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
@@ -1272,16 +1274,25 @@ def plain(value: Any) -> bool:
 
 
 def secret_like(name: Any) -> bool:
-    """Whether *name*, a var's or setting's, reads as a secret's: key, token, secret or
-    password is one of its word parts."""
-    parts = WORD_PART.findall(name) if type(name) is str else []
-    return any(SECRET_WORD.fullmatch(part) for part in parts)
+    """Whether *name*, a var's or setting's, reads as a secret's: it holds key, token,
+    secret or password."""
+    return type(name) is str and SECRET_WORD.search(name) is not None
+
+
+def key_shaped(text: str) -> bool:
+    """Whether *text* holds a run of letters and digits shaped like a key's."""
+    return any(
+        len(LETTERS_OR_DIGITS.findall(run)) > MIN_SWITCHES
+        for run in KEY_RUN.findall(text)
+    )
 
 
 def secret_shaped(name: Any, value: Any) -> bool:
-    """Whether *value*, held under *name*, is text shaped like a key, and not the name of
-    the environment variable that holds one, as a name ending in env gives."""
-    if type(value) is not str or not SECRET_SHAPED.fullmatch(value):
+    """Whether *value*, held under *name*, is text or bytes holding a key, and not the
+    name of the environment variable that holds one, as a name ending in env gives."""
+    if type(value) is bytes:
+        value = value.decode("latin-1")
+    if type(value) is not str or not key_shaped(value):
         return False
     parts = WORD_PART.findall(name) if type(name) is str else []
     names_a_variable = [part.lower() for part in parts[-1:]] == [NAMES_A_VARIABLE]

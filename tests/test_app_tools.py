@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import re
@@ -1651,7 +1652,7 @@ def test_yaml_given_as_anything_but_text_or_a_dict_of_plain_values_is_refused(
 # Values shaped like keys: a third party's, as the tester typed them, and a live one's.
 WEATHER_KEY = "wk-7f3a9c21d4e84b6f"
 OWM_KEY = "3f9a1c7e5b2d4f6a8c0e1b3d5f7a9c2e"
-LIVE_KEY = "sk-live-abcdef123456"
+LIVE_KEY = "sk-live-4eC39HqLyjWDarjtT1zdp7dc"
 
 
 @pytest.mark.parametrize("method", ["add_namespace", "change_namespace"])
@@ -1666,6 +1667,9 @@ LIVE_KEY = "sk-live-abcdef123456"
         ({"api_keys": [WEATHER_KEY, OWM_KEY]}, ["api_keys"]),
         ({"weather": {"settings": [{"token": OWM_KEY}]}}, ["token"]),
         ({"api_key_env": LIVE_KEY}, ["api_key_env"]),
+        ({"privatekey": OWM_KEY, "keyboard": WEATHER_KEY}, ["keyboard", "privatekey"]),
+        ({"auth_token": f"Bearer {OWM_KEY}"}, ["auth_token"]),
+        ({"basic_token": f"user:{LIVE_KEY}"}, ["basic_token"]),
     ],
     ids=[
         "snake",
@@ -1676,6 +1680,9 @@ LIVE_KEY = "sk-live-abcdef123456"
         "a-list-under-one",
         "deep",
         "a-key-named-as-a-variable",
+        "a-word-holding-key",
+        "after-bearer",
+        "after-a-user-name",
     ],
 )
 def test_a_var_named_like_a_secret_holding_one_is_refused_saying_where_secrets_go(
@@ -1698,8 +1705,17 @@ def test_a_var_named_like_a_secret_holding_one_is_refused_saying_where_secrets_g
         {"key_dates": ["2026-01-01", "2026-01-01T12:00:00Z"]},
         {"password_hint": "the name of my first cat"},
         {"max_key_length": 5, "secret_santa": True, "api_key": ""},
-        {"keyboard": OWM_KEY, "monkey": WEATHER_KEY},
         {"weather_key_env": "OWM_KEY", "api_key_env": "OWM_API_KEY_2024_ABCDEF12"},
+        {
+            "sort_key": "created_at_2024_utc",
+            "key_column": "transaction_id_v2",
+            "token_model": "gpt-4o-mini-2024-07-18",
+        },
+        {
+            "key_file": "data/2024/report_q3.csv",
+            "primary_keys": ["customer_id_2024"],
+            "secret_santa_year": "December2024Party",
+        },
     ],
     ids=[
         "column-labels",
@@ -1707,13 +1723,24 @@ def test_a_var_named_like_a_secret_holding_one_is_refused_saying_where_secrets_g
         "dates",
         "words",
         "no-text",
-        "a-word-holding-key",
         "naming-a-variable",
+        "labels-with-numbers",
+        "a-path-an-id-and-a-word-with-a-year",
     ],
 )
 def test_a_var_that_holds_no_secret_is_written(fresh, given):
     library_tool(fresh).change_namespace("drafts", {"vars": given})
     assert own_fields(fresh, "drafts") == {"vars": given}
+
+
+def test_a_key_written_as_binary_yaml_is_refused(fresh):
+    as_binary = base64.b64encode(OWM_KEY.encode()).decode()
+    refusal = SECRET_LIKE.render(field="vars", names=["owm_key"])
+    with pytest.raises(LibraryError, match=re.escape(refusal)):
+        library_tool(fresh).change_namespace(
+            "drafts", f"vars:\n  owm_key: !!binary {as_binary}\n"
+        )
+    assert ("drafts", "") in stored_namespaces(fresh)
 
 
 def test_a_secret_like_var_the_user_stored_is_kept_but_never_changed(fresh):
