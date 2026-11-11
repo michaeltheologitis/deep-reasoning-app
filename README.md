@@ -66,9 +66,10 @@ system_suffix: |
 
 It applies from the next message. The librarian never changes root; asked to, it says how to do this.
 
-**One message at a time:** a tab runs one message at a time, across all its chats. A message sent while another
-chat's run is going stays in the box, and the hint names the chat whose run is going; open that chat and press Esc
-(on a touch screen, **stop**) to stop it. A run another tab started shows here, and stops here, but holds up nothing.
+**One message at a time:** a tab runs one message at a time, across all its chats, and a reload keeps its run its own
+(a duplicated tab's starts free). A message sent while another chat's run is going stays in the box, and the hint names
+the chat whose run is going until it ends; open that chat and press Esc (on a touch screen, **stop**) to stop it. A run
+another tab started shows here, and stops here, but holds up nothing.
 
 **The agent's Python** runs on your computer by default, unsandboxed, in the chat's working folder, with the app's
 own Python packages: numpy, pandas (with tabulate, so `to_markdown()` works) and requests are there; scipy, sympy
@@ -80,8 +81,9 @@ imports too.
 
 **Chats**
 - Chats on the left: new, rename, delete. Saved in the Library file with every message's run, they come back after a
-  restart; deleting one wipes its messages from the file, and its scratch folder (it says so first if that holds
-  files, or a run going in it, in any tab, may yet write some).
+  restart; deleting one stops its run going, if any, and wipes its messages from the file and its scratch folder: the
+  confirm says so of the run, and of the scratch folder while that holds files or a run going, in any tab, may yet
+  write some.
 - The chat used last is listed first, and a reload opens it; **+ New chat** reuses an empty chat, the one on screen or
   one this tab made, never one another tab is setting up; an unsent message stays with its chat, and one sent while
   its chat loads goes once it has; a title is cut past 200 characters, and one cut to fit shows whole in its tooltip.
