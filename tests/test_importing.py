@@ -601,6 +601,26 @@ def test_import_refuses_a_tool_that_does_not_build_and_says_why(
     assert dumped(library) == before
 
 
+def test_import_of_a_tool_needing_a_package_says_to_run_the_app_with_it(
+    library, tmp_path
+):
+    (tmp_path / "mine.py").write_text(
+        "import no_such_package_q7\n\ndef build(client, params): ...\n"
+    )
+    config = config_file(
+        tmp_path,
+        "tools:\n  mine: {factory: build, factory_from: mine.py}\n"
+        "namespaces:\n  helper: {tools: [mine]}\n",
+    )
+    open_library(library).close()
+    with pytest.raises(LibraryError) as refused:
+        import_into(library, config)
+    said = str(refused.value)
+    assert "No module named 'no_such_package_q7'" in said
+    assert "`uv run --with PKG deep-reasoning import CONFIG.yaml`" in said
+    assert "and start the app the same way, `uv run --with PKG deep-reasoning`" in said
+
+
 def grants_mine(tmp_path, source, settings="{}"):
     """A config with tool mine, built from *source* with *settings*, granted in helper."""
     (tmp_path / "mine.py").write_text(source)

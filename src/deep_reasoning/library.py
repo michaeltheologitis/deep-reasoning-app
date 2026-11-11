@@ -2047,12 +2047,23 @@ def check_aliases(data, text):
     each alias (*name) is written out, as the engine writes them out: a few lines of them
     can stand for millions of values."""
     allowed = ALIASES_STAND_FOR * len(text) + ALIASES_ALLOWANCE
-    if expanded_shape(data)[0] > allowed:
-        raise LibraryError(
-            "Its aliases (*name) stand for too much: written out, as the engine reads"
-            f" them, it would hold more than {allowed:,} values and characters, from"
-            f" {len(text):,} characters of YAML. Write it without aliases."
+    size = expanded_shape(data)[0]
+    if size <= allowed:
+        return
+    if size == math.inf:
+        why = (
+            "one holds itself, so written out, as the engine reads them, it would never"
+            " end"
         )
+    else:
+        why = (
+            f"written out, as the engine reads them, it would hold {size:,} values and"
+            f" characters, where its {len(text):,} characters of YAML may stand for"
+            f" {allowed:,} at most"
+        )
+    raise LibraryError(
+        f"Its aliases (*name) stand for too much: {why}. Write it without aliases."
+    )
 
 
 def fields_in(text):

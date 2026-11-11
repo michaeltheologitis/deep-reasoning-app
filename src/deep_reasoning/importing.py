@@ -75,8 +75,9 @@ APP_NAMESPACES = (HISTORIAN, LIBRARIAN)
 NOT_CARRIED = (
     "Each tool is built from its own Python file alone: if it reads a file or module from"
     " beside the config, those aren't carried into the Library, so put what it reads in"
-    " its settings or in its file; if it needs a package, install it in the app's"
-    " environment."
+    " its settings or in its file; if it needs a package, import with it, as `uv run"
+    " --with PKG deep-reasoning import CONFIG.yaml`, and start the app the same way, `uv run"
+    " --with PKG deep-reasoning`."
 )
 NOT_A_MAPPING = 'it should be a mapping of settings, like "max_iter: 20".'
 COMPOSE = "_compose"

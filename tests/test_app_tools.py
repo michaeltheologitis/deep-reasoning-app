@@ -44,7 +44,6 @@ from deep_reasoning.app_tools import (
     NOT_TEXT,
     NOT_TURNS,
     NOT_VALUES,
-    SECRET_LIKE,
     SETS_OWN_KEYS,
     SHOWN_CHARS,
     TITLE,
@@ -55,6 +54,7 @@ from deep_reasoning.app_tools import (
     build_page,
     cut,
     open_existing,
+    secret_refusal,
 )
 from deep_reasoning.library import (
     CHANGED_MEANWHILE,
@@ -1600,11 +1600,32 @@ def test_a_var_named_like_a_secret_holding_one_is_refused_saying_where_secrets_g
 ):
     name = "research" if method == "add_namespace" else "drafts"
     before = stored_namespaces(fresh)
-    refusal = SECRET_LIKE.render(field="vars", names=names)
+    refusal = secret_refusal("vars", names)
     with pytest.raises(LibraryError, match=re.escape(refusal)):
         getattr(library_tool(fresh), method)(name, {"vars": given})
     assert stored_namespaces(fresh) == before
     assert "shared" in refusal and "os.environ" in refusal
+
+
+@pytest.mark.parametrize(
+    ("given", "variable"),
+    [
+        ({"owm_key": OWM_KEY}, "OWM_KEY"),
+        ({"owmApiKey": OWM_KEY}, "OWM_API_KEY"),
+        ({"api_key_env": OWM_KEY}, "API_KEY"),
+        ({"stripe": {"Password": OWM_KEY}}, "PASSWORD"),
+    ],
+)
+def test_a_secret_refusal_says_to_keep_it_in_a_variable_named_after_its_var(
+    fresh, given, variable
+):
+    with pytest.raises(LibraryError) as refused:
+        library_tool(fresh).change_namespace("drafts", {"vars": given})
+    said = str(refused.value)
+    assert f"(export {variable}=… before uv run deep-reasoning)" in said
+    assert f'os.environ["{variable}"]' in said
+    assert f"as {variable.lower()}_env: {variable}." in said
+    assert "WEATHER" not in said
 
 
 @pytest.mark.parametrize(
@@ -1640,7 +1661,7 @@ def test_a_secret_like_var_the_user_stored_is_kept_but_never_changed(fresh):
     kept = {"owm_key": OWM_KEY, "city": "Leeds"}
     tool.change_namespace("drafts", {"vars": kept})
     assert own_fields(fresh, "drafts") == {"vars": kept}
-    refusal = SECRET_LIKE.render(field="vars", names=["owm_key"])
+    refusal = secret_refusal("vars", ["owm_key"])
     with pytest.raises(LibraryError, match=re.escape(refusal)):
         tool.change_namespace("drafts", {"vars": {"owm_key": WEATHER_KEY}})
     assert own_fields(fresh, "drafts") == {"vars": kept}
@@ -1654,7 +1675,7 @@ def test_a_nested_secret_the_user_stored_stays_while_its_siblings_change(fresh):
     moved = {"weather": {"api_key": OWM_KEY, "city": "York"}}
     tool.change_namespace("drafts", {"vars": moved})
     assert own_fields(fresh, "drafts") == {"vars": moved}
-    refusal = SECRET_LIKE.render(field="vars", names=["api_key"])
+    refusal = secret_refusal("vars", ["api_key"])
     with pytest.raises(LibraryError, match=re.escape(refusal)):
         tool.change_namespace(
             "drafts", {"vars": {"weather": {"api_key": WEATHER_KEY, "city": "York"}}}
@@ -1672,7 +1693,7 @@ def test_a_secret_the_user_stored_in_a_namespace_the_engine_cant_read_stays(fres
 
 
 def test_a_tool_setting_named_like_a_secret_holding_one_is_refused(fresh):
-    refusal = SECRET_LIKE.render(field="settings", names=["api_token"])
+    refusal = secret_refusal("settings", ["api_token"])
     with pytest.raises(LibraryError, match=re.escape(refusal)):
         library_tool(fresh).write_tool(
             "counter", WORD_COUNT, "build", {"api_token": LIVE_KEY, "sep": ","}

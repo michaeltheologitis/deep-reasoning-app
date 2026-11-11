@@ -2882,6 +2882,31 @@ def test_a_namespace_whose_aliases_stand_for_millions_is_refused_in_words(
     assert dumped(library) == before
 
 
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        (
+            alias_bomb(6),
+            (
+                "written out, as the engine reads them, it would hold 2,466,238 values"
+                " and characters, where its 352 characters of YAML may stand for 10,704"
+                " at most."
+            ),
+        ),
+        (
+            "vars: {loop: &loop [*loop]}\n",
+            (
+                "one holds itself, so written out, as the engine reads them, it would"
+                " never end."
+            ),
+        ),
+    ],
+)
+def test_an_alias_refusal_says_how_much_they_stand_for(library, text, said):
+    with pytest.raises(LibraryError, match=f"{MANY_ALIASES}: {re.escape(said)}"):
+        change(library, add_namespace, "bomb", text)
+
+
 def test_a_namespace_using_an_alias_or_two_is_saved(library):
     text = "vars:\n  term: &term {season: fall, year: 2026}\n  later: *term\n"
     change(library, add_namespace, "terms", text)

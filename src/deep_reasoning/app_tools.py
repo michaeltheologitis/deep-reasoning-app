@@ -202,12 +202,14 @@ SECRET_LIKE = jinja2.Template(
     " like one (key, token, secret, password) and shaped like a key, it would be saved in"
     " the Library file, which is shared with every chat and copied whole with the file."
     " Keep a secret in the shell that"
-    " starts the app (export WEATHER_KEY=… before uv run deep-reasoning) and read it in"
-    ' a tool with os.environ["WEATHER_KEY"]; a var or setting may name that variable'
-    " instead, as weather_key_env: WEATHER_KEY. If it holds no secret, name it without"
-    " those words.",
+    " starts the app (export {{ variable }}=… before uv run deep-reasoning) and read it in"
+    ' a tool with os.environ["{{ variable }}"]; a var or setting may name that variable'
+    " instead, as {{ variable | lower }}_env: {{ variable }}. If it holds no secret, name"
+    " it without those words.",
     undefined=jinja2.StrictUndefined,
 )
+# The variable a refusal suggests for a secret held under a name of no ASCII words.
+ANY_VARIABLE = "SECRET"
 # write_decomposition's turns, each in one of these shapes.
 NOT_TURNS = (
     'name should be text, and turns a list of dicts, each one of {"user": text} (the'
@@ -1267,7 +1269,17 @@ def check_no_secrets(field: str, values: dict[str, Any], stored: Any) -> None:
         elif under and secret_shaped(name, value) and stored_at(stored, path) != value:
             found.add(str(name))
     if found:
-        raise LibraryError(SECRET_LIKE.render(field=field, names=sorted(found)))
+        raise LibraryError(secret_refusal(field, sorted(found)))
+
+
+def secret_refusal(field: str, names: list[str]) -> str:
+    """Why *field* may not set *names* to secrets, keeping the first in a variable named
+    as its words in capitals, less a last env."""
+    words = WORD_PART.findall(names[0])
+    if words and words[-1].lower() == NAMES_A_VARIABLE:
+        words.pop()
+    variable = "_".join(words).upper() or ANY_VARIABLE
+    return SECRET_LIKE.render(field=field, names=names, variable=variable)
 
 
 def check_tool(
