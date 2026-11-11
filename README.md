@@ -177,8 +177,9 @@ imports too.
   anything but what it fills in (`task`, `vars`, `funcs`, `coroutines`, the run settings'
   `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`, or put a cell's code, an f-string's braces and
   all, between `{% raw %}` and `{% endraw %}`), includes another or reaches into Python internals; over 1,000,000
-  characters; YAML whose aliases (`*name`) stand for far more than it holds; a line in the words of one the app adds
-  at run time (below) whose namespace, REPL or hand-offs aren't so there, in a suffix, a var or a worked example,
+  characters; YAML whose aliases (`*name`) stand for far more than it holds, or giving a key twice, however written
+  (`1` and `0x1`, `yes` and `on`; only the last would be read; a row an older version stored so reads as before); a
+  line in the words of one the app adds at run time (below) whose namespace, REPL or hand-offs aren't so there, in a suffix, a var or a worked example,
   however spaced, cased or split (other wording claims nothing); a name with outer, doubled or odd spaces,
   invisible characters or a word mixing Latin letters with Cyrillic or Armenian ones (a Cyrillic `а`); a namespace
   named oddly, with a backbone the engine doesn't know, or with a var whose name isn't a Python name, starts with
@@ -211,9 +212,10 @@ imports too.
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never
   runs, but to check it builds. While a run builds its tools, its tree says "starting…".
-- Agents see each tool of yours by the name a namespace grants it under, with its signature and its `Func`
-  description, else its docstring, which the Tools tab shows. It is built afresh for each message, so its state lasts
-  one message, shared by every agent in that run. An async tool's calls return coroutines, which agents drive
+- Agents see each tool by the name a namespace grants it under (the engine's `llm` too), with its signature and its
+  `Func` description, else its docstring, which the Tools tab shows. It is built afresh for each message, so its state
+  lasts one message, shared by every agent in that run. A tool that saves its state (the engine's `PersistentTool`) is
+  saved at the end of every run, as every run builds it: two chats running at once can lose each other's entries. An async tool's calls return coroutines, which agents drive
   with `run_all([...])`, as the REPL has no top-level `await`: a worked example calling it that way helps.
 - A tool of yours may not be named as one of Python's built-ins or a module agents' code commonly uses (`len`, `json`,
   `pandas`), which it would hide: the librarian, an import and the panel's grant refuse it. Built to check it (the
