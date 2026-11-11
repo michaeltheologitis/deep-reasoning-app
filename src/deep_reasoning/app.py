@@ -528,7 +528,7 @@ def create_app(library, home):
             # The engine supplies a bare root when the file's is left out or missing.
             if namespace != ROOT and namespace not in readable:
                 gone = (
-                    "is one the engine can't read (the Library panel says why)"
+                    "is left out of the Library (the Library panel says why)"
                     if namespace in left_out
                     else "no longer exists"
                 )

@@ -105,6 +105,10 @@ const SEND_ON_LOAD = "sending once this chat has loaded…";
 // how a chat picked from the list takes focus: on a touch screen, not in the message box, whose keyboard would cover the chat
 const PICKED = TOUCH ? "menu" : "input";
 const PROVIDER_MISSING = "its provider is no longer in settings: pick another before the next message";
+const NAMESPACE_GONE = {
+  "left out": "left out of the Library (the Library panel says why): pick another before the next message",
+  missing: "no longer in the Library: pick another before the next message",
+};
 const SETTINGS_CHANGED = "settings-changed";
 
 const byId = (id) => document.getElementById(id);
@@ -126,7 +130,7 @@ let refreshing = null;
 let notAnswering = false;
 let retrying = 0;
 let cameBack = -COME_BACK_MS;
-// leftOut: the namespaces a shared file holds that the engine can't read, which the Library panel lists
+// leftOut: the namespaces a shared file holds that the app leaves out, which the Library panel lists with why
 const library = { namespaces: null, defaultNamespace: null, leftOut: [] };
 const HOME_FOLDER = "~";
 let popover = null;
@@ -472,9 +476,12 @@ function renderChoices(chat) {
   if (!ready) return;
   const namespace = shownName(chat.namespace);
   const model = chat.model && servedBy(chat.model.name, chat.model.provider);
+  // marked, as the model and folder are, since its next message would be refused
+  const gone = library.namespaces.includes(chat.namespace) ? null : library.leftOut.includes(chat.namespace) ? "left out" : "missing";
   if (byId("namespace-name").textContent !== namespace) byId("namespace-name").replaceChildren(...nameParts(namespace).filter(Boolean));
-  byId("namespace").title = `${namespace}: this chat's namespace, from its next message`;
-  byId("namespace").setAttribute("aria-label", `Namespace: ${namespace}`);
+  byId("namespace-missing").textContent = gone ? ` ${gone}` : "";
+  byId("namespace").title = `${namespace}: ${gone ? NAMESPACE_GONE[gone] : "this chat's namespace, from its next message"}`;
+  byId("namespace").setAttribute("aria-label", `Namespace: ${namespace}${gone ? `, ${gone}` : ""}`);
   byId("model-name").textContent = chat.model?.name ?? "pick a model";
   byId("model-provider").textContent = chat.model ? ` · ${chat.model.provider}` : "";
   // marked, as the folder is, since its next message would be refused
@@ -539,7 +546,7 @@ function pickNamespace() {
   const star = element("span", { class: "lib-star" }, "★ new chats start here");
   const options = library.namespaces.map((name) => ({ value: name, label: [name, name === library.defaultNamespace && [" ", star]] }));
   if (!library.namespaces.includes(chat.namespace)) {
-    const why = library.leftOut.includes(chat.namespace) ? "can't be read now: see the Library panel" : "no longer exists";
+    const why = library.leftOut.includes(chat.namespace) ? "left out: see the Library panel" : "no longer exists";
     options.unshift({ value: chat.namespace, label: [shownName(chat.namespace), " ", element("span", { class: "gone" }, why)] });
   }
   showMenu(byId("namespace"), byId("above"), {

@@ -587,7 +587,7 @@ async def test_a_chat_whose_namespace_was_deleted_is_refused_on_its_next_run(
         ("rоot", "system_suffix: Answer as root.\n", "'r\\u043eot'"),
     ],
 )
-async def test_a_chat_in_a_namespace_the_engine_cant_read_is_refused_saying_so(
+async def test_a_chat_in_a_namespace_left_out_is_refused_saying_so(
     library_on, connect, name, yaml, shown
 ):
     with FakeOpenAI(scripted(PLAN)) as fake:
@@ -602,7 +602,7 @@ async def test_a_chat_in_a_namespace_the_engine_cant_read_is_refused_saying_so(
     assert (refused.status_code, refused.json()) == (
         400,
         {
-            "detail": f"This chat's namespace {shown} is one the engine can't read"
+            "detail": f"This chat's namespace {shown} is left out of the Library"
             " (the Library panel says why) — pick another."
         },
     )

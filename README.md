@@ -112,8 +112,8 @@ imports too.
   the chat draws them), linked under its answer and opening in a new tab; pages are deleted with their chat. A new
   Library grants this to the historian, so "show me on a page how you got that", or a page of new data, goes there.
 - Each chat has its own model, namespace and working folder, picked under the message box (typing filters the
-  menus); a change applies from the next message. A folder that is gone, or a model whose provider was removed, is
-  marked missing; a namespace named with more than plain ASCII, as only a shared file may hold, shows escaped
+  menus); a change applies from the next message. A folder that is gone, a namespace deleted, or a model whose
+  provider was removed, is marked missing, and a namespace the Library leaves out, left out; a namespace named with more than plain ASCII, as only a shared file may hold, shows escaped
   (`'r\u043eot'`), as the Library panel writes it.
 - Light and dark themes with text at WCAG AA contrast; phone width, where the chats are a drawer (☰; its × or Esc shuts it)
   and the Library and settings fill the screen; narrower than 1,200 px these lie over the page, each leaving what is
