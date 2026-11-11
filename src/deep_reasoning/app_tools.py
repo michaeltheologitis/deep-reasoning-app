@@ -1215,8 +1215,9 @@ def from_turns(name: Any, turns: Any) -> str:
     if type(name) is not str or type(turns) is not list:
         raise LibraryError(NOT_TURNS)
     name = unmarked(name)
-    messages = [turn_message(turn) for turn in turns]
-    for number, turn in enumerate(turns, start=1):
+    messages = [unmarked(turn_message(turn)) for turn in turns]
+    # Each a dict of texts, as turn_message() checked.
+    for number, turn in enumerate(unmarked(turns), start=1):
         for field_name, text in turn.items():
             if found := TAG.search(text):
                 tag = found.group()
