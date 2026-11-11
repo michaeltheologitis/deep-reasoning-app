@@ -52,7 +52,6 @@ from deep_reasoning.library import (
     add_namespace,
     built_grants,
     change_namespace,
-    check_namespace,
     default_namespace,
     delete_decomposition,
     delete_namespace,
@@ -495,11 +494,11 @@ def create_app(library, home):
     async def patch_chat(chat: KnownChat, change: ChatChange):
         if change.namespace is not None:
             with closing(open_library(library)) as connection:
-                check_namespace(connection, change.namespace)
-                if why := unrunnable(connection, change.namespace):
-                    raise LibraryError(
-                        f"Namespace {shown_name(change.namespace)} {why} — pick another."
-                    )
+                why = unrunnable(connection, change.namespace)
+            if why:
+                raise LibraryError(
+                    f"Namespace {shown_name(change.namespace)} {why} — pick another."
+                )
         model = change.model
         if model is not None and find_provider(library, model.provider) is None:
             raise SettingsError(gone_provider(model.provider))

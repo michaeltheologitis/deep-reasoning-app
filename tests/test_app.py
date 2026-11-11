@@ -3874,7 +3874,9 @@ def test_a_namespace_or_model_the_app_does_not_have_is_refused(client):
         400,
         422,
     )
-    assert nowhere.json()["detail"].startswith('The Library has no namespace "nowhere"')
+    assert (
+        nowhere.json()["detail"] == "Namespace nowhere no longer exists — pick another."
+    )
     assert nobody.json()["detail"] == (
         "There is no provider Nobody any more; pick another model."
     )
