@@ -17,6 +17,7 @@ import re
 import select
 import signal
 import sys
+import textwrap
 import threading
 import time
 from collections.abc import Callable, Collection, Sequence
@@ -147,13 +148,14 @@ def detail_of(error: BaseException) -> str:
 def tool_line(name: str, value: Any, description: str) -> str:
     """The line agents are shown for tool *name*, as the engine's func.describe words
     one, but by *name*: what they call, with its signature where Python reads one, or
-    the name alone for an object they use through its methods."""
+    the name alone for an object they use through its methods. Each line of its
+    *description* is indented under it, as one there reads as the system prompt's own."""
     if callable(value):
         try:
             name += str(inspect.signature(value))
         except (TypeError, ValueError):
             name += "(...)"
-    body = f"\n  {description}" if description else ""
+    body = f"\n{textwrap.indent(description, '  ')}" if description else ""
     return f"- `{name}`{body}"
 
 

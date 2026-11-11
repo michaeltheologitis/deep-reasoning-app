@@ -35,7 +35,7 @@ This project's Notion page (todos, changelog, notes): https://app.notion.com/p/4
 
 - The engine builds every tool a config declares, whichever namespace the run enters, so `engine_config()` declares only those some namespace grants: a granted tool's code runs at the start of every run of every chat, and one that fails to build stops every chat until no namespace grants it (the failed run says which, where and how to take it out). A tool no namespace grants never runs, but for a build check.
 - So every write that newly grants a custom tool (the panel, the librarian, an import) builds it first, in a process of its own from an empty folder, and is refused if it doesn't build: keyless for the panel and an import (a placeholder only in the providers' key variables the shell sets, the one key every run has), as a run would for the librarian. No custom tool may be named as a Python built-in or a common module (`tool_name_problem`).
-- The engine names a tool to agents by its value's `__name__`; the worker shows each tool built from Python of its own (the app's included) by the name it's granted under, leaving the value as it is, and goes back to the chat's folder once the tools are built.
+- The engine names a tool to agents by its value's `__name__`; the worker shows each tool built from Python of its own (the app's included) by the name it's granted under, its description indented under it (unindented, a line there reads as the system prompt's own), leaving the value as it is, and goes back to the chat's folder once the tools are built.
 
 ### The Library panel and import
 

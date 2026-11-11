@@ -211,9 +211,10 @@ imports too.
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never
   runs, but to check it builds. While a run builds its tools, its tree says "starting…".
 - Agents see each tool of yours by the name a namespace grants it under, with its signature and its `Func`
-  description, else its docstring, which the Tools tab shows. It is built afresh for each message, so its state lasts
-  one message, shared by every agent in that run. An async tool's calls return coroutines, which agents drive
-  with `run_all([...])`, as the REPL has no top-level `await`: a worked example calling it that way helps.
+  description, else its docstring, indented under it, which the Tools tab shows. It is built afresh for each
+  message, so its state lasts one message, shared by every agent in that run. An async tool's calls return
+  coroutines, which agents drive with `run_all([...])`, as the REPL has no top-level `await`: a worked example
+  calling it that way helps.
 - A tool of yours may not be named as one of Python's built-ins or a module agents' code commonly uses (`len`, `json`,
   `pandas`), which it would hide: the librarian, an import and the panel's grant refuse it. Built to check it (the
   panel, an import), a tool sees no key: only the key variables your shell sets hold a placeholder, as only those

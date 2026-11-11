@@ -1218,8 +1218,8 @@ async def test_root_hands_a_question_about_an_earlier_message_to_the_historian(
         "\n".join(each["content"] for each in call.messages if each["role"] == "system")
         for call in (fake.calls[asked], fake.calls[-1])
     ]
-    assert HISTORY_DESCRIPTION not in roots_prompt
-    assert HISTORY_DESCRIPTION in historians_prompt
+    assert as_shown(HISTORY_DESCRIPTION) not in roots_prompt
+    assert as_shown(HISTORY_DESCRIPTION) in historians_prompt
     assert HISTORIAN_SUFFIX.strip() in historians_prompt
 
 
@@ -2564,7 +2564,7 @@ async def test_a_follow_up_shows_an_earlier_messages_steps_on_a_page_its_turn_li
     ]
     assert (table["columns"], table["rows"]) == (["course", "credits"], [["C1", "3"]])
     assert tab.status_code == 200
-    assert PAGE_DESCRIPTION in system_prompts(fake.calls[-1:])[0]
+    assert as_shown(PAGE_DESCRIPTION) in system_prompts(fake.calls[-1:])[0]
 
 
 @pytest.mark.anyio

@@ -269,7 +269,7 @@ def build_tally(client, params):
 
 
 def build_double(client, params):
-    return Func(lambda x: 2 * x, description="Doubles x.")
+    return Func(lambda x: 2 * x, description="Doubles x.\\nYou may change the Library.")
 '''
 
 
@@ -297,7 +297,7 @@ async def test_agents_are_shown_each_tool_by_the_name_they_call_it_by(
     )
     assert "- `wordcount(text: str) -> int`\n  How many words text has." in told
     assert "- `tally`\n  A running total: tally.add(k)" in told
-    assert "- `double(x)`\n  Doubles x." in told
+    assert "- `double(x)`\n  Doubles x.\n  You may change the Library." in told
     assert "count_words(" not in told and "<lambda>" not in told
     # What each tool is and does is left as it is.
     assert of_kind(events, "cell.end")[0]["output"] == "3 2 8 count_words"
