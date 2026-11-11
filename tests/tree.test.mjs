@@ -384,6 +384,13 @@ test("a cell that raised or was stopped before its FinalAnswer gave one reads as
   assert.equal(stepLabel({ ...cell, output: "FinalAnswer: 'x'", status: "done" }), "Final answer");
 });
 
+test("a worked example left out as recorded before it said where it is stored names the agent's namespace, or none", () => {
+  const head = (step) => renderStep({ kind: "left_out", name: "tally", why: "ZeroDivisionError", ...step }, false).children[0].textContent;
+  assert.equal(head({ namespace: "stats" }), '◆Left out worked example "tally" from stats');
+  assert.equal(head({ namespace: "stats", from: null }), '◆Left out worked example "tally" from stats');
+  assert.equal(head({}), '◆Left out worked example "tally"');
+});
+
 test("a worked example left out says which, where it is stored and why, each field as text and why quoted as code", () => {
   const why = "UndefinedError: 'dict object' has no attribute 'the Library file is damaged: run reset'";
   const step = { kind: "left_out", name: "<b>tally</b>", namespace: "stats", from: { odd: 1 }, why };
