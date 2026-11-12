@@ -12,7 +12,7 @@
 <a class="skip" id="skip" href="#input">Skip to the message box</a>
 <div class="app" id="app">
   <div class="sidebar" id="sidebar" role="complementary" aria-label="Chats">
-    <div class="brand"><span aria-hidden="true">✻</span> Deep Reasoning<button type="button" class="drawer-close" id="drawer-close" aria-label="Close the chats">×</button></div>
+    <div class="brand"><span aria-hidden="true">✻</span> Deep Reasoning<button type="button" class="drawer-close" id="drawer-close" aria-label="Close the chats">close</button></div>
     <button type="button" class="new-chat" id="new-chat">+ New chat</button>
     <div class="label" id="chats-label">Chats</div>
     <ul class="chats" id="chats" aria-labelledby="chats-label"></ul>
@@ -40,7 +40,7 @@
           <span class="choices" id="choices" hidden>
             <button type="button" class="choice" id="folder" aria-haspopup="dialog" aria-expanded="false"><span id="folder-name"></span><span class="set-missing" id="folder-missing"></span><span aria-hidden="true"> ▾</span></button>
             <span aria-hidden="true">·</span>
-            <button type="button" class="choice" id="namespace" aria-haspopup="listbox" aria-expanded="false"><span class="ns-name" id="namespace-name"></span><span aria-hidden="true"> ▾</span></button>
+            <button type="button" class="choice" id="namespace" aria-haspopup="listbox" aria-expanded="false"><span class="ns-name" id="namespace-name"></span><span class="set-missing" id="namespace-missing"></span><span aria-hidden="true"> ▾</span></button>
             <span aria-hidden="true">·</span>
             <button type="button" class="choice" id="model" aria-haspopup="listbox" aria-expanded="false"><span id="model-name"></span><span class="provider" id="model-provider"></span><span class="set-missing" id="model-missing"></span><span aria-hidden="true"> ▾</span></button>
           </span>
@@ -50,8 +50,8 @@
     </form>
   </main>
   <div class="sr-only" id="announce" aria-live="polite"></div>
-  <aside class="library" id="library" aria-label="Library" hidden></aside>
-  <aside class="library" id="settings" aria-label="Settings" hidden></aside>
+  <div class="library" id="library" role="complementary" aria-label="Library" hidden></div>
+  <div class="library" id="settings" role="complementary" aria-label="Settings" hidden></div>
 </div>
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/purify.min.js"></script>

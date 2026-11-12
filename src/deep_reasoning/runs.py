@@ -282,8 +282,9 @@ def has_ended(event: dict[str, Any] | None) -> bool:
 
 
 def total_cost(costs: Sequence[Any]) -> float | None:
-    """What *costs* add up to; None when any of them is unknown."""
-    if all(isinstance(cost, int | float) for cost in costs):
+    """What *costs* add up to; None when any of them is unknown: not a number, below zero
+    or past any number, as a shared file may hold."""
+    if all(isinstance(cost, int | float) and 0 <= cost < math.inf for cost in costs):
         return math.fsum(costs)
     return None
 

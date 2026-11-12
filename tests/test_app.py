@@ -502,7 +502,7 @@ def test_deleting_a_namespace_says_how_many_chats_are_on_it(client):
             "PUT",
             "/api/namespaces/root",
             {"yaml": "tools: [ghost]\n", "was": dump(FRESH_NAMESPACES["root"])},
-            'Tool "ghost" isn\'t in the Library, so runs would ignore a grant of it',
+            'Tool "ghost" isn\'t in the Library, so runs ignore any grant of it',
         ),
         (
             "DELETE",
@@ -597,10 +597,10 @@ async def test_a_chat_whose_namespace_was_deleted_is_refused_on_its_next_run(
         ("rоot", "system_suffix: Answer as root.\n", "'r\\u043eot'"),
     ],
 )
-async def test_a_namespace_the_engine_cant_read_is_refused_when_picked_and_when_run(
+async def test_a_namespace_left_out_is_refused_when_picked_and_when_run(
     library_on, connect, name, yaml, shown
 ):
-    unreadable = f"{shown} is one the engine can't read (the Library panel says why)"
+    unreadable = f"{shown} is left out of the Library (the Library panel says why)"
     with FakeOpenAI(scripted(PLAN)) as fake:
         library = library_on(fake)
         plant_row(library, "namespaces", (name, yaml))
@@ -1970,7 +1970,7 @@ NAMESPACE_REFUSALS = [
     ),
     (
         library_cell("add_namespace", "research", "tools: [no_such_tool]\n"),
-        'Tool "no_such_tool" isn\'t in the Library, so runs would ignore a grant of',
+        'Tool "no_such_tool" isn\'t in the Library, so runs ignore any grant of it',
     ),
     (
         library_cell("add_namespace", "research", f"system_suffix: {SERVER_KEY}\n"),
@@ -4620,7 +4620,7 @@ async def test_a_granted_tool_left_out_is_ignored_so_runs_and_writes_go_on(
     drafts = by_name(after["namespaces"])["drafts"]
     assert drafts["yaml"] == dump({"tools": [name]})
     missing = (
-        f'Tool "{name}" isn\'t in the Library, so runs would ignore a grant of it: add'
+        f'Tool "{name}" isn\'t in the Library, so runs ignore any grant of it: add'
         " the tool first, or take it out of tools."
     )
     assert drafts["warnings"] == [missing]

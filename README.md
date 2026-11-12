@@ -66,9 +66,10 @@ system_suffix: |
 
 It applies from the next message. The librarian never changes root; asked to, it says how to do this.
 
-**One message at a time:** a tab runs one message at a time, across all its chats. A message sent while another
-chat's run is going stays in the box, and the hint names the chat whose run is going; open that chat and press Esc
-(on a touch screen, **stop**) to stop it. A run another tab started shows here, and stops here, but holds up nothing.
+**One message at a time:** a tab runs one message at a time, across all its chats, and a reload keeps its run its own
+(a duplicated tab's starts free). A message sent while another chat's run is going stays in the box, and the hint names
+the chat whose run is going until it ends; open that chat and press Esc (on a touch screen, **stop**) to stop it. A run
+another tab started shows here, and stops here, but holds up nothing.
 
 **The agent's Python** runs on your computer by default, unsandboxed, in the chat's working folder, with the app's
 own Python packages: numpy, pandas (with tabulate, so `to_markdown()` works) and requests are there; scipy, sympy
@@ -80,8 +81,9 @@ imports too.
 
 **Chats**
 - Chats on the left: new, rename, delete. Saved in the Library file with every message's run, they come back after a
-  restart; deleting one wipes its messages from the file, and its scratch folder (it says so first if that holds
-  files, or a run going in it, in any tab, may yet write some).
+  restart; deleting one stops its run going, if any, and wipes its messages from the file and its scratch folder: the
+  confirm says so of the run, and of the scratch folder while that holds files or a run going, in any tab, may yet
+  write some.
 - The chat used last is listed first, and a reload opens it; **+ New chat** reuses an empty chat, the one on screen or
   one this tab made, never one another tab is setting up; an unsent message stays with its chat, and one sent while
   its chat loads goes once it has; a title is cut past 200 characters, and one cut to fit shows whole in its tooltip.
@@ -97,7 +99,7 @@ imports too.
   Anthropic, Google). "cost N/A" means a call was cut off before it finished, or its price isn't known, as for a
   vendor's model on a server of your own; a run that made no call costs $0. Costs read to a hundredth of a cent
   under a dollar ($0.0123; one less than $0.0001 as <$0.0001) and to the cent from a dollar ($1,234.56), so a
-  chat's runs add up to its total.
+  chat's runs add up to its total as near as rounding allows. A server's figure below zero is no price: N/A.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
   its own words after.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,
@@ -110,13 +112,16 @@ imports too.
   the chat draws them), linked under its answer and opening in a new tab; pages are deleted with their chat. A new
   Library grants this to the historian, so "show me on a page how you got that", or a page of new data, goes there.
 - Each chat has its own model, namespace and working folder, picked under the message box (typing filters the
-  menus); a change applies from the next message. A folder that is gone, or a model whose provider was removed, is
-  marked missing; a namespace named with more than plain ASCII, as only a shared file may hold, shows escaped
-  (`'r\u043eot'`), as the Library panel writes it.
-- Light and dark themes with text at WCAG AA contrast; phone width, where the chats are a drawer (☰; its × or Esc shuts it)
-  and the Library and settings fill the screen, each leaving what is under it out of reach; on a touch screen a
-  **send** button sends, Enter makes a new line, a chat picked from the list leaves the keyboard down, and rows and
-  tree lines are a finger's height. A skip link leads to the message box.
+  menus); a change applies from the next message. A folder that is gone, a namespace deleted, or a model whose
+  provider was removed, is marked missing, and a namespace the Library leaves out, left out; a namespace named with
+  more than plain ASCII, as only a shared file may hold, shows escaped (`'r\u043eot'`), as the Library panel writes
+  it.
+- Light and dark themes with text at WCAG AA contrast; phone width, where the chats are a drawer (☰; its **close**, a
+  tap beside it or Esc shuts it) and the Library and settings fill the screen; narrower than 1,200 px these lie over
+  the page, each leaving what is under it out of reach, dimmed (a tap there closes it). On a touch screen a **send**
+  button sends, Enter makes a new line, a chat picked from the list leaves the keyboard down, the main controls (send,
+  stop, the picks under the message box, ☰, the chat list's rows and buttons, the panels' tabs and ×) are at least
+  44 px each way, and tree lines and rows at least 24 px tall. A skip link leads to the message box.
   No internet needed: the page loads nothing but the app.
 
 **Models and keys**
@@ -171,8 +176,9 @@ imports too.
   fail at that call. Where it hands the whole question on (a last cell ending `FinalAnswer(subagent(...,
   namespace=…))`), agents are shown it answering themselves if they can instead (for `historian`, saying they
   can't); one handing on a step whose answer it works on isn't changed, so edit it. A namespace's Hand-offs field
-  lists both, saving a namespace names the examples it gave a note, and a namespace's Delete says how many worked
-  examples hand work to it and how many chats are on it, which are refused until they pick another.
+  lists both, its row in the list counts its own examples' notes, saving a namespace names the examples it gave a
+  note, and a namespace's Delete says how many worked examples hand work to it and how many chats are on it, which
+  are refused until they pick another.
 - Saving refuses what would fail every run there: a template (`{{` or `{%`) the engine can't render, that names
   anything but what it fills in (`task`, `vars`, `funcs`, `coroutines`, the run settings'
   `prompt_template_variables`; write `{{ '{{' }}` for a literal `{{`, or put a cell's code, an f-string's braces and
@@ -206,8 +212,8 @@ imports too.
   one (`my-tool`, `json`); YAML whose aliases stand for millions of values. The panel marks each ✗ with why, to fix
   or delete; an older Library's other names read as before. Runs ignore a grant of a tool left out or not there,
   and the panel warns of it; a left-out tool deletes though granted, its grants left in their YAML, still ignored.
-  A row named as one of the app's own tools is listed under it, and Delete removes only the row. Its templates run
-  sandboxed, reaching no Python internals.
+  A row named as one of the app's own tools is listed apart, after the app's, and Delete removes only the row. Its
+  templates run sandboxed, reaching no Python internals.
 - Every run builds every tool some namespace grants, whatever its chat's namespace: a granted tool's code runs at the
   start of every message in every chat, and one that stops building stops every chat until you take it out of the
   namespaces' tools (the failed run names the tool and the namespaces granting it). A tool no namespace grants never

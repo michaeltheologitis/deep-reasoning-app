@@ -247,8 +247,19 @@ textarea::placeholder { color: var(--dim); }
 /* only where Enter makes a new line: a touch screen */
 .send { display: none; flex: none; align-self: flex-end; margin: -4px -6px -4px 0; padding: 4px 8px; color: var(--accent); }
 @media (pointer: coarse) { .send:not([hidden]) { display: block; } }
-/* on a touch screen each tree line and row is a finger's target, at least 24px tall (WCAG 2.5.8) */
-@media (pointer: coarse) { .line, .think, .summary, .row, .show-code, .drawer-close { padding-block: 2px; } }
+/* On a touch screen the main controls are a finger's size, at least 44px each way, as Apple and WCAG 2.5.5 ask; each tree line
+   and row, as there are many, at least 24px tall (WCAG 2.5.8). A control in a bar with padding takes that room before it
+   makes the bar taller. */
+@media (pointer: coarse) {
+  .line, .think, .summary, .row, .show-code { padding-block: 2px; }
+  .send, .stop, .choice, .menu, .library-toggle, .theme, .new-chat, .pick, .chat .icon, .confirm-group button, .settings-toggle, .drawer-close { min-width: 44px; min-height: 44px; }
+  .choice, .pick { align-items: center; }
+  .send, .stop, .menu, .chat .icon, .drawer-close, .confirm-group button { text-align: center; }
+  .send, .stop { margin-block: -12px; }
+  .menu, .library-toggle, .theme { margin-block: -10px; }
+  .drawer-close { margin-block: -12px; }
+  .confirm-group { align-items: center; }
+}
 .hints { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 2ch; padding: 4px 2px 0; color: var(--dim); font-size: 0.92em; }
 .hints .err { color: var(--err); }
 .state { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; column-gap: 1ch; min-width: 0; max-width: 100%; margin-left: auto; }

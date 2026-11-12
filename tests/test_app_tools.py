@@ -418,6 +418,16 @@ def test_a_call_with_an_unpriced_model_has_no_cost(library):
     assert [agent["cost"] for agent in history.agents(1)] == [None, None]
 
 
+def test_a_cost_below_zero_in_a_shared_file_is_unknown(library):
+    events = recorded("unpriced")
+    for event in events:
+        if event["kind"] == "usage":
+            event["cost"] = -0.01
+    plant(library, CHAT, events)
+    history = history_of(library)
+    assert [agent["cost"] for agent in history.agents(1)] == [None, None]
+
+
 def test_a_message_or_node_that_is_not_there_is_refused_in_plain_words(library):
     plant(library, CHAT, recorded("nested"))
     history = history_of(library)
