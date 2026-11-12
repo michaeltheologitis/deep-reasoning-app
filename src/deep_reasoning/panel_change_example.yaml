@@ -1,11 +1,11 @@
-name: what a change did
+name: what changed
 messages:
-  - {role: user, content: "I changed astronomy in the Library panel. Can you see what I changed?"}
+  - {role: user, content: "What have I changed?"}
   - role: assistant
     content: |
-      <think>What changed, the panel's edits included, is in the Library's record of changes, not in this chat's messages, which are all the historian reads. List the newest changes, a line each, to find it.</think>
+      <think>The user asks what changed in their helpers, in any words ("what did we change today?", "can you see what I changed?"). That is the Library's record of changes, which holds every change, the panel's and other chats' included; the historian reads only this chat's messages, so it would miss those. List the changes, a line each, newest first.</think>
       <repl>
-      for change in library.changes()[:3]:
+      for change in library.changes():
           print(change)
       </repl>
   - role: user
@@ -16,7 +16,7 @@ messages:
       </observation>
   - role: assistant
     content: |
-      <think>Change 2, by the Library panel, changed astronomy's system_suffix. A line names only the fields: read the change whole for its before and after.</think>
+      <think>Two changes: the user's own, in the Library panel, and mine in message 1. A line names only the fields: read the panel's change whole for what they wrote.</think>
       <repl>
       suffix = library.changes(id=2)["changed"]["system_suffix"]
       print("before:", suffix["before"])
@@ -30,7 +30,11 @@ messages:
       </observation>
   - role: assistant
     content: |
-      <think>The panel edit added one sentence and kept the rest.</think>
+      <think>Name every change listed, the user's panel edit too, each as the record shows it.</think>
       <repl>
-      FinalAnswer('Yes: in the Library panel you added "Give distances in light-years." to astronomy\'s instructions, after "Answer in one sentence.", which is unchanged.')
+      FinalAnswer(
+          'Two changes today. In the Library panel, you added "Give distances in light-years." '
+          'to astronomy\'s instructions, after "Answer in one sentence.", which is unchanged. '
+          "Before that, in this chat, I set up astronomy to answer in one sentence."
+      )
       </repl>
