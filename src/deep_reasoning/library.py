@@ -140,12 +140,13 @@ CHANGE_TABLES = {"changes"}
 # row (what: namespace, decomposition, tool or setting; a decomposition's namespace, or a
 # namespace's own name; name), its text before and after (null when there was none), and
 # who made it (by): the panel, an import (label: the config's file name) or a chat (chat
-# and run; never its title, which goes with the chat).
+# and run; never its title, which goes with the chat). size is its texts' bytes, which
+# the record's bound adds up without reading them.
 CHANGE_SCHEMA = (
     (
         "CREATE TABLE changes (id INTEGER PRIMARY KEY, made REAL NOT NULL,"
         " what TEXT NOT NULL, namespace TEXT, name TEXT NOT NULL, before TEXT, after TEXT,"
-        " by TEXT NOT NULL, chat TEXT, run TEXT, label TEXT)"
+        " by TEXT NOT NULL, chat TEXT, run TEXT, label TEXT, size INTEGER NOT NULL)"
     ),
 )
 # The tables each version added, and how.
@@ -2763,16 +2764,14 @@ CHANGE_CHARS_SHOWN = 20_000
 # in any time zone.
 LAST_SECOND = 253_370_764_800
 ADD_CHANGE = (
-    "INSERT INTO changes (made, what, namespace, name, before, after, by, chat, run, label)"
-    " VALUES (:made, :what, :namespace, :name, :before, :after, :by, :chat, :run, :label)"
+    "INSERT INTO changes"
+    " (made, what, namespace, name, before, after, by, chat, run, label, size) VALUES"
+    " (:made, :what, :namespace, :name, :before, :after, :by, :chat, :run, :label, :size)"
 )
 KEEP_NEWEST_CHANGES = f"""
 DELETE FROM changes WHERE id IN (
     SELECT id FROM (
-        SELECT id, row_number() OVER newest AS place, sum(
-            coalesce(length(CAST(before AS BLOB)), 0)
-            + coalesce(length(CAST(after AS BLOB)), 0)
-        ) OVER newest AS bytes
+        SELECT id, row_number() OVER newest AS place, sum(size) OVER newest AS bytes
         FROM changes WINDOW newest AS (ORDER BY id DESC)
     )
     WHERE place > {CHANGES_KEPT} OR bytes > {CHANGE_BYTES_KEPT}
@@ -2841,7 +2840,9 @@ def record(connection, by, changes):
     Then keep only the newest."""
     made = {"made": time.time()} | by
     rows = [
-        made | dict(zip(CHANGE_KEYS, change, strict=True))
+        made
+        | dict(zip(CHANGE_KEYS, change, strict=True))
+        | {"size": sum(len(text.encode()) for text in change[-2:] if text)}
         for change in changes
         if change[-2] != change[-1]
     ]

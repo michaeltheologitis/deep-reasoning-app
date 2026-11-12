@@ -3007,8 +3007,8 @@ def test_changes_list_the_newest_then_how_many_more_and_how_to_list_them(fresh):
 
 def test_a_page_of_changes_all_left_out_still_says_how_to_list_the_older(fresh):
     crafted_change = (
-        "INSERT INTO changes (made, what, name, after, by)"
-        " VALUES (1.0, 'page', 'x', 'y', 'panel')"
+        "INSERT INTO changes (made, what, name, after, by, size)"
+        " VALUES (1.0, 'page', 'x', 'y', 'panel', 1)"
     )
     with closing(open_library(fresh)) as connection, writing(connection):
         for _ in range(MAX_FOUND):

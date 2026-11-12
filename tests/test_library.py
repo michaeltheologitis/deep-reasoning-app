@@ -3469,7 +3469,22 @@ def test_the_record_keeps_only_as_many_newest_changes_as_fit_its_bytes(library):
     assert [name for _, _, name, *_ in changes_in(library)] == ["s1", "s2", "s3", "s4"]
 
 
+def test_the_record_keeps_each_changes_size_and_bounds_by_it(library):
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(
+            "INSERT INTO changes (made, what, name, after, by, size)"
+            " VALUES (1.0, 'setting', 'claims', 'x', 'panel', ?)",
+            (CHANGE_BYTES_KEPT + 1,),
+        )
+    with closing(open_library(library)) as connection:
+        add_namespace(connection, "notes", "system_suffix: Write it in ünicode.\n")
+        sizes = connection.execute("SELECT name, size FROM changes").fetchall()
+    # The older row, claiming more bytes than the record keeps, goes.
+    assert sizes == [("notes", len("system_suffix: Write it in ünicode.\n".encode()))]
+
+
 GOOD_CHANGE = {
+    "size": 10,
     "made": 1_800_000_000.0,
     "what": "namespace",
     "namespace": "notes",
