@@ -2990,6 +2990,20 @@ def test_changes_list_the_newest_then_how_many_more_and_how_to_list_them(fresh):
     assert older == list(range(11, 0, -1))
 
 
+def test_a_page_of_changes_all_left_out_still_says_how_to_list_the_older(fresh):
+    crafted_change = (
+        "INSERT INTO changes (made, what, name, after, by)"
+        " VALUES (1.0, 'page', 'x', 'y', 'panel')"
+    )
+    with closing(open_library(fresh)) as connection, writing(connection):
+        for _ in range(MAX_FOUND):
+            connection.execute(crafted_change)
+    tool = library_tool(fresh)
+    note = "1 older not listed: changes(older_than=2) lists them."
+    assert tool.changes() == [{"more": 1, "note": note}]
+    assert [line["name"] for line in tool.changes(older_than=2)] == ["drafts"]
+
+
 @pytest.mark.parametrize(
     ("asked", "refusal"),
     [

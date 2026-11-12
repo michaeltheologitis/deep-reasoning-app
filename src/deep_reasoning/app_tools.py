@@ -367,6 +367,14 @@ MAX_TOTAL_CHARS = 1_000_000
 MORE = "…(+{:,} more items)"
 # errors and find list at most this many rows, then one saying how many more.
 MAX_FOUND = 50
+# The oldest id a page of changes read, whether its row was left out or not, and how many
+# are older than it.
+PAGE_END = """
+WITH page AS (
+    SELECT id FROM changes WHERE id < :older_than ORDER BY id DESC LIMIT :newest
+)
+SELECT min(id), (SELECT count(*) FROM changes WHERE id < (SELECT min(id) FROM page))
+FROM page"""
 # What find shows on each side of a match.
 SNIPPET_CHARS = 60
 NOT_FINDABLE = (
@@ -1808,12 +1816,11 @@ def recorded_changes(library: str, chat: str, older_than: Any) -> list[Event]:
     id *older_than* when given, each in a line, then how many more; *chat* is this
     run's, whose changes say so."""
     check_change_id(older_than, "older_than")
+    page = {"newest": MAX_FOUND, "older_than": older_than or sys.maxsize}
     with app_file(library, "ro") as connection, reading(connection):
         found = read_changes(connection, MAX_FOUND, older_than)
         turns = turns_of(connection, chat, found)
-        last = found[-1]["id"] if found else 0
-        older = connection.execute("SELECT count(*) FROM changes WHERE id < ?", (last,))
-        [(more,)] = older
+        [(last, more)] = connection.execute(PAGE_END, page)
     lines = [
         cut(change_head(each, chat, turns) | recorded_in_brief(each), BRIEF_CHARS)
         for each in found
