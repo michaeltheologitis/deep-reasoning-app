@@ -691,9 +691,9 @@ def test_a_run_ended_by_the_provider_says_what_it_means_first(
 )
 def test_a_run_out_of_turns_says_what_it_means_first(changes, kept):
     sentence = "Agent failed to produce a final answer within 30 iterations."
-    assert exhausted_detail(30, changes, sentence) == (
-        f"The agent used all 30 of its turns without answering.{kept} Ask it to go on,"
-        f" or ask in smaller steps.\n{sentence}"
+    assert exhausted_detail(changes, sentence) == (
+        f"The agent used all its turns without answering.{kept} Ask again in smaller"
+        f" steps.\n{sentence}"
     )
 
 

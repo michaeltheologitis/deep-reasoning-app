@@ -108,23 +108,19 @@ BAD_REQUEST = 400
 REFUSED_CODES = frozenset({"invalid_prompt"})
 KEPT = "The {changes} this run made to the Library {are} kept."
 AGAIN = "Try again, or ask in smaller steps."
-# A run whose agent used every turn without answering is led by what that means, on a
-# line of its own beginning OUT_OF_TURNS_LEAD, as the page reads it (exhausted_detail()).
-OUT_OF_TURNS_LEAD = "The agent used all"
-GO_ON = "Ask it to go on, or ask in smaller steps."
-OBSERVATION_TAG = "<observation>"
-# Lines a cell's output holds that print nothing: blank, or the engine's for no output.
+# The worker's own line leading a run out of turns, as the page reads it (tree.js).
+OUT_OF_TURNS = "The agent used all its turns without answering."
+SMALLER_STEPS = "Ask again in smaller steps."
 NOTHING_PRINTED = frozenset({"", "(no output)"})
-# A helper that printed a file started its task again from the top on its next turn, up
-# to its last: a cell printing this much of what its agent already printed gets
-# REPEATED_NOTE, which the model reads as soon as it repeats itself.
+# Shorter outputs ("True", "nothing changed: …") repeat in ordinary work.
+REREAD_CHARS = 200
 MOSTLY_PRINTED_BEFORE = 0.8
-# A cell's output reaches the model as a user's message, so a model took a list it had
-# printed for the user's own words and answered it ("Understood.").
+# Read as the user's message, a printed list got the answer "Understood.".
 OWN_OUTPUT_NOTE = (
     "(An automated note from the app, not the user: this is what your last cell printed,"
     " which the user never sees; you keep it and its variables.)"
 )
+# Helpers that printed a file started the task again from the top, up to 30 times.
 REPEATED_NOTE = (
     "(An automated note from the app, not the user: this cell printed what an earlier"
     " one already had, and you still have that and its variables: don't read or work it"
@@ -224,23 +220,23 @@ def failure_detail(error: BaseException, changes: int) -> str:
         lead = f"{PROVIDER_LEAD} refused this prompt."
     else:
         return words
+    return led(lead, changes, AGAIN, words)
+
+
+def exhausted_detail(changes: int, sentence: str) -> str:
+    """Why a run ended without an answer: its agent used all its turns; then the
+    engine's *sentence*."""
+    return led(OUT_OF_TURNS, changes, SMALLER_STEPS, sentence)
+
+
+def led(lead: str, changes: int, advice: str, words: str) -> str:
+    """*words* after a line of the app's: *lead*, the *changes* to the Library the run
+    made, which stay, and *advice*."""
     made = count(changes, "change")
     kept = (
         [KEPT.format(changes=made, are=plural(changes, "is", "are"))] if changes else []
     )
-    return f"{' '.join([lead, *kept, AGAIN])}\n{words}"
-
-
-def exhausted_detail(max_iter: int, changes: int, sentence: str) -> str:
-    """Why a run ended without an answer when its agent used all *max_iter* turns, led
-    by what it means, the *changes* to the Library the run made, which stay, and what to
-    do; then the engine's *sentence*."""
-    lead = f"{OUT_OF_TURNS_LEAD} {max_iter} of its turns without answering."
-    made = count(changes, "change")
-    kept = (
-        [KEPT.format(changes=made, are=plural(changes, "is", "are"))] if changes else []
-    )
-    return f"{' '.join([lead, *kept, GO_ON])}\n{sentence}"
+    return f"{' '.join([lead, *kept, advice])}\n{words}"
 
 
 def in_drive(message: dict[str, Any]) -> bool:
@@ -250,7 +246,7 @@ def in_drive(message: dict[str, Any]) -> bool:
     return (
         message.get("role") == "assistant"
         or message == NO_REPL_TURN
-        or (isinstance(content, str) and content.startswith(OBSERVATION_TAG))
+        or (isinstance(content, str) and OBSERVATION.match(content) is not None)
     )
 
 
@@ -264,9 +260,17 @@ def drive_start(messages: list[dict[str, Any]]) -> int:
     return at
 
 
-def printed_lines(observation: str) -> set[str]:
-    lines = {line.strip() for line in output_of(observation).splitlines()}
-    return lines - NOTHING_PRINTED
+def printed_lines(output: str) -> set[str]:
+    return {line.strip() for line in output.splitlines()} - NOTHING_PRINTED
+
+
+def repeats(output: str, printed: set[str]) -> bool:
+    """Whether a cell's *output*, no error and long enough to be worth reading again, is
+    mostly the *printed* lines its drive printed before."""
+    if len(output.strip()) < REREAD_CHARS or raised_error(output) is not None:
+        return False
+    lines = printed_lines(output)
+    return len(lines & printed) >= MOSTLY_PRINTED_BEFORE * len(lines)
 
 
 def with_apps_notes(
@@ -289,11 +293,10 @@ def with_apps_notes(
             continue
         notes = []
         if message != NO_REPL_TURN:
-            notes.append(OWN_OUTPUT_NOTE)
-            lines = printed_lines(message["content"])
-            if lines and len(lines & printed) >= MOSTLY_PRINTED_BEFORE * len(lines):
-                notes.append(REPEATED_NOTE)
-            printed |= lines
+            output = output_of(message["content"])
+            repeated = repeats(output, printed)
+            notes = [OWN_OUTPUT_NOTE, REPEATED_NOTE] if repeated else [OWN_OUTPUT_NOTE]
+            printed |= printed_lines(output)
         if turns == max_iter - TURNS_LEFT_WARNED:
             notes.append(TURNS_LEFT_NOTE)
         if notes:
@@ -813,7 +816,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
         finish(reasoner)
     text = answer if isinstance(answer, str) else repr(answer)
     if reasoner.exhausted:
-        detail = exhausted_detail(config.max_iter, recorder.changes_made, text)
+        detail = exhausted_detail(recorder.changes_made, text)
         recorder.end_turn("exhausted", text, detail)
     else:
         recorder.end_turn("answered", text, None)

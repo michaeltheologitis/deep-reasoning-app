@@ -196,10 +196,9 @@ function renderPrompt(turn) {
   return clamped(turn, "prompt", turn.prompt, () => element("div", { class: "user" }, element("span", { class: "prompt" }, "> "), turn.prompt));
 }
 
-// A run out of turns has no answer: the engine's words saying so show as its failure.
+// A run out of turns has no answer: the worker's words saying so (an older run's, the engine's) show as its failure.
 function renderTurnAnswer(turn) {
   if (turn.answer == null) return null;
-  // the engine's words, led by the worker's plain ones in a run recorded since it gave them
   if (turn.outcome === "exhausted") return out(turn.detail ? failureView(turn.detail) : turn.answer, { tone: "warn", full: true });
   return clamped(turn, "answer", turn.answer, () => renderAnswer(turn.answer));
 }

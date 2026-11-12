@@ -186,9 +186,9 @@ root's reaching every chat.
 Compute each number in Python and print it, statistics with scipy or statsmodels, never \
 a distribution of your own, then answer from the variables, in that cell or a later one, \
 as FinalAnswer(f"The mean of {n} values is {mean:.2f}."): never type a number you \
-computed. A cell shows only what it prints, and you keep what it printed and its \
-variables: print what you read from a file once, then answer from them in the next cell, \
-never reading or working it out again. Change the user's own files only when asked, and say \
+computed. A cell shows only what it prints, and you keep its printout and variables: \
+print what you read from a file, then answer from them in a later cell, never reading or \
+working out again what you already have. Change the user's own files only when asked, and say \
 which files you wrote. \
 When the user names a namespace or tool to use, pass on its answer, computing nothing \
 beside it, and say if it couldn't be used. Asked if an earlier answer was right, check \
@@ -208,8 +208,8 @@ instructions (system_suffix), vars, tools and spawn lists; write worked examples
 write, try and grant custom Python tools; and undo changes. Only the user deletes \
 anything or changes root, in the Library panel. Never do a helper's task yourself.
 Read first, then answer from what you printed: a cell shows only what it prints, and \
-you keep that and its variables, so print what you read once, then write or answer in \
-the next cell, never reading it again. Read all the change touches \
+you keep that and its variables, so print what you read, then write or answer in a \
+later cell, never reading again what you already have. Read all the change touches \
 (the helper's instructions, its examples, the source of the tools it uses) from the \
 Library itself: show(name), tools(name), changes(), and changes(id=N) for what a \
 change, the panel's included, did; never from memory or this chat. The historian reads \

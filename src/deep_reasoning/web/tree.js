@@ -50,8 +50,7 @@ const EXCEPTION_MODULE = /^(?:[A-Za-z_]\w*\.)+(?=[A-Za-z_]\w*(?::|$))/;
 // as the OpenAI client words a provider's errors: "NotFoundError: Error code: 404 - {...}"
 const PROVIDER_STATUS = /^(?:openai\.)?(?:APIStatus|Authentication|PermissionDenied|NotFound|RateLimit|InternalServer)Error: Error code: (\d{3})\b/;
 const UNREACHABLE = /^(?:openai\.)?APIConnectionError: /;
-// how the worker begins its own line, before the provider's or the engine's words, when the provider ended a run or its agent
-// ran out of turns (worker.py's PROVIDER_LEAD and OUT_OF_TURNS_LEAD)
+// how the worker's own first line begins (worker.py's PROVIDER_LEAD and OUT_OF_TURNS)
 const APPS_LEADS = ["The model provider ", "The agent used all "];
 const TIMED_OUT = /^(?:openai\.)?APITimeoutError: /;
 // the model a provider's 404 names: "The model `x` does not exist", 'model "x" not found'

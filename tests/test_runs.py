@@ -570,7 +570,13 @@ async def test_the_note_that_a_reply_had_no_repl_block_reaches_the_model_as_the_
     assert all("note from the app" not in str(event) for event in events)
 
 
-PLOTS = "Plot 1: broad beans\nPlot 2: parsnips"
+PLOTS = """\
+date,plot,crop,what,amount
+2026-03-02,Plot 1,broad beans,sown,2 rows
+2026-04-25,Plot 2,parsnips,sown,1 row
+2026-05-30,Plot 2,tomatoes,planted out,8 plants
+2026-08-20,Plot 2,tomatoes,harvested,6 kg
+2026-10-05,Plot 1,garlic,planted,40 cloves"""
 READ_PLOTS = repl(f"print({PLOTS!r})")
 # A worked example whose cell printed what the live one will: a file may hold just that.
 READ_THE_PLOTS = {
@@ -647,9 +653,25 @@ async def test_a_run_out_of_turns_says_so_in_plain_words_first(
     sentence = "Agent failed to produce a final answer within 4 iterations."
     assert (end["outcome"], end["answer"]) == ("exhausted", sentence)
     assert end["detail"] == (
-        "The agent used all 4 of its turns without answering. Ask it to go on, or ask"
-        f" in smaller steps.\n{sentence}"
+        f"The agent used all its turns without answering. Ask again in smaller steps.\n{sentence}"
     )
+
+
+@pytest.mark.parametrize(
+    "cell",
+    [repl("print('ok')"), repl("raise ValueError('no rows: ' + 'x' * 300)")],
+    ids=["short", "an error"],
+)
+async def test_a_short_or_failing_cell_repeated_gets_no_note_to_answer(
+    home, library, fake_config, cell
+):
+    """An agent mid-debug, or a librarian between writes, repeats such outputs."""
+    plan = {"Check it.": [cell, cell, repl("FinalAnswer('checked')")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        await run_to_the_end(Runs(library, home), "Check it.", fake_config(fake))
+    outputs = last_messages(fake)[1:]
+    assert all(OWN_OUTPUT_NOTE in output for output in outputs)
+    assert not any(REPEATED_NOTE in output for output in outputs)
 
 
 async def test_each_call_costs_what_its_server_says_it_cost(home, library, fake_config):
