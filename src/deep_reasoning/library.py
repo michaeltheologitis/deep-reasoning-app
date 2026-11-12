@@ -470,6 +470,29 @@ BETWEEN = {
     "assistant": "the user turn with the <observation> goes between them",
 }
 NO_TASK = "There is no task: add a user turn holding it."
+# A line break typed as a backslash and n, which shows as those two characters: in a text
+# literal twice in a row ("Dear Tom,\\n\\nI hope"), or alone as what .join puts between
+# items ("\\n".join(rows)). One alone elsewhere is too often meant (C:\Users\nina, \nabla).
+TYPED_TWICE = "\\n\\n"
+TYPED_ONCE = "\\n"
+# How Python source writes a backslash and n in a string literal.
+TYPED_IN_SOURCE = re.compile(r"\\\\n")
+# A text literal written raw, as a regular expression is: its \n is a line break there.
+RAW_PREFIX = re.compile(r"[A-Za-z]*[rR][A-Za-z]*['\"]")
+# What takes texts to look for, put in or read as a regular expression, each meant as
+# typed: text.replace("\n\n", "\\n\\n"), re.split(BREAKS, text).
+SEARCHES = frozenset(
+    {"replace", "split", "count", "find", "index", "startswith", "endswith"}
+    | {"compile", "search", "match", "fullmatch", "findall", "finditer", "sub"}
+)
+# How much of a line holding a typed line break a problem quotes.
+LINE_SHOWN = 80
+TYPED_IN_CODE = jinja2.Template(
+    "{{ what }} types \\n as a backslash and n on its line {{ number }} ({{ line }}),"
+    " which shows as those two characters, not a line break: the code should have \\n"
+    " there, with one backslash.",
+    undefined=jinja2.StrictUndefined,
+)
 # make_tool builds `factory: llm` with v2's own builder, the rest from TOOL_BUILDERS.
 BUILDERS = {**TOOL_BUILDERS, "llm": build_llm_tool}
 # What a custom tool's source is read for: what it defines, and the Func(...) it returns.
@@ -546,21 +569,24 @@ characters; show(name, whole=True) gives its yaml and own decompositions uncut.
 granted_in, description, source), or tool `name` whole.
   library.changes(): every change to the Library, newest first, whoever made it (the \
 Library panel, an import, this chat or another), a line each: id, when, by, done, \
-what, namespace, name and the fields it changed; at most 50, then {more, note}: \
-changes(older_than=id) lists those before. changes(id=N) gives change N whole: before \
-and after (None when it added or deleted the thing), a namespace's with changed (each \
-field's before and after), a tool's as {source, factory, settings}. changes(turn) \
-gives this chat's changes in its message `turn`, numbered from 1. Only these show what \
-changed, the panel's edits included: the historian can't. To undo a change, write its \
-before back from that value, never retyped: change_namespace(name, {f: v["before"] for \
-f, v in change["changed"].items()}), which keeps later changes to other fields; \
+what, namespace, name and the fields it changed, when being its day and time ("today \
+14:02"); at most 50, then {more, note}: changes(older_than=id) lists those before. \
+changes(id=N) gives change N whole: before and after (None when it added or deleted \
+the thing), a namespace's with changed (each field's before and after), a tool's as \
+{source, factory, settings}. changes(turn) gives this chat's changes in its message \
+`turn`, numbered from 1. Only these show what changed, the panel's edits included: the \
+historian can't. To undo a change, write its before back from that value, never \
+retyped: change_namespace(name, {f: v["before"] for f, v in \
+change["changed"].items()}), which keeps later changes to other fields; \
 add_namespace(name, change["before"]) for one deleted; write_decomposition(namespace, \
 change["before"]); write_tool(name, **change["before"]). Undoing an addition is a \
 delete, which the user does in the panel.
 Each write returns {done, what, name, …}; done says "nothing changed: …" when what you \
-gave was already stored, as when a .replace(…) matched nothing. A refusal raises \
-ValueError saying why, and what the user does instead. A text holding "…(+N chars)" or \
-"…(+N more items)", where a read cut it short, is refused: write it whole.
+gave was already stored, as when a .replace(…) matched nothing, and a tool's problems \
+name a line break its Python types as a backslash and n: write it again with \\n. A \
+refusal raises ValueError saying why, and what the user does instead. A text holding \
+"…(+N chars)" or "…(+N more items)", where a read cut it short, is refused: write it \
+whole.
   library.add_namespace(name, yaml): adds namespace `name` ("research", or \
 "research.papers" under research) with the fields yaml sets: system_suffix (text added \
 to its agents' system prompt), vars (names and plain values its agents' Python has, \
@@ -583,9 +609,9 @@ FinalAnswer(…). Type no tags: the tool adds <think>, <repl> and <observation>,
 refuses a text holding one. Give each code as a raw string over several lines \
 (r\"\"\"…\"\"\"), so its escapes stay Python. Writing one never runs it. To change \
 one, write it again from its turns; write_decomposition(namespace, yaml) takes a whole \
-one as show(name) gives it. The result's problems and code_problems say what to fix; \
-until then the panel marks it ✗. Texts this tool gives write <repl> as ⟦repl⟧, and it \
-reads ⟦repl⟧ back as the tag.
+one as show(name) gives it. The result's problems and code_problems say what to fix (a \
+line break typed as a backslash and n among them); until then the panel marks it ✗. \
+Texts this tool gives write <repl> as ⟦repl⟧, and it reads ⟦repl⟧ back as the tag.
   library.write_tool(name, source, factory, settings=None): adds or replaces the tool \
 `name` (a Python name) from `source`, a Python module defining factory(client, \
 params), which a run calls with params = settings (plain values) and which returns \
@@ -2672,6 +2698,126 @@ def decomposition_problems(decomposition, names):
     return example_problems(decomposition) + template_problems(decomposition, names)
 
 
+def typed_breaks(source, tree):
+    """Each text literal of the Python *source*, parsed as *tree*, typing a line break
+    (TYPED_TWICE, or TYPED_ONCE as a .join's separator), as the node of the part of it
+    that does, but those meant as typed: a raw one, JSON text, one compared, one given
+    to a SEARCHES call, and one bound to a name such a call is given first."""
+    nodes = list(ast.walk(tree))
+    whole = {
+        id(part): node
+        for node in nodes
+        if isinstance(node, ast.JoinedStr)
+        for part in node.values
+    }
+    searches = [node for node in nodes if searching(node)]
+    patterns = {
+        call.args[0].id
+        for call in searches
+        if call.args and isinstance(call.args[0], ast.Name)
+    }
+    skipped = {
+        id(each)
+        for call in searches
+        for each in [*call.args, *(keyword.value for keyword in call.keywords)]
+    }
+    separators = set()
+    for node in nodes:
+        if isinstance(node, ast.Compare):
+            skipped |= {id(each) for each in [node.left, *node.comparators]}
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in patterns
+            for target in node.targets
+        ):
+            skipped.add(id(node.value))
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "join"
+        ):
+            separators.add(id(node.func.value))
+        elif (
+            isinstance(node, (ast.Constant, ast.JoinedStr))
+            and id(node) not in whole
+            and RAW_PREFIX.match(ast.get_source_segment(source, node) or "")
+        ):
+            skipped.add(id(node))
+    return [
+        node
+        for node in nodes
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and (
+            (id(node) in separators and node.value == TYPED_ONCE)
+            or (
+                TYPED_TWICE in node.value
+                and id(whole.get(id(node), node)) not in skipped
+                and not json_text(node.value)
+            )
+        )
+    ]
+
+
+def searching(node):
+    """Whether *node* calls one of SEARCHES as a method or a module's function."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in SEARCHES
+    )
+
+
+def json_text(text):
+    """Whether *text* is a JSON object or list, whose \\n is an escape for a line break."""
+    if text.lstrip()[:1] not in ("{", "["):
+        return False
+    try:
+        json.loads(text)
+    except ValueError:
+        return False
+    return True
+
+
+def code_breaks(what, source, before=""):
+    """The problem, in a list, of the Python *source*, said of *what*, typing a line
+    break in a string (typed_breaks()), quoting the first line that does that the text
+    *before* this write didn't hold; none for none, or for source that doesn't parse,
+    which other checks report."""
+    try:
+        found = typed_breaks(source, parsed_python(source))
+    except LibraryError:
+        return []
+    held = {line.strip() for line in before.split("\n")}
+    lines = source.split("\n")
+    for node in sorted(found, key=lambda node: (node.lineno, node.col_offset)):
+        segment = (ast.get_source_segment(source, node) or "").split("\n")
+        typed = (at for at, line in enumerate(segment) if TYPED_IN_SOURCE.search(line))
+        number = node.lineno + next(typed, 0)
+        line = lines[number - 1].strip()
+        if line in held:
+            continue
+        if len(line) > LINE_SHOWN:
+            line = line[:LINE_SHOWN] + "…"
+        return [TYPED_IN_CODE.render(what=what, number=number, line=line)]
+    return []
+
+
+def example_breaks(messages, before=""):
+    """The problems of *messages*, a decomposition's turns, each assistant turn's code
+    typing a line break (code_breaks()) on a line the text *before* this write didn't
+    hold."""
+    return [
+        problem
+        for number, message in enumerate(messages, start=1)
+        if message["role"] == "assistant"
+        for problem in code_breaks(
+            f"Turn {number} (assistant)'s code",
+            running_code(message["content"]),
+            before,
+        )
+    ]
+
+
 # Who made a change, as the record of changes keeps it: the panel, unless said otherwise.
 PANEL = {"by": "panel", "chat": None, "run": None, "label": None}
 # Each kind of row the record keeps, and where its text is: a tool's is its block, then
@@ -2694,6 +2840,10 @@ MAX_CHANGE_BYTES = 3 * MAX_ROW_BYTES
 CHANGES_SHOWN = 30
 CHANGE_CHARS_SHOWN = 20_000
 SHOWN_CUT = "…(cut short)"
+# A change a chat made names it by its title, cut to about this many characters at a
+# word; mid-word where that would keep fewer than CHAT_TITLE_KEPT ("Fix https://…").
+CHAT_TITLE_SHOWN = 40
+CHAT_TITLE_KEPT = 20
 # The latest time a change can have been made: the year 9999 begins, which a date shows
 # in any time zone.
 LAST_SECOND = 253_370_764_800
@@ -2861,12 +3011,28 @@ def change_texts(cut):
 
 def listed_change(change):
     """A change as the panel lists it, read with each text cut one character past
-    CHANGE_CHARS_SHOWN, and cut there: the chat's id and run are the library tool's."""
+    CHANGE_CHARS_SHOWN, and cut there, and a chat's by a short title (short_title()):
+    the chat's id and run are the library tool's."""
     shown = {key: value for key, value in change.items() if key not in ("chat", "run")}
     for key in ("before", "after"):
         if shown[key] is not None and len(shown[key]) > CHANGE_CHARS_SHOWN:
             shown[key] = shown[key][:CHANGE_CHARS_SHOWN] + SHOWN_CUT
+    if shown["by"] == "chat" and shown["label"] is not None:
+        shown["label"] = short_title(shown["label"])
     return shown
+
+
+def short_title(title):
+    """A chat's *title*, as long as a first message may make it, as a line of the Changes
+    tab names it: whole when it is short, else cut at a word, or mid-word where a long
+    word would leave too little."""
+    if len(title) <= CHAT_TITLE_SHOWN:
+        return title
+    head = title[: CHAT_TITLE_SHOWN + 1]
+    words = head.rpartition(" ")[0].rstrip(" ,;:")
+    if len(words) < CHAT_TITLE_KEPT:
+        words = head[:CHAT_TITLE_SHOWN]
+    return f"{words}…"
 
 
 def cut_text(text, limit):
@@ -3983,6 +4149,7 @@ def listed_tool(name, granting, stored, **shown):
         "refusal": tool_refusal(name, granting, stored),
         "source": None,
         "problems": [],
+        "warnings": [],
     } | shown
 
 
@@ -4002,6 +4169,9 @@ def tool_rows(config, registry, names, sources):
             config=dump({name: block}).rstrip() if block else None,
             source=sources.get(name),
         )
+        # A stored tool the engine builds from its block alone has no Python.
+        if sources.get(name) is not None:
+            row["warnings"] = code_breaks("The tool's Python", sources[name])
         rows.append(row)
     return rows
 
@@ -4232,7 +4402,8 @@ def problems_of(row):
     decomposition = row["decomposition"]
     if decomposition is None:
         return row["why"].splitlines()
-    return example_problems(decomposition)
+    messages = decomposition.model_dump()["messages"]
+    return example_problems(decomposition) + example_breaks(messages)
 
 
 def listed_tools(read, config, registry, names):

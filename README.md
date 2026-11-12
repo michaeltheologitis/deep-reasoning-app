@@ -101,7 +101,9 @@ chat's folder imports too.
   under a dollar ($0.0123; one less than $0.0001 as <$0.0001) and to the cent from a dollar ($1,234.56), so a
   chat's runs add up to its total as near as rounding allows. A server's figure below zero is no price: N/A.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
-  its own words after.
+  its own words after. A run it ends says so too: "The model provider failed (502) after 196 s of waiting" (its
+  retries included), or "The model provider refused this prompt" for a prompt it refuses for what it holds, then
+  that the Library changes the run made are kept, and to try again or ask in smaller steps.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,
   `2*3*4`). Raw HTML shows as text, an image as a link (never loaded), and links open in a new tab; a link to a file
   in the chat's folder, which the app doesn't serve, shows as text with its address. A long prompt or answer shows its
@@ -161,13 +163,19 @@ chat's folder imports too.
   run settings, read only (one the engine doesn't read can be deleted); **Tools** shows each tool, what agents are
   told it does and a custom tool's Python, and deletes one of yours no namespace grants; **Data** shows each
   namespace's `vars` that are tables (a list of records) as tables, to read (edit them in Namespaces); **Changes**
-  lists the newest changes to the Library, whoever made them (the panel, an import, or the librarian in which chat),
-  each opening onto what it was before and after; the file keeps the last 1,000 so, a deleted item's text included,
-  and a copy of it carries them. In its editors Tab indents, Esc leaves, and Ctrl+Enter or Cmd+Enter saves.
+  lists the newest changes to the Library, whoever made them (the panel, an import, or the librarian in which chat,
+  by a short title), each opening onto what it was before and after; the file keeps the last 1,000 so, a deleted
+  item's text included, and a copy of it carries them. In its editors Tab indents, Esc leaves, and Ctrl+Enter or
+  Cmd+Enter saves.
 - Each worked example is marked ✓ or ✗ by whether its turns are shaped like `deep_reasoner`'s own (the task; each
   assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last), and a ✗
   says why; it still saves, as a draft agents are shown from the next message. A new one starts in the namespace of
   the chat on screen. Its code isn't run.
+- A line break typed as a backslash and `n` in code, which shows as those two characters (emails reading "Dear
+  Tom,\n\nI hope", tables as raw pipes), marks a worked example ✗ and a tool of yours ◆, saying where; the
+  librarian is told of one it typed when it writes. Only sure signs count: two in a row in a string, or
+  `"\\n".join(...)`; one alone (`C:\Users\nina`, `\nabla`), a raw string, JSON, and a string compared, searched
+  for, put in by `.replace` or used as a regular expression are fine, and your namespaces' texts are never checked.
 - What worked examples teach (measured on gpt-6-luna): who to hand work to and the steps to take, which agents
   copy closely; the answer's format sticks only when the namespace's `system_suffix` says it, so put it there too.
   As the example isn't run, give each cell the imports it uses: a cell using `re` imported in an earlier one made
@@ -268,11 +276,12 @@ chat's folder imports too.
   string without `f`, and fixes it. In the examples it writes, a step that reads prints what it read, and the next
   answers from it.
 - Each change shows under its answer and in the tree, opens onto its YAML (or a tool's Python) before and after, and
-  applies from your next message; the panel and namespace menu show it at once. Ask it what changed (today, say) and
-  it answers from the app's record of every change, made in the panel, by an import or in any chat (the newest 1,000
-  kept). Ask it to undo one, wherever it was made, and it writes the before back from the record, a deleted item
-  included, if it is one it may write (below); the rest, such as root or a run setting, you undo in the panel from
-  the before its Changes tab shows.
+  applies from your next message; the panel and namespace menu show it at once. Ask it what changed (today, or in
+  the last hour: it knows each change's time) and it answers from the app's record of every change, made in the
+  panel, by an import or in any chat (the newest 1,000 kept), and what any one of them, a panel edit included,
+  changed, before and after. Ask it to undo one, wherever it was made, and it
+  writes the before back from the record, a deleted item included, if it is one it may write (below); the rest, such
+  as root or a run setting, you undo in the panel from the before its Changes tab shows.
 - A tool it writes, or a tool of yours it grants afresh, is built first as another chat would build it, and refused
   if it doesn't build, naming a package the app lacks and how to add it; that works only in a chat whose namespace
   runs the local REPL. It then tries a tool it wrote on your own inputs (the files it reads in the chat's folder, a
@@ -289,7 +298,7 @@ chat's folder imports too.
   Python isn't sandboxed, and could open the file itself.
 - Any chat can ask about the Library ("what namespaces do I have?", "add a namespace for legal questions"): root hands
   it to a librarian sub-agent, which there only reads, and asked for a change says to pick `librarian` and ask there
-  (asked to always remember something, for a helper that does), naming root's panel edit only for every chat. A namespace that can't reach `librarian` (left out of its `spawn`, or deleted) answers
+  (asked to always remember something, for a helper that does), naming root only if you ask for every chat. A namespace that can't reach `librarian` (left out of its `spawn`, or deleted) answers
   such questions itself if it can, and says so if it can't; one that can't reach `historian` says it can't answer
   questions about earlier messages, and, when its spawn list is why, that adding `historian` there would let it. The
   panel says so under its Hand-offs.

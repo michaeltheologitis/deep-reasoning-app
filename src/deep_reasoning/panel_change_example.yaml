@@ -11,8 +11,8 @@ messages:
   - role: user
     content: |
       <observation>
-      {'id': 2, 'when': 'today', 'by': 'the Library panel', 'done': 'changed', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'fields': ['system_suffix']}
-      {'id': 1, 'when': 'today', 'by': 'this chat', 'turn': 1, 'done': 'added', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'fields': ['system_suffix']}
+      {'id': 2, 'when': 'today 14:16', 'by': 'the Library panel', 'done': 'changed', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'fields': ['system_suffix']}
+      {'id': 1, 'when': 'today 14:05', 'by': 'this chat', 'turn': 1, 'done': 'added', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'fields': ['system_suffix']}
       </observation>
   - role: assistant
     content: |

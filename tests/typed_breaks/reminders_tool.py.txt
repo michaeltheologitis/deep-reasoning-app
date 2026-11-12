@@ -1,0 +1,135 @@
+
+import csv
+import re
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pathlib import Path
+from deep_reasoner.primitives import Func
+
+def build_draft_late_payment_emails(client, params):
+    def draft_late_payment_emails(
+        invoices_path="willow_lane_invoices_2026.csv",
+        vat_path="vat_rates.txt",
+        as_of=None,
+    ):
+        """Draft professional, courteous reminders for unpaid, overdue invoices; never send them."""
+        invoice_file = Path(invoices_path)
+        vat_file = Path(vat_path)
+
+        try:
+            vat_text = vat_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {"error": f"Could not read VAT rates file: {exc}", "drafts": [], "review": []}
+
+        rate_by_band = {}
+        for band, rate in re.findall(
+            r"(?im)^\s*(Standard|Reduced|Zero)\s+rate\s+(\d+(?:\.\d+)?)\s*%",
+            vat_text,
+        ):
+            rate_by_band[band.lower()] = Decimal(rate) / Decimal("100")
+
+        # Match the invoice types in the supplied file to the descriptions in the VAT crib sheet.
+        type_to_band = {
+            "flowers": "standard",
+            "workshop": "standard",
+            "edible plants": "zero",
+            "books": "zero",
+        }
+
+        try:
+            check_date = (
+                datetime.strptime(as_of, "%Y-%m-%d").date()
+                if as_of
+                else date.today()
+            )
+            with invoice_file.open(newline="", encoding="utf-8-sig") as handle:
+                reader = csv.DictReader(handle)
+                required = {"Invoice", "Contact", "Email", "Due", "Type", "Net", "Paid on"}
+                missing = required - set(reader.fieldnames or [])
+                if missing:
+                    return {
+                        "error": "Invoice CSV is missing required columns: " + ", ".join(sorted(missing)),
+                        "as_of": check_date.isoformat(),
+                        "drafts": [],
+                        "review": [],
+                    }
+                rows = list(reader)
+        except (OSError, ValueError) as exc:
+            return {"error": f"Could not read invoice file or date: {exc}", "drafts": [], "review": []}
+
+        drafts = []
+        review = []
+        for row_number, row in enumerate(rows, start=2):
+            invoice = (row.get("Invoice") or "").strip()
+            paid_on = (row.get("Paid on") or "").strip()
+            if paid_on:
+                continue
+            try:
+                due = datetime.strptime((row.get("Due") or "").strip(), "%d/%m/%Y").date()
+            except ValueError:
+                review.append({"row": row_number, "invoice": invoice, "reason": "Missing or invalid due date"})
+                continue
+            if due >= check_date:
+                continue
+
+            band = type_to_band.get((row.get("Type") or "").strip().casefold())
+            if band not in rate_by_band:
+                review.append({
+                    "row": row_number,
+                    "invoice": invoice,
+                    "reason": "No matching VAT rate for invoice type in vat_rates.txt",
+                })
+                continue
+            try:
+                net = Decimal((row.get("Net") or "").strip())
+            except InvalidOperation:
+                review.append({"row": row_number, "invoice": invoice, "reason": "Missing or invalid net amount"})
+                continue
+
+            vat = (net * rate_by_band[band]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            gross = net + vat
+            days_late = (check_date - due).days
+            contact = (row.get("Contact") or "").strip()
+            email = (row.get("Email") or "").strip()
+            if not email:
+                review.append({"row": row_number, "invoice": invoice, "reason": "Missing contact email"})
+                continue
+
+            subject = f"Payment reminder: invoice {invoice}"
+            late_unit = "day" if days_late == 1 else "days"
+            body = (
+                f"Dear {contact},\\n\\n"
+                f"I hope you are well. Our records show that invoice {invoice} for "
+                f"£{gross:,.2f} including VAT remains outstanding. It was due on "
+                f"{due.strftime('%-d %B %Y')} and is now {days_late} {late_unit} overdue. "
+                f"Would you please confirm when payment is likely to be made? If you have "
+                f"already arranged payment, please disregard this message.\\n\\n"
+                "Kind regards,\\n"
+                "Sam Patel, bookkeeper for Willow Lane Florist"
+            )
+            drafts.append({
+                "invoice": invoice,
+                "to": email,
+                "subject": subject,
+                "amount_including_vat": f"£{gross:,.2f}",
+                "due_date": due.isoformat(),
+                "days_late": days_late,
+                "body": body,
+            })
+
+        return {
+            "as_of": check_date.isoformat(),
+            "drafts": drafts,
+            "review": review,
+            "sent": False,
+        }
+
+    return Func(
+        draft_late_payment_emails,
+        description=(
+            "draft_late_payment_emails(invoices_path='willow_lane_invoices_2026.csv', "
+            "vat_path='vat_rates.txt', as_of=None): draft (do not send) one friendly "
+            "professional reminder per unpaid overdue invoice, calculating gross amounts from the "
+            "VAT crib sheet; returns drafts and any rows needing review."
+        ),
+    )
