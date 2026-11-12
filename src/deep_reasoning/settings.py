@@ -115,14 +115,15 @@ OPENROUTER_MODELS = (
 )
 
 # The app knows these vendors' addresses, each from the vendor's own docs: they take only a key.
+OPENAI = Provider(
+    "OpenAI",
+    "https://api.openai.com/v1",
+    "OPENAI_API_KEY",
+    first_model="gpt-6-luna",
+    featured=OPENAI_MODELS,
+)
 VENDORS = (
-    Provider(
-        "OpenAI",
-        "https://api.openai.com/v1",
-        "OPENAI_API_KEY",
-        first_model="gpt-6-luna",
-        featured=OPENAI_MODELS,
-    ),
+    OPENAI,
     Provider(
         "OpenRouter",
         "https://openrouter.ai/api/v1",
@@ -531,13 +532,10 @@ def remember_pick(library: Path, provider: str, model: str) -> None:
     write_setting(library, LAST_MODEL, {"provider": provider, "name": model})
 
 
-def starting_model(
-    home: Path, library: Path, every: list[Provider]
-) -> dict[str, str] | None:
-    """What a new chat runs on: the model picked last, while its provider, of *every*
-    there is, can still answer; else the first model of the first vendor with a key that
-    the app knows one for."""
-    can_answer = usable(every, saved_keys(home))
+def starting_model(library: Path, can_answer: list[Provider]) -> dict[str, str] | None:
+    """What a new chat runs on: the model picked last, while its provider is one that
+    *can_answer* (usable()); else the first model of the first vendor with a key that the
+    app knows one for."""
     last = read_settings(library).get(LAST_MODEL)
     if last and any(each.name == last["provider"] for each in can_answer):
         return last
@@ -547,18 +545,17 @@ def starting_model(
     return {"provider": first.name, "name": first.first_model}
 
 
-# A librarian chat runs on this until it picks a model, while OpenAI can answer: on the
-# librarian's eval it got 89% right against gpt-6-luna's 62%, at about $0.05 a run.
-LIBRARIAN_MODEL = {"provider": "OpenAI", "name": "gpt-6.1-terra"}
+# OpenAI's model a librarian chat runs on until it picks one: on the librarian's eval it
+# got 89% right against gpt-6-luna's 62%, at about $0.05 a run.
+LIBRARIAN_MODEL = "gpt-6.1-terra"
 
 
-def librarian_model(home: Path, every: list[Provider]) -> dict[str, str] | None:
-    """What a librarian chat that picked no model runs on: LIBRARIAN_MODEL while its
-    provider, of *every* there is, can answer; else None, so it runs where new chats
+def librarian_model(can_answer: list[Provider]) -> dict[str, str] | None:
+    """What a librarian chat that picked no model runs on: OpenAI's LIBRARIAN_MODEL while
+    OpenAI is one that *can_answer* (usable()); else None, so it runs where new chats
     start."""
-    can_answer = usable(every, saved_keys(home))
-    if any(each.name == LIBRARIAN_MODEL["provider"] for each in can_answer):
-        return LIBRARIAN_MODEL
+    if any(each.name == OPENAI.name for each in can_answer):
+        return {"provider": OPENAI.name, "name": LIBRARIAN_MODEL}
     return None
 
 

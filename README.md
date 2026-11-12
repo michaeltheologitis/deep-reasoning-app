@@ -265,7 +265,8 @@ chat's folder imports too.
 - While OpenAI has a key, a `librarian` chat runs on OpenAI's gpt-6.1-terra, which built helpers more reliably than
   gpt-6-luna (89% of a 36-request test against 62%), at about $0.05 a change against under a cent. Pick another model
   under the message box and the chat keeps it, for that chat only. Moved to another namespace, a chat that didn't pick
-  gpt-6.1-terra goes back to the model new chats start on.
+  gpt-6.1-terra goes back to the model new chats start on. A librarian chat from before keeps the model it ran on: pick
+  gpt-6.1-terra in its model menu, or start a new librarian chat.
 - It reads first and answers from what it printed: all a change touches (the helper's suffix, its worked examples,
   the source of the tools it uses), from the Library itself, and what any change did, the panel's included, from
   the app's record, never from memory or the historian; your files by their names in the chat's folder, never a

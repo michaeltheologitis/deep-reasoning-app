@@ -18,6 +18,7 @@ from deep_reasoning.settings import (
     LIBRARIAN_MODEL,
     NO_KEY,
     NOT_A_KEY,
+    OPENAI,
     OPENAI_MODELS,
     OPENROUTER_MODELS,
     SERVERS,
@@ -45,11 +46,11 @@ from deep_reasoning.settings import (
     server_key_env,
     starting_model,
     update_server,
+    usable,
 )
 
 pytestmark = pytest.mark.usefixtures("no_vendor_keys")
 
-OPENAI = VENDORS[0]
 KEY = "sk-saved-in-settings"
 SHELL_KEY = "sk-from-the-shell"
 LOCAL_URL = "http://127.0.0.1:8000/v1"
@@ -345,13 +346,17 @@ def test_a_server_entry_add_server_could_not_have_written_is_left_out(library, p
     assert [entry["event"] for entry in logs] == ["settings.server_left_out"]
 
 
+def new_chats_model(app_home, library):
+    return starting_model(library, usable(providers(library), saved_keys(app_home)))
+
+
 def test_new_chats_start_on_gpt_6_luna_when_openai_has_a_key_and_nothing_was_picked(
     app_home, library, monkeypatch
 ):
-    assert starting_model(app_home, library, providers(library)) is None
+    assert new_chats_model(app_home, library) is None
     monkeypatch.setenv(OPENAI.key_env, SHELL_KEY)
     luna = {"provider": "OpenAI", "name": "gpt-6-luna"}
-    assert starting_model(app_home, library, providers(library)) == luna
+    assert new_chats_model(app_home, library) == luna
 
 
 def test_new_chats_start_on_the_model_picked_last_while_its_provider_can_answer(
@@ -360,13 +365,13 @@ def test_new_chats_start_on_the_model_picked_last_while_its_provider_can_answer(
     monkeypatch.setenv(OPENAI.key_env, SHELL_KEY)
     add_server(app_home, library, "vllm", LOCAL_URL, None)
     remember_pick(library, "vllm", "qwen3")
-    assert starting_model(app_home, library, providers(library)) == {
+    assert new_chats_model(app_home, library) == {
         "provider": "vllm",
         "name": "qwen3",
     }
     remove_server(app_home, library, find_provider(library, "vllm"))
     luna = {"provider": "OpenAI", "name": "gpt-6-luna"}
-    assert starting_model(app_home, library, providers(library)) == luna
+    assert new_chats_model(app_home, library) == luna
 
 
 def test_the_default_folder_is_kept_beside_the_other_settings(
@@ -386,9 +391,8 @@ def test_each_vendor_features_the_model_new_chats_start_on(vendor):
     assert vendor.first_model is None or vendor.first_model in vendor.featured
 
 
-def test_librarian_chats_start_on_a_model_their_vendor_features():
-    vendor = next(each for each in VENDORS if each.name == LIBRARIAN_MODEL["provider"])
-    assert LIBRARIAN_MODEL["name"] in vendor.featured
+def test_librarian_chats_start_on_a_model_openai_features():
+    assert LIBRARIAN_MODEL in OPENAI.featured
 
 
 def test_openrouter_features_the_vendors_models_under_its_own_ids():

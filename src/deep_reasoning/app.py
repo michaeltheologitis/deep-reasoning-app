@@ -101,8 +101,10 @@ from deep_reasoning.settings import (
     run_key,
     save_default_folder,
     save_key,
+    saved_keys,
     starting_model,
     update_server,
+    usable,
 )
 from deep_reasoning.tool_check import NOT_GRANTED, refuse_unbuilt_keyless
 
@@ -434,9 +436,10 @@ def create_app(library, home):
         model new chats start on and the one a librarian chat does; and the names of the
         providers there are."""
         every = providers(library)
+        can_answer = usable(every, saved_keys(home))
         names = {each.name for each in every}
-        model = starting_model(home, library, every)
-        return default_namespace(library), model, librarian_model(home, every), names
+        model = starting_model(library, can_answer)
+        return default_namespace(library), model, librarian_model(can_answer), names
 
     def shown(chat, starts):
         """A chat as the API gives it: with the id of its run that is going, if one is, its
@@ -513,19 +516,20 @@ def create_app(library, home):
             raise SettingsError(gone_provider(model.provider))
         moved = "folder" in change.model_fields_set
         folder = chosen_folder(change.folder) if moved else None
-        was = chat["namespace"] or default_namespace(library)
+        default, _, librarians, _ = starting_points()
+        was = chat["namespace"] or default
         namespace = change.namespace or was
         if change.title is not None:
             rename_chat(library, chat["id"], change.title)
         provider, name = (model.provider, model.name) if model else (None, None)
         choose(library, chat["id"], change.namespace, provider, name)
-        # Moved into the librarian, a chat runs on the librarian's model, as a new one does.
         joins = namespace == LIBRARIAN and was != LIBRARIAN and model is None
-        if joins and librarian_model(home, providers(library)):
+        if joins and librarians:
+            # With no model of its own, it runs on the librarian's.
             clear_model(library, chat["id"])
         if moved:
             choose_folder(library, chat["id"], folder)
-        # A librarian chat's pick is its own: new chats never start on it.
+        # So no new chat starts on the librarian's model by accident.
         if model is not None and namespace != LIBRARIAN:
             remember_pick(library, provider, name)
         return shown(find_chat(library, chat["id"]), starting_points())
@@ -551,7 +555,8 @@ def create_app(library, home):
         # Before the chat's turns are read: a run that is going has no turn.end yet.
         if runs.live(chat["id"]) is not None:
             raise RunInProgress(chat["id"])
-        chosen = shown(chat, starting_points())
+        starts = starting_points()
+        chosen = shown(chat, starts)
         namespace, model = chosen["namespace"], chosen["model"]
         with closing(open_library(library)) as connection:
             if why := unrunnable(connection, namespace):
@@ -594,9 +599,9 @@ def create_app(library, home):
             folder,
             names,
         )
-        # A librarian chat keeps no model it didn't pick, so a move to another namespace
-        # leaves the librarian's behind.
-        if chat["model"] is None and namespace == LIBRARIAN:
+        _, _, librarians, _ = starts
+        # Left unpinned, so a move off the librarian goes back to the default.
+        if chat["model"] is None and namespace == LIBRARIAN and model == librarians:
             choose(library, chat["id"], namespace)
         else:
             choose(library, chat["id"], namespace, provider.name, model["name"])

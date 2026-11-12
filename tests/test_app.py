@@ -4144,6 +4144,25 @@ async def test_a_librarian_chats_run_is_on_terra_and_leaves_it_no_model_of_its_o
     assert moved.json()["model"] == LUNA
 
 
+@pytest.mark.anyio
+async def test_a_librarian_chat_run_without_openai_keeps_the_model_it_ran_on(
+    library_on, connect, monkeypatch
+):
+    ran_on = {"provider": SERVER_NAME, "name": "gpt-6-luna"}
+    later = {"provider": SERVER_NAME, "name": "fake-large"}
+    with FakeOpenAI(scripted({"Hi.": [repl("FinalAnswer('hello')")]})) as fake:
+        async with connect(library_on(fake)) as api:
+            chat = await chat_in(api, LIBRARIAN)
+            events = await run_events(api, await send(api, chat, "Hi."))
+            other = await new_chat(api)
+            await api.patch(f"/api/chats/{other}", json={"model": later})
+            after_a_pick = (await api.get(f"/api/chats/{chat}")).json()
+            monkeypatch.setenv("OPENAI_API_KEY", SHELL_KEY)
+            after_a_key = (await api.get(f"/api/chats/{chat}")).json()
+    assert (events[0]["provider"], events[0]["model"]) == (SERVER_NAME, "gpt-6-luna")
+    assert after_a_pick["model"] == after_a_key["model"] == ran_on
+
+
 def test_a_message_is_refused_until_the_chat_has_a_model_that_can_run(client):
     chat = client.post("/api/chats").json()["id"]
     unpicked = client.post(f"/api/chats/{chat}/runs", json={"prompt": "Hi."})
