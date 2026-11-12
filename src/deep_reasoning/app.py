@@ -177,7 +177,7 @@ def unrunnable(connection, namespace):
     if namespace == ROOT or namespace in readable:
         return None
     if namespace in left_out:
-        return "is one the engine can't read (the Library panel says why)"
+        return "is left out of the Library (the Library panel says why)"
     return "no longer exists"
 
 
