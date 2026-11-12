@@ -20,7 +20,7 @@ from deep_reasoner.namespaces import ROOT, build_registry
 from deep_reasoner.tools import load_tool_factory
 from deep_reasoner.tools.base import DEFAULT_CLAUDE_DESCRIPTION
 from deep_reasoner.tools.safe_url import DEFAULT_SAFE_URL_DESCRIPTION
-from deep_reasoner.v2 import DeepReasoner
+from deep_reasoner.v2 import DeepReasoner, agent
 from deep_reasoner.v2.agent import _render_context, _rendered_turns
 from deep_reasoner.v2.cli import (
     V2Config,
@@ -79,6 +79,7 @@ from deep_reasoning.library import (
     SHAPES,
     SHOWN_CUT,
     SPAWN_LINE,
+    TOLD_LAST,
     TOO_SLOW,
     UNREAD_SETTING,
     UNRENDERED_DECOMPOSITION,
@@ -129,6 +130,7 @@ from deep_reasoning.library import (
     vars_read,
     writing,
 )
+from deep_reasoning.worker import telling_last
 
 FAKE_KEY = "sk-test-not-a-real-key"
 CHAT = "a-chat"
@@ -671,17 +673,23 @@ def test_every_agent_is_told_where_the_chats_folder_is_once_after_roots_suffix(
     assert told[ROOT] == f"{ROOT_SUFFIX.rstrip()}\n\n{WHERE}"
 
 
-def test_the_agents_of_the_namespace_a_run_enters_are_told_last_how_to_pick_a_folder(
-    team, tmp_path
+@pytest.mark.parametrize("entry", [ROOT, "planner", "planner.team", "searcher.deep"])
+def test_every_agent_is_told_last_how_to_pick_a_folder_once_whichever_namespace_a_run_enters(
+    team, tmp_path, monkeypatch, entry
 ):
-    from_root = told_of_the_folder(team, tmp_path, ROOT)
-    from_planner = told_of_the_folder(team, tmp_path, "planner")
-    assert from_root[ROOT].endswith(f"\n\n{HOW}")
-    assert from_planner["planner"].endswith(f"\n\n{HOW}")
-    # Root's lines reach every namespace, the planner's those under it.
-    assert {suffix.count(HOW) for suffix in from_root.values()} == {1}
-    told = {name for name, suffix in from_planner.items() if HOW in suffix}
-    assert told == {"planner", "planner.team"}
+    # put back after the test, as the worker's wrapping replaces it
+    monkeypatch.setattr(agent, "_rendered_instructions", agent._rendered_instructions)
+    tools = tmp_path / "tools"
+    config = engine_config(team, entry, tools, CHAT, RUN, folder_lines=(WHERE, HOW))
+    telling_last(config[TOLD_LAST])
+    registry = build_namespace_registry(V2Config.model_validate(config | CHATS_MODEL))
+    # Nested (planner.team, searcher.deep) and siblings of the entered one alike.
+    assert {"planner.team", "searcher", "searcher.deep", HISTORIAN} <= {*registry.names}
+    for name in registry.names:
+        suffix = registry.resolve(name).system_suffix
+        *_, told = agent._rendered_instructions("The prompt.", suffix, {})
+        assert told["content"].endswith(f"\n\n{HOW}"), name
+        assert told["content"].count(HOW) == 1, name
 
 
 def test_each_namespace_but_root_is_told_which_it_is(library, tmp_path):

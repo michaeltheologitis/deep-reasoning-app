@@ -1277,6 +1277,8 @@ historian_or = partial(told_or, HISTORIAN_SUFFIX)
 
 
 ASKED_HOW = "How did you count?"
+# Where the engine starts listing an agent's variables and functions, after its suffix.
+BINDINGS = "## Available variables"
 # Root's hand-off, as its worked example writes it.
 HANDING_OFF = parsed(hand_off(HISTORIANS_EXAMPLES[0])).messages[-1].content
 HISTORY_PLAN = {
@@ -1345,8 +1347,16 @@ async def test_every_agent_of_a_run_is_told_the_chats_folder_and_its_names_as_th
             events = await run_events(api, await send(api, chat, ASKED_HOW))
     namespaces = [each["namespace"] for each in kinds(events, "agent.start")]
     assert namespaces == [ROOT, HISTORIAN]
-    for prompt in system_prompts(fake.calls):
-        assert f"Asked: {ASKED_HOW}\n\n{where}\n\n{how}" in prompt
+    # How to pick another ends each one's suffix, the historian's own lines too, once;
+    # the engine lists the agent's variables and functions after it.
+    for call in fake.calls:
+        _, suffix, *_ = [
+            each["content"] for each in call.messages if each["role"] == "system"
+        ]
+        told, _ = suffix.split(BINDINGS, 1)
+        assert told.startswith(f"Asked: {ASKED_HOW}\n\n{where}\n\n")
+        assert told.endswith(f"\n\n{how}\n\n")
+        assert suffix.count(how) == 1
     listed = "'cold war.txt', 'essays/', 'two\\nlines.md', '\\x7b\\x7b 7*7 }}.txt'."
     assert where.endswith(listed)
 
