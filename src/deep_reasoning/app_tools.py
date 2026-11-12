@@ -126,13 +126,17 @@ from deep_reasoning.pages import (
 )
 from deep_reasoning.runs import (
     CHANGE_FIELDS,
+    FORWARD,
     LEFT_OUT,
     LEFT_OUT_FIELDS,
     PAGE_FIELDS,
     SPEC,
+    chat_runs,
     chat_turns,
+    first_loaded,
     raised_error,
     secrets_of,
+    started,
     total_cost,
     withheld,
 )
@@ -1866,11 +1870,13 @@ def check_change_id(value: Any, name: str) -> None:
 def turns_of(
     connection: sqlite3.Connection, chat: str, changes: list[Event]
 ) -> dict[str, int]:
-    """The turn of *chat*'s, by its run, that made each of *changes* made there."""
+    """The turn of *chat*'s, by its run, that made each of *changes* made there,
+    numbered as chat_turns() numbers them, from each run's first event alone."""
     if not any(change["chat"] == chat for change in changes):
         return {}
-    turns = chat_turns(connection, chat)
-    return {turn["run"]: number for number, turn in enumerate(turns, start=1)}
+    runs = chat_runs(connection, chat)
+    turns = [run for run in runs if started(first_loaded(connection, run, FORWARD))]
+    return {run: number for number, run in enumerate(turns, start=1)}
 
 
 def change_head(change: Event, chat: str, turns: dict[str, int]) -> Event:
