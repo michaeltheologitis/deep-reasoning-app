@@ -2045,6 +2045,39 @@ def test_a_decomposition_whose_code_is_not_python_says_so(fresh):
     ]
 
 
+QUALITY_CHECK = [
+    {"user": "What was Starter churn in September?"},
+    {"think": "Check the file first.", "code": 'quality = subagent("Check it.")'},
+    {"observation": "No blanks."},
+]
+
+
+UNFILLED = (
+    "Turn 4 (assistant)'s code has {quality} in a string without f, which stays as"
+    " typed: an f-string puts quality's value there."
+)
+
+
+@pytest.mark.parametrize(
+    ("code", "problems"),
+    [
+        # As an example a tester's librarian wrote: one part of the text without f.
+        ('FinalAnswer(subagent(f"Use {len(quality)} rows. " "Report: {quality}"))', 1),
+        ('FinalAnswer("Share: {quality!r:>10}")', 1),
+        ('FinalAnswer(f"Report: {quality}")', 0),
+        ('FinalAnswer("Report: {quality}".format(quality=quality))', 0),
+        ('FinalAnswer("Answer as {percent:.1f}% ({churned} of {active}).")', 0),
+    ],
+    ids=["plain-part", "with-a-spec", "f", "format", "unset-names"],
+)
+def test_a_worked_example_leaving_a_variable_in_braces_without_f_says_so(
+    fresh, code, problems
+):
+    turns = [*QUALITY_CHECK, {"think": "Answer.", "code": code}]
+    done = library_tool(fresh).write_decomposition("drafts", "churn", turns)
+    assert done.get("code_problems", []) == [UNFILLED] * problems
+
+
 @pytest.mark.parametrize(
     ("root", "name", "level"),
     [

@@ -559,8 +559,8 @@ def test_root_hands_questions_about_the_library_to_the_librarian_which_answers_t
 
 
 def test_a_spawn_list_the_librarian_restricts_keeps_both_hand_offs(library, tmp_path):
-    # As the librarian is told to restrict one: keeping the historian and itself.
-    assert "keep historian and librarian in it" in LIBRARIAN_SUFFIX
+    # As the librarian is told to write one: keeping the historian and itself.
+    assert "spawn lists them, historian and librarian" in LIBRARIAN_SUFFIX
     with closing(open_library(library)) as connection:
         add_namespace(connection, "scheduler", "spawn: [historian, librarian]\n")
     shown = shown_hand_offs(library, tmp_path)
