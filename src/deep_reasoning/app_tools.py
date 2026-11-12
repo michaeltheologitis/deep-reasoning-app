@@ -64,6 +64,7 @@ from deep_reasoning.library import (
     APP_TOOLS,
     APP_TOOLS_MODULE,
     CLAUDE_CODE,
+    HISTORIAN,
     HISTORY_DESCRIPTION,
     LIBRARY_DESCRIPTION,
     LIBRARY_TOOL,
@@ -89,6 +90,7 @@ from deep_reasoning.library import (
     example_breaks,
     expanded_shape,
     fields_of,
+    has_namespace,
     in_chain_order,
     is_left_out_note,
     left_out_note,
@@ -301,6 +303,16 @@ ALREADY_HELD = (
     " as it was)"
 )
 NOTHING_CHANGED = f"nothing changed: it {ALREADY_HELD}"
+# Librarians left the historian out of helpers' spawn lists, against their instructions.
+HISTORIAN_KEPT = jinja2.Template(
+    "kept historian in {{ name }}'s spawn list, so its chats can still be asked how it"
+    " got an answer: tell the user, and that they can take it out in the Library panel"
+    " (Namespaces), as this tool keeps it",
+    undefined=jinja2.StrictUndefined,
+)
+HISTORIAN_MEANWHILE = (
+    "The historian namespace was added or deleted meanwhile; try again."
+)
 # What wasn't done when a tool doesn't build: written, or granted.
 WRITTEN = "wasn't written"
 GRANTED = f"wasn't granted ({STOPS_EVERY_CHAT}; fix it with write_tool first)"
@@ -1607,6 +1619,17 @@ def check_unlocked(read: dict[str, Any], name: str, text: str, adding: bool) -> 
             raise locked(key, name, adding)
 
 
+def keeps_historian(name: str, given: Any, holds_historian: bool) -> bool:
+    """Whether the tool adds historian to the spawn list the fields *given* set for
+    namespace *name*: one leaving it out, in a Library that *holds_historian*, but in
+    historian and under it."""
+    spawn = given.get("spawn") if isinstance(given, dict) else None
+    under = name == HISTORIAN or name.startswith(f"{HISTORIAN}.")
+    return (
+        holds_historian and type(spawn) is list and HISTORIAN not in spawn and not under
+    )
+
+
 def check_inherited(
     config: V2Config, registry: NamespaceRegistry, name: str, above: str
 ) -> None:
@@ -2080,10 +2103,14 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         check_no_secrets("settings", settings, config.tools.get(name, {}))
 
     def grants_built(
-        name: str, text: str, adding: bool, merge: bool = False
-    ) -> Callable[[sqlite3.Connection, NamespaceConfig], None]:
-        """The write's *allowed* for namespace *name* as the YAML *text* makes it, once
-        the custom tools it grants afresh are built (built_grants())."""
+        name: str, text: str, given: Any, adding: bool, merge: bool = False
+    ) -> tuple[str, dict[str, str], Callable[..., None]]:
+        """The YAML *text* for namespace *name*, whose fields are *given*, with historian
+        added to the spawn list it sets where keeps_historian() says so (dumped afresh,
+        an agent's comments with it); a note saying so, to go first in the write's
+        result, as a librarian left one after a long changed untold; and the write's
+        *allowed*, once the custom tools it grants afresh are built (built_grants()),
+        which decides that again under the write lock."""
         build = partial(check_builds, tools_dir=tools_dir, done=GRANTED)
 
         def first(read: dict[str, Any]) -> None:
@@ -2091,10 +2118,25 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             check_unlocked(read, name, text, adding)
 
         with app_file(library, "ro") as connection:
+            kept = keeps_historian(name, given, has_namespace(connection, HISTORIAN))
+            if kept:
+                text = dump(given | {"spawn": [*given["spawn"], HISTORIAN]})
             built = built_grants(
                 connection, name, text, build, adding, merge, locks=locks, first=first
             )
-        return partial(same_grants, built, locks)
+
+        def allowed(
+            connection: sqlite3.Connection,
+            namespace: NamespaceConfig,
+            read: dict[str, Any],
+        ) -> None:
+            holds = HISTORIAN in read["namespace_yaml"]
+            if keeps_historian(name, given, holds) != kept:
+                raise LibraryError(HISTORIAN_MEANWHILE)
+            same_grants(built, locks, connection, namespace, read)
+
+        note = {"note": HISTORIAN_KEPT.render(name=name)} if kept else {}
+        return text, note, allowed
 
     def write_decomposition(
         namespace: str, yaml: Any = None, turns: Any = None, name: Any = None
@@ -2140,8 +2182,8 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     def add(name: str, yaml: Any) -> dict[str, Any]:
         """Add namespace *name* with the fields *yaml* sets."""
         text = yaml_text(yaml)
-        check_writable(name, text, key_names)
-        allowed = grants_built(name, text, adding=True)
+        fields = check_writable(name, text, key_names)
+        text, note, allowed = grants_built(name, text, fields, adding=True)
 
         def write() -> Event:
             stored = written(library, add_namespace, name, text, allowed=allowed, by=by)
@@ -2149,15 +2191,15 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
                 "added", None, stored, what="namespace", namespace=name, name=name
             )
 
-        return stop_proof(write)
+        return note | stop_proof(write)
 
     def change(name: str, yaml: Any, replace: bool = False) -> dict[str, Any]:
         """Give namespace *name* the fields *yaml* sets, keeping the others, or with
         *replace* in place of all its own."""
         text = yaml_text(yaml)
-        check_writable(name, text, key_names)
+        fields = check_writable(name, text, key_names)
         merge = not replace
-        allowed = grants_built(name, text, adding=False, merge=merge)
+        text, note, allowed = grants_built(name, text, fields, False, merge)
         at = {"what": "namespace", "namespace": name, "name": name}
 
         def write() -> tuple[str, str, Event | None]:
@@ -2175,7 +2217,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
 
         before, stored, done = stop_proof(write)
         if done is None:
-            return {"done": NOTHING_CHANGED, **at}
+            return note | {"done": NOTHING_CHANGED, **at}
         changed, kept = field_changes(before, stored)
         # A text given, yet as it was: a .replace(...) that matched nothing, say.
         given = fields_of(text).items() if merge else ()
@@ -2185,7 +2227,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         done |= {"changed": cut(changed), "kept": [k for k in kept if k not in same]}
         if same:
             done["nothing changed"] = f"{', '.join(same)} {ALREADY_HELD}"
-        return done
+        return note | done
 
     def write_tool(
         name: str, source: str, factory: str, settings: dict[str, Any] | None = None

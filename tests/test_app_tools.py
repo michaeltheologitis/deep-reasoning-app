@@ -29,6 +29,8 @@ from deep_reasoning.app_tools import (
     CANT_WRITE_BACK,
     CUT_SHORT,
     EMPTY,
+    HISTORIAN_KEPT,
+    HISTORIAN_MEANWHILE,
     IN_FOLDER_ONLY,
     MAX_FOUND,
     MAX_NESTING,
@@ -979,8 +981,9 @@ def test_show_of_a_name_lists_its_own_decompositions_the_engine_cant_read_apart(
 
 
 def test_show_of_a_name_marks_the_hand_offs_its_agents_are_shown_rewritten(fresh):
+    with closing(open_library(fresh)) as connection:
+        add_namespace(connection, "team", "spawn: []\n")
     tool = library_tool(fresh)
-    tool.add_namespace("team", {"spawn": []})
     tool.add_namespace("team.worker", {"spawn": [HISTORIAN, LIBRARIAN]})
     assert tool.show("team")["decompositions"] == [
         each | {"rewritten": True} for each in ROOTS
@@ -1742,6 +1745,95 @@ def test_a_change_with_replace_sets_every_field_as_the_panels_edit_yaml_does(fre
     assert done["kept"] == []
 
 
+def kept_note(name):
+    return HISTORIAN_KEPT.render(name=name)
+
+
+def test_a_new_helper_that_may_hand_off_nowhere_keeps_the_historian_and_says_so(fresh):
+    done = library_tool(fresh).add_namespace("rota", {"spawn": []})
+    assert own_fields(fresh, "rota") == {"spawn": [HISTORIAN]}
+    assert done["note"] == kept_note("rota")
+
+
+@pytest.mark.parametrize(
+    ("name", "replace"),
+    [("stock", False), ("stock", True), (LIBRARIAN, False)],
+    ids=["merged", "replaced", "the-librarian"],
+)
+def test_a_spawn_list_naming_helpers_gets_the_historian_added_and_says_so_first(
+    fresh, name, replace
+):
+    with closing(open_library(fresh)) as connection:
+        add_namespace(connection, "stock", "system_suffix: Count the stock.\n")
+    done = library_tool(fresh).change_namespace(
+        name, {"spawn": ["drafts"]}, replace=replace
+    )
+    assert own_fields(fresh, name)["spawn"] == ["drafts", HISTORIAN]
+    assert done["changed"]["spawn"]["after"] == ["drafts", HISTORIAN]
+    assert next(iter(done.items())) == ("note", kept_note(name))
+
+
+def test_taking_the_historian_out_changes_nothing_and_says_why(fresh):
+    tool = library_tool(fresh)
+    tool.add_namespace("stock", {"spawn": ["drafts", HISTORIAN]})
+    done = tool.change_namespace("stock", {"spawn": ["drafts"]})
+    assert done["done"] == NOTHING_CHANGED
+    assert done["note"] == kept_note("stock")
+
+
+@pytest.mark.parametrize(
+    ("name", "given", "spawn"),
+    [
+        ("stock", {"spawn": [HISTORIAN, "drafts"]}, [HISTORIAN, "drafts"]),
+        ("stock", {"system_suffix": "Count the stock."}, None),
+        (HISTORIAN, {"spawn": ["drafts"]}, ["drafts"]),
+        ("historian.notes", {"spawn": []}, []),
+    ],
+    ids=["already-there", "unset", "the-historian", "under-the-historian"],
+)
+def test_a_spawn_list_unset_holding_the_historian_or_in_it_is_stored_as_given(
+    fresh, name, given, spawn
+):
+    with closing(open_library(fresh)) as connection:
+        add_namespace(connection, "stock", "")
+        add_namespace(connection, "historian.notes", "")
+    done = library_tool(fresh).change_namespace(name, given)
+    assert own_fields(fresh, name).get("spawn") == spawn
+    assert "note" not in done
+
+
+def without_the_historian(library):
+    with closing(open_library(library)) as connection:
+        change_namespace(connection, LIBRARIAN, "spawn: []\n", merge=True)
+        delete_namespace(connection, HISTORIAN, len(HISTORIANS_EXAMPLES))
+
+
+def test_a_library_without_the_historian_stores_a_spawn_list_as_given(fresh):
+    without_the_historian(fresh)
+    done = library_tool(fresh).add_namespace("rota", {"spawn": []})
+    assert own_fields(fresh, "rota") == {"spawn": []}
+    assert "note" not in done
+
+
+def test_a_historian_added_while_a_spawn_list_was_written_refuses_it(fresh):
+    without_the_historian(fresh)
+    # Its build adds the historian, as the panel would meanwhile.
+    adds_it = f"""import sqlite3
+
+from deep_reasoner.primitives import Func
+
+
+def build(client, params):
+    with sqlite3.connect({str(fresh)!r}) as connection:
+        connection.execute("INSERT INTO namespaces VALUES ('historian', '')")
+    return Func(len)
+"""
+    stored_as(fresh, "sly", adds_it)
+    with pytest.raises(LibraryError, match=re.escape(HISTORIAN_MEANWHILE)):
+        library_tool(fresh).change_namespace("drafts", "tools: [sly]\nspawn: []\n")
+    assert own_fields(fresh, "drafts") == {}
+
+
 def test_a_change_that_changes_nothing_says_so_and_keeps_the_yaml_as_typed(fresh):
     commented = "# kept as typed\nsystem_suffix: Cite a source.\n"
     tool = library_tool(fresh)
@@ -2317,13 +2409,13 @@ ABOUT_NAMESPACES = [
 def test_text_about_namespaces_and_repls_is_written_and_edited_around(fresh, text):
     tool = library_tool(fresh)
     tool.add_namespace("research", {"system_suffix": text, "vars": {"note": text}})
-    tool.change_namespace("research", {"spawn": ["drafts"]})
+    tool.change_namespace("research", {"spawn": ["drafts", HISTORIAN]})
     example = {"name": "plan it", "messages": [{"role": "user", "content": text}]}
     tool.write_decomposition("research", example)
     assert own_fields(fresh, "research") == {
         "system_suffix": text,
         "vars": {"note": text},
-        "spawn": ["drafts"],
+        "spawn": ["drafts", HISTORIAN],
     }
 
 
