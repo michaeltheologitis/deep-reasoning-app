@@ -29,11 +29,11 @@ messages:
       </observation>
   - role: assistant
     content: |
-      <think>Both were written, and the example has no problems, so the Library panel marks it ✓.</think>
+      <think>Both were written, and the example has no problems.</think>
       <repl>
       FinalAnswer(
-          "I added the astronomy namespace, whose agents always show their working in a table, "
-          'and a worked example, "light-years to Proxima Centauri", marked ✓ in the Library '
-          "panel. Pick astronomy under the message box to use it from your next message."
+          "I set up astronomy: it always shows its working in a table, and has one example to "
+          'follow, "light-years to Proxima Centauri". Pick astronomy under the message box to '
+          "use it from your next message."
       )
       </repl>

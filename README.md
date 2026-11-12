@@ -237,9 +237,14 @@ imports too.
   `system_suffix`, `vars`, `tools` and `spawn`, and writes Python tools of its own and grants them, with the app's
   `library` tool. A chat in another namespace can't, even through a sub-agent.
 - It changes only what you name, keeps every line of a text you didn't ask to remove (saying what it removed),
-  leaves `spawn` unset unless you ask, makes team members siblings rather than children of the planner, unless
-  they should inherit its suffix and worked examples (naming the examples a child inherits), and says when a worked
-  example disagrees with its namespace's suffix. Granting a tool, it says in the namespace's suffix when to use it;
+  writes each rule you give as you said it, asks before rewriting any other text (a worked example, above all one
+  you wrote), leaves `spawn` unset unless you ask, and says when a worked example disagrees with its namespace's
+  suffix. A team it sets up is a planner you talk to, which it names, with a spawn list of its members and a worked
+  example handing each part on; members are siblings rather than children of the planner, unless they should
+  inherit its suffix and worked examples. Asked for what no change can promise, such as quicker answers, it says
+  where the time goes and offers the choices before changing anything. It answers in your words, keeping the
+  Library's terms for when you use them, and for a page about the Library it reads it and hands the historian the
+  facts. Granting a tool, it says in the namespace's suffix when to use it;
   changing a var, it names the worked examples that hard-code the old value. What all agents should do it leaves
   to root's suffix, which you edit in the panel, rather than spreading it over namespaces.
 - It writes a worked example from its steps (the task; each step's reasoning and code; what the code printed), so
@@ -251,7 +256,8 @@ imports too.
   before back from the record.
 - A tool it writes, or a tool of yours it grants afresh, is built first as another chat would build it, and refused
   if it doesn't build, naming a package the app lacks and how to add it; that works only in a chat whose namespace
-  runs the local REPL.
+  runs the local REPL. It then tries a tool it wrote on a few realistic inputs, and fixes it before answering if a
+  result is wrong. Writing a worked example never runs its code.
 - It never changes root, a namespace's REPL or backbone, which namespaces grant `library`, `history` or `page`, the
   system prompt or the run settings; never grants a tool that runs Claude Code (billed to your subscription), or adds
   a namespace under one that grants `library` or runs Claude Code; never replaces a tool root grants or one built
