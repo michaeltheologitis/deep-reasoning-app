@@ -66,6 +66,14 @@ test("a saved turn has the prompt, the answer and the run's own totals", () => {
   assert.equal(turn.started, events[0].t);
 });
 
+test("a dict answer is shown as the worker wrote it to be read; a turn without that, or with other than text, shows its answer", () => {
+  const events = recorded("fanout");
+  assert.equal(foldEvents(events).turn.shown, "**C1:** C1: 3\n\n**C2:** C2: 4");
+  const { shown, ...older } = last(events);
+  assert.equal(foldEvents([...events.slice(0, -1), older]).turn.shown, null);
+  assert.equal(foldEvents([...events.slice(0, -1), { ...older, shown: { html: "<b>" } }]).turn.shown, null);
+});
+
 test("a turn keeps the model, provider and namespace its run started on, and the run's id", () => {
   const [start] = recorded("fanout");
   const { turn } = foldEvents([start]);

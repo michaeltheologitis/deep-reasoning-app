@@ -5,6 +5,7 @@ import re
 import signal
 import subprocess
 import sys
+from decimal import Decimal
 
 import httpx
 import openai
@@ -25,6 +26,7 @@ from openai.resources.chat.completions import AsyncCompletions
 from deep_reasoning import worker
 from deep_reasoning.runs import LEFT_OUT
 from deep_reasoning.worker import (
+    MOST_ENTRIES,
     REPEATED_NOTE,
     SENT_OUTPUT_CHARS,
     Recorder,
@@ -35,6 +37,7 @@ from deep_reasoning.worker import (
     failure_detail,
     final_answer_of,
     output_of,
+    readable,
     tool_line,
     with_apps_notes,
 )
@@ -556,6 +559,57 @@ def test_a_stdin_that_cant_be_read_ends_the_worker_as_its_end_does(tmp_path):
 )
 def test_the_final_answer_is_read_from_a_cells_output(output, answer):
     assert final_answer_of(output) == answer
+
+
+LETTER = "Dear Tom,\n\nYour rent is due on Friday.\nThanks,\nAnna"
+
+
+@pytest.mark.parametrize(
+    ("answer", "shown"),
+    [
+        (
+            {"letter": LETTER, "ring_first": "the plumber"},
+            (
+                "**letter**\n\nDear Tom,\n\nYour rent is due on Friday.\nThanks,\nAnna"
+                "\n\n**ring\\_first:** the plumber"
+            ),
+        ),
+        (
+            {"rent": 1200, "late fee": Decimal("42.50"), "note": None},
+            "**rent:** 1200\n\n**late fee:** 42.50\n\n**note:** None",
+        ),
+        ({"2*3": 6, "a**b": "c"}, "**2\\*3:** 6\n\n**a\\*\\*b:** c"),
+        (["boiler", "smoke alarm\nin 3B", 2], "- boiler\n- smoke alarm\n  in 3B\n- 2"),
+        (
+            ["- a dash", "1. a step", "-5 degrees"],
+            "- \\- a dash\n- 1\\. a step\n- -5 degrees",
+        ),
+    ],
+)
+def test_a_dict_or_list_answer_shows_each_key_in_bold_or_each_item_a_bullet(
+    answer, shown
+):
+    assert readable(answer) == shown
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "text",
+        42,
+        object(),
+        {"a", "b"},
+        ("a", "b"),
+        {"letter": object()},
+        {"rows": ["boiler"]},
+        [["boiler"]],
+        list(range(MOST_ENTRIES + 1)),
+        {},
+        [],
+    ],
+)
+def test_any_other_answer_shows_only_as_its_repr(answer):
+    assert readable(answer) is None
 
 
 def test_cached_input_is_billed_at_its_own_rate():

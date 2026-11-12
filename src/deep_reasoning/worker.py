@@ -13,6 +13,7 @@ import inspect
 import json
 import logging
 import math
+import numbers
 import os
 import re
 import select
@@ -85,6 +86,14 @@ LEFT_OUT_NOW: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
     "left_out_now", default=()
 )
 WHY_CHARS = 300
+# A dict or list answer of these, MOST_ENTRIES at most, shows as Markdown (`readable`).
+SIMPLE_VALUES = (str, numbers.Number, type(None))
+MOST_ENTRIES = 100
+# ASCII punctuation, which Markdown reads escaped as itself, so a key can't break its label.
+MARKDOWN_SPECIAL = re.compile(r"([!-/:-@\[-`{-~])")
+# A list item starting as a list marker would ("- x", "1. x"), its last character escaped.
+LIST_MARKER = re.compile(r"^(\s*\d*)([-+*.)])(?=\s|$)")
+BULLET_INDENT = "  "
 # The engine's message when a reply has no <repl> block, word for word, and the same
 # sent as the app's: read as the user's, it had the model apologise to the user for it.
 NO_REPL_NOTE = (
@@ -179,6 +188,29 @@ def unquote(answer_repr: str) -> str:
     except (ValueError, SyntaxError, MemoryError, RecursionError):
         return answer_repr
     return value if isinstance(value, str) else answer_repr
+
+
+def readable(answer: Any) -> str | None:
+    """A dict or list answer of text, numbers and None, MOST_ENTRIES at most, as the page
+    shows it: each key in bold over its value, or each item a bullet, values as written;
+    None for any other answer, which shows as its repr."""
+    if type(answer) not in (dict, list) or not 0 < len(answer) <= MOST_ENTRIES:
+        return None
+    values = answer.values() if type(answer) is dict else answer
+    if not all(isinstance(value, SIMPLE_VALUES) for value in values):
+        return None
+    if type(answer) is list:
+        items = (LIST_MARKER.sub(r"\1\\\2", str(item)) for item in answer)
+        return "\n".join(
+            f"- {item}".replace("\n", "\n" + BULLET_INDENT) for item in items
+        )
+    sections = []
+    for key, value in answer.items():
+        name, text = MARKDOWN_SPECIAL.sub(r"\\\1", str(key)), str(value)
+        sections.append(
+            f"**{name}**\n\n{text}" if "\n" in text else f"**{name}:** {text}"
+        )
+    return "\n\n".join(sections)
 
 
 def cost_of(model: str, usage: dict[str, Any], base_url: str) -> float | None:
@@ -498,9 +530,15 @@ class Recorder:
         with self._lock:
             self._calls_going += 1
 
-    def end_turn(self, outcome: str, answer: str | None, detail: str | None) -> None:
+    def end_turn(
+        self,
+        outcome: str,
+        answer: str | None,
+        detail: str | None,
+        shown: str | None = None,
+    ) -> None:
         """The turn.end, with how many chat calls never finished, whose cost no one
-        knows."""
+        knows, and the answer as the page shows it, when that isn't *answer*."""
         with self._lock:
             unfinished = self._calls_going
         self.emit(
@@ -509,6 +547,7 @@ class Recorder:
             answer=answer,
             detail=detail,
             unfinished_calls=unfinished,
+            **({} if shown is None else {"shown": shown}),
         )
 
     def emit(self, kind: str, **fields: Any) -> None:
@@ -891,7 +930,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
         detail = exhausted_detail(recorder.changes_made, text)
         recorder.end_turn("exhausted", text, detail)
     else:
-        recorder.end_turn("answered", text, None)
+        recorder.end_turn("answered", text, None, readable(answer))
     finish(reasoner)
 
 

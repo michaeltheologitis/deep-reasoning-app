@@ -81,6 +81,10 @@ FAN_OUT = {
     "Summarize C2.": [repl("FinalAnswer('C2: 4')", think="Easy.")],
 }
 FAN_OUT_ANSWER = "{'C1': 'C1: 3', 'C2': 'C2: 4'}"
+REMINDER = "Draft a reminder to Tom, and who should I ring first?"
+LETTER = "Dear Tom,\n\nYour rent is due.\nAnna"
+REMINDER_ANSWER = {"letter": LETTER, "ring first": "the plumber"}
+REMINDER_SHOWN = f"**letter**\n\n{LETTER}\n\n**ring first:** the plumber"
 PRINT_GROUP = repl("import os", "print(os.getpgrp())")
 OVERFILL = 2**24  # bytes: more than a pipe holds
 # More namespaces than a cell adds before a Stop at the first one's change ends it.
@@ -201,6 +205,24 @@ async def test_a_fan_out_streams_one_tree_in_order(home, library, fake_config):
     assert events[-1]["outcome"] == "answered"
     assert events[-1]["answer"] == FAN_OUT_ANSWER
     assert saved(library, run) == events
+
+
+async def test_a_dict_answer_is_shown_labelled_but_a_follow_up_gets_its_value(
+    home, library, fake_config
+):
+    plan = {
+        REMINDER: [repl(f"FinalAnswer({REMINDER_ANSWER!r})")],
+        "Shorter?": [repl("FinalAnswer('Rent is due.')")],
+    }
+    with FakeOpenAI(scripted(plan)) as fake:
+        runs = Runs(library, home)
+        run, events = await run_to_the_end(runs, REMINDER, fake_config(fake))
+        earlier = [turn_of(library, run)]
+        await run_to_the_end(runs, "Shorter?", fake_config(fake), earlier)
+    end = events[-1]
+    assert (end["answer"], end["shown"]) == (repr(REMINDER_ANSWER), REMINDER_SHOWN)
+    told = fake.calls[-1].messages[-2]["content"]
+    assert told == folded_answer(repr(repr(REMINDER_ANSWER)))
 
 
 async def test_a_sub_agent_a_provider_failed_says_so_first_and_so_does_its_parents_cell(
