@@ -85,6 +85,7 @@ from deep_reasoning.library import (
     delete_decomposition,
     delete_namespace,
     dump,
+    edit_decomposition,
     left_out_note,
     open_library,
     parsed,
@@ -2933,6 +2934,26 @@ def test_a_change_the_panel_made_is_undone_by_writing_its_before_back(fresh):
     whole = tool.changes(id=deleted["id"])
     assert whole["after"] is None
     assert tool.write_decomposition("drafts", whole["before"])["done"] == "added"
+    assert stored_yaml(fresh, "drafts", name) == EXAMPLE
+
+
+def test_a_rename_in_the_panel_is_undone_by_writing_the_old_back_and_deleting_the_new(
+    fresh,
+):
+    tool = library_tool(fresh)
+    name = tool.write_decomposition("drafts", EXAMPLE)["name"]
+    renamed = EXAMPLE.replace(f"name: {name}", "name: tickets")
+    with closing(open_library(fresh)) as connection:
+        edit_decomposition(connection, "drafts", name, EXAMPLE, renamed)
+    added, deleted, *_ = tool.changes()
+    assert [(each["done"], each["name"]) for each in (added, deleted)] == [
+        ("added", "tickets"),
+        ("deleted", name),
+    ]
+    # The new one was added, so its undo is a delete, in the panel; the old one is
+    # written back as it was.
+    assert tool.changes(id=added["id"])["before"] is None
+    tool.write_decomposition("drafts", tool.changes(id=deleted["id"])["before"])
     assert stored_yaml(fresh, "drafts", name) == EXAMPLE
 
 

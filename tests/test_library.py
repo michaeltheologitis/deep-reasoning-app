@@ -3307,6 +3307,7 @@ def test_a_save_granting_a_tool_runs_would_ignore_says_why(library):
 WORD_COUNT_BLOCK = "factory: build\nfactory_from: word_count.py\n"
 WORD_COUNT_SOURCE = "def build(client, params):\n    return len\n"
 EDITED = ADDED.replace("hi", "hello")
+RENAMED = EDITED.replace("name: added", "name: renamed")
 RECORDED_KEYS = ("what", "namespace", "name", "before", "after", "by")
 
 
@@ -3360,6 +3361,15 @@ def test_a_new_library_records_no_change(library):
             [("decomposition", "research", "added", ADDED, EDITED)],
         ),
         (
+            lambda connection: edit_decomposition(
+                connection, "research", "added", ADDED, RENAMED
+            ),
+            [
+                ("decomposition", "research", "added", ADDED, None),
+                ("decomposition", "research", "renamed", None, RENAMED),
+            ],
+        ),
+        (
             lambda connection: delete_decomposition(
                 connection, "research", "added", ADDED
             ),
@@ -3402,6 +3412,7 @@ def test_a_new_library_records_no_change(library):
     ids=[
         "add decomposition",
         "edit decomposition",
+        "rename decomposition",
         "delete decomposition",
         "add namespace",
         "change namespace",

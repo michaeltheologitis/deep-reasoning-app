@@ -2995,10 +2995,13 @@ def edit_decomposition(connection, namespace, name, was, text, by=PANEL):
     decomposition *name*, which the person opened as *was*; it may take another name
     that *namespace* doesn't hold. Raises LibraryError saying why not, and
     ChangedMeanwhile if *name* is no longer stored as *was*. The name it is stored
-    under; the change is recorded under it, as made *by*."""
+    under; the change is recorded as made *by*, a rename as the old name deleted and
+    the new one added, as undoing it is."""
     check_size(text, "A decomposition's YAML")
     decomposition = parsed(text)
-    with writing(connection):
+    names = dict.fromkeys([name, decomposition.name])
+    rows = [("decomposition", namespace, each) for each in names]
+    with writing(connection), recorded(connection, by, *rows):
         check_templates(connection, decomposition)
         # In its place, so the decompositions stay in the order they were added.
         try:
@@ -3011,8 +3014,6 @@ def edit_decomposition(connection, namespace, name, was, text, by=PANEL):
             raise already_has(namespace, decomposition.name) from error
         if edited.rowcount == 0:
             raise changed_meanwhile(f'"{name}" in {namespace}')
-        change = ("decomposition", namespace, decomposition.name, was, text)
-        record(connection, by, [change])
     return decomposition.name
 
 
