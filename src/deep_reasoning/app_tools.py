@@ -281,6 +281,12 @@ MAX_NESTING = 20
 OWN_KEYS = ("factory", "factory_from")
 SETS_OWN_KEYS = "settings may not hold factory or factory_from: write_tool sets them."
 CHECKS = "checks"
+# What a write that leaves a text as it was says, so the model never reports it done.
+ALREADY_HELD = (
+    "already held what you gave (a .replace(...) that matches nothing gives a text back"
+    " as it was)"
+)
+NOTHING_CHANGED = f"nothing changed: it {ALREADY_HELD}"
 # What wasn't done when a tool doesn't build: written, or granted.
 WRITTEN = "wasn't written"
 GRANTED = f"wasn't granted ({STOPS_EVERY_CHAT}; fix it with write_tool first)"
@@ -301,10 +307,12 @@ IN_FOLDER_ONLY = jinja2.Template(
 READ_ONLY_HERE = jinja2.Template(
     "\nIn this chat you may only read the Library: its namespace, {{ namespace }}, doesn't"
     " grant library, so the tool refuses every write, here and in any sub-agent. Asked"
-    " for a change, don't try it: answer, with FinalAnswer, what you would change, and"
-    " that the user should {{ pick }} and ask there; but root, which every chat builds"
-    " on, only the user changes, in the Library panel: Namespaces → root → Edit YAML for"
-    " its instructions, Decompositions for its examples.",
+    " for a change, don't try it: answer, with FinalAnswer, what you would change, in"
+    " the user's words, and that the user should {{ pick }} and ask there. A lasting wish"
+    " (always remember X) is a helper you would make there, or add to theirs; only if"
+    " they want it in every chat, say root, which every chat builds on, only the user"
+    " changes, in the Library panel: Namespaces → root → Edit YAML for its instructions,"
+    " Decompositions for its examples.",
     undefined=jinja2.StrictUndefined,
 )
 NOT_LOCAL = (
@@ -1970,16 +1978,15 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
                 replace=True,
                 allowed=may_write,
             )
+            at = {
+                "what": "decomposition",
+                "namespace": namespace,
+                "name": stored["name"],
+            }
+            if before == text:
+                return stored, {"done": NOTHING_CHANGED, **at}
             done = "added" if before is None else "replaced"
-            change = logged(
-                done,
-                before,
-                text,
-                what="decomposition",
-                namespace=namespace,
-                name=stored["name"],
-            )
-            return stored, change
+            return stored, logged(done, before, text, **at)
 
         stored, change = stop_proof(write)
         broken = code_problems(data)
@@ -2019,9 +2026,17 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
 
         before, stored, done = stop_proof(write)
         if done is None:
-            return {"done": "unchanged", **at}
+            return {"done": NOTHING_CHANGED, **at}
         changed, kept = field_changes(before, stored)
-        return done | {"changed": cut(changed), "kept": kept}
+        # A text given, yet as it was: a .replace(...) that matched nothing, say.
+        given = fields_of(text).items() if merge else ()
+        same = [
+            key for key, value in given if type(value) is str and key not in changed
+        ]
+        done |= {"changed": cut(changed), "kept": [k for k in kept if k not in same]}
+        if same:
+            done["nothing changed"] = f"{', '.join(same)} {ALREADY_HELD}"
+        return done
 
     def write_tool(
         name: str, source: str, factory: str, settings: dict[str, Any] | None = None
@@ -2047,6 +2062,8 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             allowed = partial(may_write_tool, name=name, settings=settings or {})
             before = written(library, store_tool, name, block, source, allowed=allowed)
             after = tool_text(name, dump(block), source)
+            if before == after:
+                return {"done": NOTHING_CHANGED, "what": "tool", "name": name}
             done = "added" if before is None else "replaced"
             return logged(done, before, after, what="tool", name=name)
 

@@ -238,32 +238,38 @@ imports too.
   `system_suffix`, `vars`, `tools` and `spawn`, and writes Python tools of its own and grants them, with the app's
   `library` tool. A chat in another namespace can't, even through a sub-agent.
 - It changes only what you name, keeps every line of a text you didn't ask to remove (saying what it removed),
-  writes each rule you give as you said it, asks before rewriting a text you didn't name (a worked example, above
-  all one you wrote), leaves `spawn` unset unless you ask, and says when a worked example disagrees with its
-  namespace's suffix. A team it sets up is a planner you talk to, which it names, with a spawn list of its members,
+  writes each rule you give as you said it, and leaves `spawn` unset unless you ask. It keeps what depends on a
+  change you asked for in step without asking (a planner's hand-off lines, worked examples showing the old format,
+  value or tool, the old namespace's text when a tool moves), and asks before rewriting any other text, above all
+  one you wrote; a wish about how it works ("don't ask") holds in that chat and is never written into an agent's
+  text. It changes a text as its value, never as YAML text, then reads what was stored back and checks it (each `*`
+  closed, line breaks where meant, a worked example's code matching what it printed, a tool's description); a write
+  that leaves a text as it was says "nothing changed", so it isn't reported done. A team it sets up is a planner you
+  talk to, which it names, handing each question only to the members it needs, with a spawn list of its members,
   `historian` and `librarian`, and a worked example handing each part on; facts you give a team go in the planner's
-  suffix, which passes them and your file names to each member; members are siblings rather than children of the
-  planner, unless they should inherit its suffix and worked examples. Asked to delete a namespace that others name
+  suffix, which passes them and your file names to each member; members, and a member's own helper, are siblings
+  rather than children, unless they should inherit a suffix and worked examples. Asked to delete a namespace that others name
   (in a spawn list, a suffix or a worked example), it says which and offers to take it out of them first, as the
   panel deletes none a spawn list names, then says to delete it in the panel. Asked for what no change can promise,
-  such as quicker answers, it says where the time goes and offers the choices before changing anything. It answers
-  in your words, keeping the Library's terms for when you use them, and for a page about the Library it reads it and
-  hands the historian the facts. Granting a tool, it says in the namespace's suffix when to use it; changing a var,
-  it names the worked examples that hard-code the old value. What all agents should do it leaves to root's suffix,
-  which you edit in the panel, rather than spreading it over namespaces.
+  such as quicker, more reliable or punchier answers, it reads what makes them so, says what causes it and offers
+  the choices before changing anything. It answers in your words, keeping the Library's terms for when you use
+  them, and for a page about the Library it reads it and hands the historian the facts. Granting a tool, it says in
+  the namespace's suffix when to use it. Asked for what every chat should do, it offers first what it can do (your
+  helpers, or a new one), and names root's suffix, which you edit in the panel, only if you want every chat.
 - It writes a worked example from its steps (the task; each step's reasoning and code; what the code printed), so
   it never types the tags that would run the example's code in place of its own: a step holding one is refused, and
   every text it reads gives each `<repl>` as `⟦repl⟧`, read back when it writes, so copying a worked example never
-  ends its cell and writing one back changes nothing. A definition or answer format you give with one goes in the
-  namespace's suffix too, and it is told of a cell leaving a variable's `{name}` in a string without `f`, and fixes
-  it.
+  ends its cell and writing one back changes nothing. A definition, format, layout, order or rounding a worked
+  example shows goes in the namespace's suffix too, and it is told of a cell leaving a variable's `{name}` in a
+  string without `f`, and fixes it.
 - Each change shows under its answer and in the tree, opens onto its YAML (or a tool's Python) before and after, and
   applies from your next message; the panel and namespace menu show it at once. Ask it to undo one and it writes the
   before back from the record.
 - A tool it writes, or a tool of yours it grants afresh, is built first as another chat would build it, and refused
   if it doesn't build, naming a package the app lacks and how to add it; that works only in a chat whose namespace
-  runs the local REPL. It then tries a tool it wrote on a few realistic inputs, and fixes it before answering if a
-  result is wrong. Writing a worked example never runs its code.
+  runs the local REPL. It then tries a tool it wrote on your own inputs (the files it reads in the chat's folder, a
+  line you gave, the short names you type), says so when it had to make inputs up, and fixes it before answering if
+  a result is wrong. Writing a worked example never runs its code.
 - It never changes root, a namespace's REPL or backbone, which namespaces grant `library`, `history` or `page`, the
   system prompt or the run settings; never grants a tool that runs Claude Code (billed to your subscription), or adds
   a namespace under one that grants `library` or runs Claude Code; never replaces a tool root grants or one built
@@ -274,8 +280,8 @@ imports too.
   Asked to, it says why and how you do it in the panel. These limits guard the tool, not the file: the agent's
   Python isn't sandboxed, and could open the file itself.
 - Any chat can ask about the Library ("what namespaces do I have?", "add a namespace for legal questions"): root hands
-  it to a librarian sub-agent, which there only reads, and asked for a change says to pick `librarian` and ask there,
-  or how to do it in the panel. A namespace that can't reach `librarian` (left out of its `spawn`, or deleted) answers
+  it to a librarian sub-agent, which there only reads, and asked for a change says to pick `librarian` and ask there
+  (asked to always remember something, for a helper that does), naming root's panel edit only for every chat. A namespace that can't reach `librarian` (left out of its `spawn`, or deleted) answers
   such questions itself if it can, and says so if it can't; one that can't reach `historian` says it can't answer
   questions about earlier messages, and, when its spawn list is why, that adding `historian` there would let it. The
   panel says so under its Hand-offs.
