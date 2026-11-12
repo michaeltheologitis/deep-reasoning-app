@@ -81,6 +81,19 @@ FAN_OUT = {
     "Summarize C2.": [repl("FinalAnswer('C2: 4')", think="Easy.")],
 }
 FAN_OUT_ANSWER = "{'C1': 'C1: 3', 'C2': 'C2: 4'}"
+FAN_OUT_SHOWN = "**C1:** C1: 3\n\n**C2:** C2: 4"
+REMINDER = "Draft a reminder to Tom, and who should I ring first?"
+REMINDER_PLAN = {
+    REMINDER: [
+        repl(
+            "FinalAnswer({'letter': 'Dear Tom,\\n\\nYour rent is due.\\nAnna',"
+            " 'ring_first': 'the plumber'})"
+        )
+    ]
+}
+REMINDER_SHOWN = (
+    "**Letter**\n\nDear Tom,\n\nYour rent is due.\nAnna\n\n**Ring first:** the plumber"
+)
 PRINT_GROUP = repl("import os", "print(os.getpgrp())")
 OVERFILL = 2**24  # bytes: more than a pipe holds
 # More namespaces than a cell adds before a Stop at the first one's change ends it.
@@ -199,8 +212,24 @@ async def test_a_fan_out_streams_one_tree_in_order(home, library, fake_config):
     child_ends = [e["seq"] for e in of_kind(events, "agent.end") if e["node"] != 1]
     assert fan_out["seq"] < starts[2]["seq"] and max(child_ends) < fan_out_end["seq"]
     assert events[-1]["outcome"] == "answered"
-    assert events[-1]["answer"] == FAN_OUT_ANSWER
+    assert events[-1]["answer"] == FAN_OUT_SHOWN
     assert saved(library, run) == events
+
+
+async def test_a_dict_answer_shows_a_section_per_key_and_its_cell_keeps_the_dict(
+    home, library, fake_config
+):
+    with FakeOpenAI(scripted(REMINDER_PLAN)) as fake:
+        run, events = await run_to_the_end(
+            Runs(library, home), REMINDER, fake_config(fake)
+        )
+    assert (events[-1]["outcome"], events[-1]["answer"]) == ("answered", REMINDER_SHOWN)
+    assert turn_of(library, run).answer == REMINDER_SHOWN
+    printed = of_kind(events, "cell.end")[-1]["output"]
+    assert ast.literal_eval(printed.removeprefix("FinalAnswer: ")) == {
+        "letter": "Dear Tom,\n\nYour rent is due.\nAnna",
+        "ring_first": "the plumber",
+    }
 
 
 async def test_a_sub_agent_a_provider_failed_says_so_first_and_so_does_its_parents_cell(
@@ -939,7 +968,7 @@ async def test_turns_survive_a_restart(home, library, fake_config):
         )
     restarted = Runs(library, home)
     assert turn_of(library, run) == Turn(
-        "Summarize two courses.", "answered", FAN_OUT_ANSWER, None
+        "Summarize two courses.", "answered", FAN_OUT_SHOWN, None
     )
     assert [event async for event in restarted.events(run)] == events
 

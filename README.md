@@ -107,7 +107,9 @@ chat's folder imports too.
   that the Library changes the run made are kept, and to try again or ask in smaller steps. A sub-agent it ends says
   the same on its row in the tree, and the agent that started it is told so in those words.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,
-  `2*3*4`). Raw HTML shows as text, an image as a link (never loaded), and links open in a new tab; a link to a file
+  `2*3*4`). An agent's answer given as a dict or list of text and numbers (`{'letter': …, 'repairs': […]}`) shows as
+  a bold-labelled section per key and bullets, its text's line breaks as line breaks; any other that isn't text shows
+  as Python writes it. Raw HTML shows as text, an image as a link (never loaded), and links open in a new tab; a link to a file
   in the chat's folder, which the app doesn't serve, shows as text with its address. A long prompt or answer shows its
   first lines with **show all**; a run that ran out of turns says so in plain words: the agent used all its turns
   without answering, the Library changes the run made are kept, and to ask again in smaller steps.

@@ -13,6 +13,7 @@ import inspect
 import json
 import logging
 import math
+import numbers
 import os
 import re
 import select
@@ -85,6 +86,13 @@ LEFT_OUT_NOW: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
     "left_out_now", default=()
 )
 WHY_CHARS = 300
+# What a run's answer that isn't text holds to show as sections and bullets (`readable`).
+LEAVES = (str, numbers.Number, type(None))
+SEQUENCES = (list, tuple)  # not a namedtuple, whose items would lose their names
+NESTED_LEVELS = 2
+MOST_ENTRIES = 100
+BULLET_INDENT = "  "
+ENTRY_SEPARATOR = "; "
 # The engine's message when a reply has no <repl> block, word for word, and the same
 # sent as the app's: read as the user's, it had the model apologise to the user for it.
 NO_REPL_NOTE = (
@@ -179,6 +187,89 @@ def unquote(answer_repr: str) -> str:
     except (ValueError, SyntaxError, MemoryError, RecursionError):
         return answer_repr
     return value if isinstance(value, str) else answer_repr
+
+
+def readable(answer: Any) -> str:
+    """A run's final answer as the user reads it: text as it is; a dict as a section per
+    key and a list as bullets, of text, numbers and None nested one level at most, text
+    as written; anything else, or empty, or past MOST_ENTRIES entries in all, as its
+    repr."""
+    if isinstance(answer, str):
+        return answer
+    is_container = isinstance(answer, dict) or type(answer) in SEQUENCES
+    if not (
+        is_container
+        and answer
+        and is_simple(answer, NESTED_LEVELS)
+        and entries(answer) <= MOST_ENTRIES
+    ):
+        return repr(answer)
+    if isinstance(answer, dict):
+        return "\n\n".join(section(key, value) for key, value in answer.items())
+    return bullets(answer)
+
+
+def is_simple(value: Any, levels: int) -> bool:
+    """Whether *value* is text, a number or None, or, within *levels* of nesting, a dict
+    keyed by those or a list of them."""
+    if isinstance(value, LEAVES):
+        return True
+    if levels == 0:
+        return False
+    if isinstance(value, dict):
+        return all(
+            isinstance(key, LEAVES) and is_simple(item, levels - 1)
+            for key, item in value.items()
+        )
+    return type(value) in SEQUENCES and all(
+        is_simple(item, levels - 1) for item in value
+    )
+
+
+def entries(value: Any) -> int:
+    """How many keys and items *value* holds, all the way down."""
+    if isinstance(value, dict):
+        value = list(value.values())
+    elif type(value) not in SEQUENCES:
+        return 0
+    return len(value) + sum(map(entries, value))
+
+
+def section(key: Any, value: Any) -> str:
+    """A dict answer's *key* as a bold label, then its *value*: on the same line when
+    that is one line of text, else below it."""
+    name = label(key)
+    if isinstance(value, LEAVES) or not value:
+        text = str(value)
+        return f"**{name}**\n\n{text}" if "\n" in text else f"**{name}:** {text}"
+    return f"**{name}**\n\n{bullets(value)}"
+
+
+def bullets(value: dict | list | tuple) -> str:
+    """A dict or list as Markdown bullets, a dict's each labelled."""
+    if isinstance(value, dict):
+        lines = [f"**{label(key)}:** {in_a_line(item)}" for key, item in value.items()]
+    else:
+        lines = [in_a_line(item) for item in value]
+    return "\n".join(f"- {line}".replace("\n", "\n" + BULLET_INDENT) for line in lines)
+
+
+def in_a_line(value: Any) -> str:
+    """A list's item: text or a number as it is; a dict's or list's entries side by side."""
+    if isinstance(value, dict) and value:
+        return ENTRY_SEPARATOR.join(
+            f"**{label(key)}:** {item}" for key, item in value.items()
+        )
+    if type(value) in SEQUENCES and value:
+        return ENTRY_SEPARATOR.join(map(str, value))
+    return str(value)
+
+
+def label(key: Any) -> str:
+    """A dict's key as a label: its words, an underscore as a space, the first a capital
+    when all are lowercase, so a name such as eBay or VAT stays as written."""
+    words = " ".join(str(key).replace("_", " ").split())
+    return words[:1].upper() + words[1:] if words.islower() else words
 
 
 def cost_of(model: str, usage: dict[str, Any], base_url: str) -> float | None:
@@ -886,7 +977,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     if reasoner.stopped:
         recorder.end_turn("stopped", None, None)
         finish(reasoner)
-    text = answer if isinstance(answer, str) else repr(answer)
+    text = readable(answer)
     if reasoner.exhausted:
         detail = exhausted_detail(recorder.changes_made, text)
         recorder.end_turn("exhausted", text, detail)

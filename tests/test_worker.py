@@ -5,6 +5,7 @@ import re
 import signal
 import subprocess
 import sys
+from decimal import Decimal
 
 import httpx
 import openai
@@ -25,6 +26,7 @@ from openai.resources.chat.completions import AsyncCompletions
 from deep_reasoning import worker
 from deep_reasoning.runs import LEFT_OUT
 from deep_reasoning.worker import (
+    MOST_ENTRIES,
     REPEATED_NOTE,
     SENT_OUTPUT_CHARS,
     Recorder,
@@ -35,6 +37,7 @@ from deep_reasoning.worker import (
     failure_detail,
     final_answer_of,
     output_of,
+    readable,
     tool_line,
     with_apps_notes,
 )
@@ -556,6 +559,61 @@ def test_a_stdin_that_cant_be_read_ends_the_worker_as_its_end_does(tmp_path):
 )
 def test_the_final_answer_is_read_from_a_cells_output(output, answer):
     assert final_answer_of(output) == answer
+
+
+LETTER = "Dear Tom,\n\nYour rent is due on Friday.\nThanks,\nAnna"
+
+
+@pytest.mark.parametrize(
+    ("answer", "shown"),
+    [
+        ("Rent is due.", "Rent is due."),
+        (
+            {"letter": LETTER, "ring_first": "the plumber"},
+            (
+                "**Letter**\n\nDear Tom,\n\nYour rent is due on Friday.\nThanks,\nAnna"
+                "\n\n**Ring first:** the plumber"
+            ),
+        ),
+        (["boiler", "smoke alarm\nin 3B", 2], "- boiler\n- smoke alarm\n  in 3B\n- 2"),
+        (
+            {"rent": 1200, "late_fee": Decimal("42.50"), "paid": 0.5, "note": None},
+            "**Rent:** 1200\n\n**Late fee:** 42.50\n\n**Paid:** 0.5\n\n**Note:** None",
+        ),
+        (
+            {"overdue": ["boiler", "smoke alarm"], "tom": {"unit": "3B", "owes": 1200}},
+            (
+                "**Overdue**\n\n- boiler\n- smoke alarm"
+                "\n\n**Tom**\n\n- **Unit:** 3B\n- **Owes:** 1200"
+            ),
+        ),
+        ({"VAT": 190, "eBay_fees": 12}, "**VAT:** 190\n\n**eBay fees:** 12"),
+        (
+            [{"unit": "3B", "days_overdue": 12}, ("4A", "boiler")],
+            "- **Unit:** 3B; **Days overdue:** 12\n- 4A; boiler",
+        ),
+    ],
+)
+def test_a_dict_or_list_answer_shows_as_sections_and_bullets(answer, shown):
+    assert readable(answer) == shown
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        object(),
+        {"a", "b"},
+        {"letter": object()},
+        {"deep": {"deeper": {"deepest": 1}}},
+        [[["three levels"]]],
+        list(range(MOST_ENTRIES + 1)),
+        {"rows": list(range(MOST_ENTRIES))},
+        {},
+        [],
+    ],
+)
+def test_any_other_answer_shows_as_its_repr(answer):
+    assert readable(answer) == repr(answer)
 
 
 def test_cached_input_is_billed_at_its_own_rate():
