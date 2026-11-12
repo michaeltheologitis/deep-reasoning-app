@@ -50,6 +50,7 @@ from openai.resources.chat.completions import AsyncCompletions
 from deep_reasoning.app_tools import CLAUDE_CODE
 from deep_reasoning.library import (
     EXAMPLES_STORED_IN,
+    TOLD_LAST,
     count,
     granted_in,
     in_chain_order,
@@ -657,6 +658,21 @@ def leaving_out_unrendered(
     agent.DeepReasonerAgentBase._start = started
 
 
+def telling_last(line: str | None) -> None:
+    """Tell *line* last, once, to every agent the engine gives its namespace's
+    instructions (not one a cell starts with instructions= of its own): no namespace's
+    suffix can, as an agent's is its chain's, root's first."""
+    if not line:
+        return
+    rendered_instructions = agent._rendered_instructions
+
+    def with_line(system_prompt: Any, suffix: str | None, render_ctx: dict) -> list:
+        told = "\n\n".join(filter(None, [suffix, line]))
+        return rendered_instructions(system_prompt, told, render_ctx)
+
+    agent._rendered_instructions = with_line
+
+
 def end_group() -> NoReturn:
     """SIGKILL the worker's process group, the worker included. Nothing it started may
     outlive it: a child a cell forked holds the events pipe, and so the run, open."""
@@ -779,6 +795,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     configure_structlog_fixture(console=False, extra_processors=[recorder])
     keep_app_logs_out_of_cells()
     leaving_out_unrendered(recorder, spec["config"].get(EXAMPLES_STORED_IN, {}))
+    telling_last(spec["config"].get(TOLD_LAST))
     threading.Thread(target=read_commands, args=(stdin, stop), daemon=True).start()
     # A tool that doesn't build while the run builds the config's tools, at its start,
     # stops every run; one that doesn't later is that run's own failure.
