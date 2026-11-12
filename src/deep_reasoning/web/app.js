@@ -199,7 +199,8 @@ function renderPrompt(turn) {
 // A run out of turns has no answer: the engine's words saying so show as its failure.
 function renderTurnAnswer(turn) {
   if (turn.answer == null) return null;
-  if (turn.outcome === "exhausted") return out(turn.answer, { tone: "warn", full: true });
+  // the engine's words, led by the worker's plain ones in a run recorded since it gave them
+  if (turn.outcome === "exhausted") return out(turn.detail ? failureView(turn.detail) : turn.answer, { tone: "warn", full: true });
   return clamped(turn, "answer", turn.answer, () => renderAnswer(turn.answer));
 }
 

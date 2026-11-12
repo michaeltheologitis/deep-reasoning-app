@@ -22,6 +22,7 @@ from deep_reasoning.worker import (
     Recorder,
     build_failure,
     cost_of,
+    exhausted_detail,
     failure_detail,
     final_answer_of,
     output_of,
@@ -29,6 +30,7 @@ from deep_reasoning.worker import (
 )
 
 ROOT, CHILD = 1, 2
+MAX_ITER = 30
 # The engine's own, as it is before a run names any tool: tool_line words lines as it does.
 ENGINE_DESCRIBE = func.describe
 OPENAI_URL = "https://api.openai.com/v1"
@@ -238,7 +240,7 @@ def test_the_engines_note_of_a_reply_with_no_repl_block_is_sent_as_the_apps(
         sent.append(kwargs["messages"])
 
     monkeypatch.setattr(AsyncCompletions, "create", create)
-    worker.counting_calls(new_recorder(io.StringIO()))
+    worker.counting_calls(new_recorder(io.StringIO()), MAX_ITER)
     note = engines_no_repl_turn("The answer is 4.")
     conversation = [
         {"role": "system", "content": "Answer in Python."},
@@ -679,6 +681,22 @@ def test_a_run_ended_by_the_provider_says_what_it_means_first(
     assert failure_detail(error, changes) == (f"{lead}\n{words}" if lead else words)
 
 
+@pytest.mark.parametrize(
+    ("changes", "kept"),
+    [
+        (0, ""),
+        (1, " The 1 change this run made to the Library is kept."),
+        (9, " The 9 changes this run made to the Library are kept."),
+    ],
+)
+def test_a_run_out_of_turns_says_what_it_means_first(changes, kept):
+    sentence = "Agent failed to produce a final answer within 30 iterations."
+    assert exhausted_detail(30, changes, sentence) == (
+        f"The agent used all 30 of its turns without answering.{kept} Ask it to go on,"
+        f" or ask in smaller steps.\n{sentence}"
+    )
+
+
 def test_a_run_ended_by_anything_else_says_it_in_the_engines_words():
     assert failure_detail(ValueError("no rows"), 3) == "ValueError: no rows"
 
@@ -691,7 +709,7 @@ def test_a_failed_model_call_carries_how_long_it_waited(monkeypatch):
         raise failed
 
     monkeypatch.setattr(AsyncCompletions, "create", create)
-    worker.counting_calls(new_recorder(io.StringIO()))
+    worker.counting_calls(new_recorder(io.StringIO()), MAX_ITER)
     with pytest.raises(openai.InternalServerError):
         asyncio.run(AsyncCompletions.create(None, model="m", messages=[]))
     assert failed.seconds_waited >= 0.05

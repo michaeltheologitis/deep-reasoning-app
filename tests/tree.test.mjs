@@ -244,6 +244,13 @@ test("a run the worker says a provider ended leads with its words, the provider'
   assert.deepEqual([said, between, own.className, own.textContent], [lead, "\n", "raw", "InternalServerError: upstream request failed"]);
 });
 
+test("a run that ran out of turns leads with the worker's words, the engine's sentence after, dim", () => {
+  const lead = "The agent used all 30 of its turns without answering. Ask it to go on, or ask in smaller steps.";
+  const sentence = "Agent failed to produce a final answer within 30 iterations.";
+  const [said, between, own] = failureView(`${lead}\n${sentence}`);
+  assert.deepEqual([said, between, own.className, own.textContent], [lead, "\n", "raw", sentence]);
+});
+
 test("any other run's failure over lines is shown as it is, read as no words of the worker's", () => {
   const details = [
     "Tool broken doesn't build: build raised RuntimeError: no index\nIt is granted in units.",

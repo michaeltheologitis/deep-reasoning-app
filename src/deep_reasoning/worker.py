@@ -108,6 +108,34 @@ BAD_REQUEST = 400
 REFUSED_CODES = frozenset({"invalid_prompt"})
 KEPT = "The {changes} this run made to the Library {are} kept."
 AGAIN = "Try again, or ask in smaller steps."
+# A run whose agent used every turn without answering is led by what that means, on a
+# line of its own beginning OUT_OF_TURNS_LEAD, as the page reads it (exhausted_detail()).
+OUT_OF_TURNS_LEAD = "The agent used all"
+GO_ON = "Ask it to go on, or ask in smaller steps."
+OBSERVATION_TAG = "<observation>"
+# Lines a cell's output holds that print nothing: blank, or the engine's for no output.
+NOTHING_PRINTED = frozenset({"", "(no output)"})
+# A helper that printed a file started its task again from the top on its next turn, up
+# to its last: a cell printing this much of what its agent already printed gets
+# REPEATED_NOTE, which the model reads as soon as it repeats itself.
+MOSTLY_PRINTED_BEFORE = 0.8
+# A cell's output reaches the model as a user's message, so a model took a list it had
+# printed for the user's own words and answered it ("Understood.").
+OWN_OUTPUT_NOTE = (
+    "(An automated note from the app, not the user: this is what your last cell printed,"
+    " which the user never sees; you keep it and its variables.)"
+)
+REPEATED_NOTE = (
+    "(An automated note from the app, not the user: this cell printed what an earlier"
+    " one already had, and you still have that and its variables: don't read or work it"
+    " out again. Answer from it now with FinalAnswer, or go on to the next step from it.)"
+)
+TURNS_LEFT_WARNED = 3
+TURNS_LEFT_NOTE = (
+    f"(An automated note from the app, not the user: you have {TURNS_LEFT_WARNED} turns"
+    " left. Finish now with FinalAnswer, saying what you did, what you found and what is"
+    " left to do.)"
+)
 
 
 def source_of(reply: str) -> str | None:
@@ -201,6 +229,76 @@ def failure_detail(error: BaseException, changes: int) -> str:
         [KEPT.format(changes=made, are=plural(changes, "is", "are"))] if changes else []
     )
     return f"{' '.join([lead, *kept, AGAIN])}\n{words}"
+
+
+def exhausted_detail(max_iter: int, changes: int, sentence: str) -> str:
+    """Why a run ended without an answer when its agent used all *max_iter* turns, led
+    by what it means, the *changes* to the Library the run made, which stay, and what to
+    do; then the engine's *sentence*."""
+    lead = f"{OUT_OF_TURNS_LEAD} {max_iter} of its turns without answering."
+    made = count(changes, "change")
+    kept = (
+        [KEPT.format(changes=made, are=plural(changes, "is", "are"))] if changes else []
+    )
+    return f"{' '.join([lead, *kept, GO_ON])}\n{sentence}"
+
+
+def in_drive(message: dict[str, Any]) -> bool:
+    """Whether *message* is one of an agent's drive's own: its turn, a cell's output or
+    the engine's note on a turn with no <repl> block."""
+    content = message.get("content")
+    return (
+        message.get("role") == "assistant"
+        or message == NO_REPL_TURN
+        or (isinstance(content, str) and content.startswith(OBSERVATION_TAG))
+    )
+
+
+def drive_start(messages: list[dict[str, Any]]) -> int:
+    """Where the agent's drive begins in a call's *messages*: after its task, before
+    which come its instructions, its worked examples and any conversation it carries on,
+    whose cells' outputs may match the live ones."""
+    at = len(messages)
+    while at and in_drive(messages[at - 1]):
+        at -= 1
+    return at
+
+
+def printed_lines(observation: str) -> set[str]:
+    lines = {line.strip() for line in output_of(observation).splitlines()}
+    return lines - NOTHING_PRINTED
+
+
+def with_apps_notes(
+    messages: list[dict[str, Any]], max_iter: int
+) -> list[dict[str, Any]]:
+    """*messages* as a chat call sends them: the engine's no-<repl> note as the app's,
+    and, in the agent's drive, OWN_OUTPUT_NOTE after each cell's output, REPEATED_NOTE
+    after one that is mostly what the drive printed before, and TURNS_LEFT_NOTE after the
+    turn that leaves it TURNS_LEFT_WARNED. Each message's notes depend only on those
+    before it, so every call of a drive sends the same beginning as the last, which
+    providers cache."""
+    start = drive_start(messages)
+    sent = [APPS_NO_REPL_TURN if m == NO_REPL_TURN else m for m in messages]
+    printed: set[str] = set()
+    turns = 0
+    for at in range(start, len(messages)):
+        message = messages[at]
+        if message["role"] == "assistant":
+            turns += 1
+            continue
+        notes = []
+        if message != NO_REPL_TURN:
+            notes.append(OWN_OUTPUT_NOTE)
+            lines = printed_lines(message["content"])
+            if lines and len(lines & printed) >= MOSTLY_PRINTED_BEFORE * len(lines):
+                notes.append(REPEATED_NOTE)
+            printed |= lines
+        if turns == max_iter - TURNS_LEFT_WARNED:
+            notes.append(TURNS_LEFT_NOTE)
+        if notes:
+            sent[at] = sent[at] | {"content": "\n".join([sent[at]["content"], *notes])}
+    return sent
 
 
 def tool_line(name: str, value: Any, description: str) -> str:
@@ -633,21 +731,18 @@ def keep_app_logs_out_of_cells() -> None:
     app_logs.propagate = False
 
 
-def counting_calls(recorder: Recorder) -> None:
+def counting_calls(recorder: Recorder, max_iter: int) -> None:
     """Tell *recorder* of each chat call the run starts: the engine logs only those that
     finish. Each call's messages go with any half of a character escaped: a cell's output
-    may hold one, which the call couldn't send; and with the engine's note that a reply
-    had no <repl> block labeled as the app's, in what is sent only. A call the provider
-    fails carries how long it waited (seconds_waited), for failure_detail()."""
+    may hold one, which the call couldn't send; and with the app's notes for agents of
+    *max_iter* turns (with_apps_notes()), in what is sent only. A call the provider fails
+    carries how long it waited (seconds_waited), for failure_detail()."""
     create = AsyncCompletions.create
 
     async def counted(self: AsyncCompletions, *args: Any, **kwargs: Any) -> Any:
         # Before the count: a call escaped() raised on was never sent.
         if "messages" in kwargs:
-            kwargs["messages"] = [
-                APPS_NO_REPL_TURN if message == NO_REPL_TURN else message
-                for message in escaped(kwargs["messages"])
-            ]
+            kwargs["messages"] = with_apps_notes(escaped(kwargs["messages"]), max_iter)
         recorder.call_started()
         started = time.monotonic()
         try:
@@ -680,7 +775,6 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     recorder = Recorder(out, on_root_start=stop_if_asked, base_url=base_url)
     configure_structlog_fixture(console=False, extra_processors=[recorder])
     keep_app_logs_out_of_cells()
-    counting_calls(recorder)
     leaving_out_unrendered(recorder, spec["config"].get(EXAMPLES_STORED_IN, {}))
     threading.Thread(target=read_commands, args=(stdin, stop), daemon=True).start()
     # A tool that doesn't build while the run builds the config's tools, at its start,
@@ -689,6 +783,7 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     chats_folder = os.getcwd()
     try:
         config = V2Config.model_validate(spec["config"])
+        counting_calls(recorder, config.max_iter)
         naming_tools()
         reasoner, alias = build_reasoner(config, run_dir=folder)
         # A tool's module may move the working folder as it loads: cells run in the chat's.
@@ -716,9 +811,12 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     if reasoner.stopped:
         recorder.end_turn("stopped", None, None)
         finish(reasoner)
-    outcome = "exhausted" if reasoner.exhausted else "answered"
     text = answer if isinstance(answer, str) else repr(answer)
-    recorder.end_turn(outcome, text, None)
+    if reasoner.exhausted:
+        detail = exhausted_detail(config.max_iter, recorder.changes_made, text)
+        recorder.end_turn("exhausted", text, detail)
+    else:
+        recorder.end_turn("answered", text, None)
     finish(reasoner)
 
 
