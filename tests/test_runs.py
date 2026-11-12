@@ -377,6 +377,24 @@ async def test_the_folders_modules_import_but_never_shadow_installed_ones(
     assert events[-1]["outcome"] == "answered", events[-1]
 
 
+async def test_the_agents_python_has_scipy_and_statsmodels_for_statistics(
+    home, library, fake_config
+):
+    # Without them, an agent wrote its own t-distribution and gave p = 0.632 for a
+    # slope's t of 1.2584 on 5 degrees of freedom, whose p is 0.264.
+    fit = repl(
+        "import statsmodels.formula.api",
+        "from scipy import stats",
+        "print(round(2 * stats.t.sf(1.2584, 5), 3))",
+    )
+    plan = {"Fit it.": [fit, repl("FinalAnswer('fitted')")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        _, events = await run_to_the_end(
+            Runs(library, home), "Fit it.", fake_config(fake)
+        )
+    assert of_kind(events, "cell.end")[0]["output"] == "0.264"
+
+
 async def test_a_run_gets_its_vars_exactly_as_the_yaml_typed_them(
     home, library, fake_config
 ):
@@ -527,6 +545,24 @@ async def test_a_run_whose_first_call_fails_ends_with_that_call_unfinished(
     assert of_kind(events, "usage") == []
     end = events[-1]
     assert (end["outcome"], end["cost"], end["unfinished_calls"]) == ("failed", 0, 1)
+
+
+async def test_the_note_that_a_reply_had_no_repl_block_reaches_the_model_as_the_apps(
+    home, library, fake_config
+):
+    def answer_once_noted(messages):
+        noted = messages[-1]["content"].startswith("(An automated note from the app,")
+        return repl("FinalAnswer(4)") if noted else "It is 4."
+
+    with FakeOpenAI(answer_once_noted) as fake:
+        _, events = await run_to_the_end(
+            Runs(library, home), "Add 2 and 2.", fake_config(fake)
+        )
+    assert len(fake.calls) == 2
+    assert (events[-1]["outcome"], events[-1]["answer"]) == ("answered", "4")
+    # The run records the reply as a thought, and nothing of the note.
+    assert of_kind(events, "think")[0]["text"] == "It is 4."
+    assert all("note from the app" not in str(event) for event in events)
 
 
 async def test_each_call_costs_what_its_server_says_it_cost(home, library, fake_config):

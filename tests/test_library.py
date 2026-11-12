@@ -1202,6 +1202,13 @@ def test_root_is_told_to_pass_the_message_as_written_only_in_its_examples(
     assert "ctx.task" not in namespaces[HISTORIAN].system_suffix
 
 
+def test_roots_suffix_says_how_to_compute_statistics_and_to_name_the_files_written():
+    # An agent's own t-distribution gave a wrong p-value, and a helper that rewrote the
+    # user's file said it had left it unchanged.
+    assert "statistics with scipy or statsmodels, never a distribution" in ROOT_SUFFIX
+    assert "Change the user's own files only when asked, and say which" in ROOT_SUFFIX
+
+
 @pytest.mark.parametrize("example", HISTORIANS, ids=lambda example: example.name)
 def test_the_historian_reads_history_then_answers_in_a_later_cell(example):
     handing_off, reading, *working, answering = [
