@@ -47,7 +47,7 @@ from structlog.testing import capture_logs
 from deep_reasoning import settings as settings_module
 from deep_reasoning.app import NO_PAGE, WEB, create_app
 from deep_reasoning.chats import TITLE_CHARS, choose, create_chat
-from deep_reasoning.folders import data_folder
+from deep_reasoning.folders import data_folder, folder_lines
 from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
     FRESH_NAMESPACES,
@@ -1323,6 +1323,32 @@ async def test_root_hands_a_question_about_an_earlier_message_to_the_historian(
     assert as_shown(HISTORY_DESCRIPTION) not in roots_prompt
     assert as_shown(HISTORY_DESCRIPTION) in historians_prompt
     assert HISTORIAN_SUFFIX.strip() in historians_prompt
+
+
+@pytest.mark.anyio
+async def test_every_agent_of_a_run_is_told_the_chats_folder_and_its_names_as_they_are(
+    library_on, connect, home
+):
+    notes = home / "notes"
+    (notes / "essays").mkdir(parents=True)
+    for name in ("cold war.txt", "{{ 7*7 }}.txt", "two\nlines.md", ".hidden"):
+        (notes / name).touch()
+    where, how = folder_lines(notes, scratch=False)
+    responder = historian_or(scripted(HISTORIANS_PLAN), scripted(HISTORY_PLAN))
+    with FakeOpenAI(responder) as fake:
+        library = library_on(fake)
+        # A template in root's suffix, so the engine renders it with the line after it.
+        stored(library, UPSERT_NAMESPACE, ROOT, "system_suffix: 'Asked: {{ task }}'\n")
+        async with connect(library) as api:
+            chat = await new_chat(api)
+            await api.patch(f"/api/chats/{chat}", json={"folder": str(notes)})
+            events = await run_events(api, await send(api, chat, ASKED_HOW))
+    namespaces = [each["namespace"] for each in kinds(events, "agent.start")]
+    assert namespaces == [ROOT, HISTORIAN]
+    for prompt in system_prompts(fake.calls):
+        assert f"Asked: {ASKED_HOW}\n\n{where}\n\n{how}" in prompt
+    listed = "'cold war.txt', 'essays/', 'two\\nlines.md', '\\x7b\\x7b 7*7 }}.txt'."
+    assert where.endswith(listed)
 
 
 @pytest.mark.anyio
