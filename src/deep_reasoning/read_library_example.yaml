@@ -3,9 +3,22 @@ messages:
   - {role: user, content: "What does the historian's suffix say?"}
   - role: assistant
     content: |
-      <think>Read the historian as the Library resolves it, each suffix its agents get with where it comes from, and answer with them as the tool returns them, never retyped: the user sees only my answer.</think>
+      <think>Read the historian as its agents get it: each system_suffix, with where it comes from. A cell shows only what it prints, so print the start of each, then answer in the next cell from the values themselves, never retyped.</think>
       <repl>
-      fields = {field["label"]: field["items"] for field in library.show("historian")["fields"]}
-      told = [f"{each['value']}\n({each['source']})" for each in fields["System suffix"]]
-      FinalAnswer("The historian's agents are told:\n\n" + "\n\n".join(told))
+      told = {field["label"]: field["items"] for field in library.show("historian")["fields"]}["System suffix"]
+      for each in told:
+          print(f"{each['source']}: {each['value'][:50]}…")
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      inherited from root: You are an agent of Deep Reasoning, an app on the …
+      set here: You are the historian: you answer questions about …
+      added by the app at run time: You are in the historian namespace. Whatever is sa…
+      </observation>
+  - role: assistant
+    content: |
+      <think>Three texts: root's, the historian's own, and the line the app adds. Answer with each whole, from the variable.</think>
+      <repl>
+      FinalAnswer("The historian's agents are told:\n\n" + "\n\n".join(f"{each['value']}\n({each['source']})" for each in told))
       </repl>

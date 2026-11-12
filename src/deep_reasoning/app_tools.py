@@ -323,10 +323,11 @@ READ_ONLY_HERE = jinja2.Template(
     " grant library, so the tool refuses every write, here and in any sub-agent. Asked"
     " for a change, don't try it: answer, with FinalAnswer, what you would change, in"
     " the user's words, and that the user should {{ pick }} and ask there. A lasting wish"
-    " (always remember X) is a helper you would make there, or add to theirs; only if"
-    " they want it in every chat, say root, which every chat builds on, only the user"
-    " changes, in the Library panel: Namespaces → root → Edit YAML for its instructions,"
-    " Decompositions for its examples.",
+    ' ("always remember X", "from now on") is for a helper, which you can\'t make here:'
+    " say to {{ pick }} and ask for a helper that remembers it, or to add it to one of"
+    " theirs. Say nothing of root, which every chat builds on and only the user changes"
+    " in the Library panel, unless they ask for every chat in so many words. This"
+    " replaces any line above on wishes.",
     undefined=jinja2.StrictUndefined,
 )
 NOT_LOCAL = (

@@ -1,0 +1,36 @@
+name: what a change did
+messages:
+  - {role: user, content: "I changed astronomy in the Library panel. Can you see what I changed?"}
+  - role: assistant
+    content: |
+      <think>What changed, the panel's edits included, is in the Library's record of changes, not in this chat's messages, which are all the historian reads. List the newest changes, a line each, to find it.</think>
+      <repl>
+      for change in library.changes()[:3]:
+          print(change)
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      {'id': 2, 'when': 'today 14:16', 'by': 'the Library panel', 'done': 'changed', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'fields': ['system_suffix']}
+      {'id': 1, 'when': 'today 14:05', 'by': 'this chat', 'turn': 1, 'done': 'added', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'fields': ['system_suffix']}
+      </observation>
+  - role: assistant
+    content: |
+      <think>Change 2, by the Library panel, changed astronomy's system_suffix. A line names only the fields: read the change whole for its before and after.</think>
+      <repl>
+      suffix = library.changes(id=2)["changed"]["system_suffix"]
+      print("before:", suffix["before"])
+      print("after:", suffix["after"])
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      before: Answer in one sentence.
+      after: Answer in one sentence. Give distances in light-years.
+      </observation>
+  - role: assistant
+    content: |
+      <think>The panel edit added one sentence and kept the rest.</think>
+      <repl>
+      FinalAnswer('Yes: in the Library panel you added "Give distances in light-years." to astronomy\'s instructions, after "Answer in one sentence.", which is unchanged.')
+      </repl>
