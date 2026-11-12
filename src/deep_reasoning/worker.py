@@ -127,6 +127,16 @@ REPEATED_NOTE = (
     " one already had, and you still have that and its variables: don't read or work it"
     " out again. Answer from it now with FinalAnswer, or go on to the next step from it.)"
 )
+# A few hundred rows go whole; a till export printed whole overran the model's context.
+SENT_OUTPUT_CHARS = 50_000
+# Of each end kept: whole lines must keep more than this, or the cut goes mid-line.
+WHOLE_LINES_KEEP = 0.5
+CUT_NOTE = (
+    "(An automated note from the app, not the user: the middle {left:,} of this output's"
+    " {total:,} characters are left out here{how}, too many to send you. Print only what"
+    " you need from it: a summary, a count, or the rows you want.)"
+)
+MID_LINE = ", cut mid-line"
 TURNS_LEFT_WARNED = 3
 TURNS_LEFT_NOTE = (
     f"(An automated note from the app, not the user: you have {TURNS_LEFT_WARNED} turns"
@@ -280,23 +290,44 @@ def printed_lines(output: str) -> set[str]:
 
 
 def repeats(output: str, printed: set[str]) -> bool:
-    """Whether a cell's *output*, no error and long enough to be worth reading again, is
-    mostly the *printed* lines its drive printed before."""
-    if len(output.strip()) < REREAD_CHARS or raised_error(output) is not None:
+    """Whether a cell's *output*, long enough to be worth reading again, is mostly the
+    *printed* lines its drive printed before."""
+    if len(output.strip()) < REREAD_CHARS:
         return False
     lines = printed_lines(output)
     return len(lines & printed) >= MOSTLY_PRINTED_BEFORE * len(lines)
+
+
+def cut(output: str) -> str:
+    """A cell's *output* past SENT_OUTPUT_CHARS as a call sends it: its start and end,
+    half that each, around CUT_NOTE; each at a line break when its whole lines keep most
+    of it, as a huge line (one-line JSON, a list's repr) would leave next to nothing."""
+    half = SENT_OUTPUT_CHARS // 2
+    head, tail = output[:half], output[-half:]
+    lines_head, lines_tail = head.rpartition("\n")[0], tail.partition("\n")[2]
+    # The line breaks either side of the cut, which the note's own line puts back.
+    breaks = 0
+    if len(lines_head) > WHOLE_LINES_KEEP * half:
+        head, breaks = lines_head, breaks + 1
+    if len(lines_tail) > WHOLE_LINES_KEEP * half:
+        tail, breaks = lines_tail, breaks + 1
+    note = CUT_NOTE.format(
+        left=len(output) - len(head) - len(tail) - breaks,
+        total=len(output),
+        how="" if breaks == 2 else MID_LINE,
+    )
+    return f"{head}\n{note}\n{tail}"
 
 
 def with_apps_notes(
     messages: list[dict[str, Any]], max_iter: int
 ) -> list[dict[str, Any]]:
     """*messages* as a chat call sends them: the engine's no-<repl> note as the app's,
-    and, in the agent's drive, OWN_OUTPUT_NOTE after each cell's output, REPEATED_NOTE
-    after one that is mostly what the drive printed before, and TURNS_LEFT_NOTE after the
-    turn that leaves it TURNS_LEFT_WARNED. Each message's notes depend only on those
-    before it, so every call of a drive sends the same beginning as the last, which
-    providers cache."""
+    and, in the agent's drive, each cell's output past SENT_OUTPUT_CHARS cut(), then
+    OWN_OUTPUT_NOTE after it, REPEATED_NOTE after one that raised nothing and is mostly
+    what the drive was sent before, and TURNS_LEFT_NOTE after the turn that leaves it TURNS_LEFT_WARNED.
+    Each message's notes depend only on those before it, so every call of a drive sends
+    the same beginning as the last, which providers cache."""
     start = drive_start(messages)
     sent = [APPS_NO_REPL_TURN if m == NO_REPL_TURN else m for m in messages]
     printed: set[str] = set()
@@ -309,7 +340,14 @@ def with_apps_notes(
         notes = []
         if message != NO_REPL_TURN:
             output = output_of(message["content"])
-            repeated = repeats(output, printed)
+            # Read whole: a cut may leave out the traceback.
+            failed = raised_error(output) is not None
+            if len(output) > SENT_OUTPUT_CHARS:
+                output = cut(output)
+                observation = f"<observation>\n{output}\n</observation>"
+                sent[at] = message | {"content": observation}
+            # What the model was sent: a cut-out line printed again is news to it.
+            repeated = not failed and repeats(output, printed)
             notes = [OWN_OUTPUT_NOTE, REPEATED_NOTE] if repeated else [OWN_OUTPUT_NOTE]
             printed |= printed_lines(output)
         if turns == max_iter - TURNS_LEFT_WARNED:
