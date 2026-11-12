@@ -1,13 +1,18 @@
+import ast
 import errno
 import os
+import re
 
 import pytest
 from structlog.testing import capture_logs
 
 from deep_reasoning.folders import (
     GONE,
+    READ_ENTRIES,
+    SHOWN_NAMES,
     FolderError,
     chosen_folder,
+    folder_lines,
     list_folders,
     remove_unless_kept,
     scratch_folder,
@@ -170,3 +175,87 @@ def test_a_kept_folder_that_is_a_symlink_loop_does_not_stop_the_delete(app_home,
     with_sentinel(app_home / "work" / CHAT)
     remove_unless_kept(scratch_folder(app_home, CHAT), [str(loop)])
     assert not (app_home / "work" / CHAT).exists()
+
+
+def how_to_pick(button):
+    return (
+        "There is no upload: for files that aren't in this chat's folder, ask the user to"
+        f" click {button!r} under the message box and pick the folder holding them."
+    )
+
+
+def quoted_names(where):
+    """The names a folder line lists, read back as Python reads them."""
+    listed = where.split("(a / marks a folder): ", 1)[1].removesuffix(".")
+    return ast.literal_eval(f"[{listed}]")
+
+
+def test_the_folder_lines_name_the_folder_what_it_holds_but_hidden_ones_and_its_button(
+    code,
+):
+    where = (
+        f"This chat's working folder is {str(code)!r}, the user's own, holding (a /"
+        " marks a folder): 'Notes/', 'thesis/', 'todo.txt'."
+    )
+    assert folder_lines(code, scratch=False) == (where, how_to_pick("code"))
+
+
+def test_the_folder_lines_say_a_scratch_folder_is_the_chats_own_and_empty(app_home):
+    scratch = working_folder(app_home, {"id": CHAT, "folder": None})
+    where = (
+        f"This chat's working folder is {str(scratch)!r}, the chat's own scratch folder,"
+        " not one of the user's: it is empty."
+    )
+    assert folder_lines(scratch, scratch=True) == (where, how_to_pick("scratch"))
+
+
+def test_an_empty_folder_of_the_users_is_said_to_be_empty(code):
+    where, _ = folder_lines(code / "thesis", scratch=False)
+    assert where.endswith(", the user's own: it is empty.")
+
+
+def test_a_folder_that_cannot_be_read_is_named_without_its_names(code, monkeypatch):
+    def refused(path):
+        raise PermissionError(errno.EACCES, "Permission denied", str(path))
+
+    monkeypatch.setattr(os, "scandir", refused)
+    where, _ = folder_lines(code, scratch=False)
+    assert where == f"This chat's working folder is {str(code)!r}, the user's own."
+
+
+@pytest.fixture
+def notes(home):
+    """~/notes, empty."""
+    folder = home / "notes"
+    folder.mkdir()
+    return folder
+
+
+def test_the_folder_line_lists_so_many_names_and_counts_the_rest(notes):
+    for number in range(SHOWN_NAMES + 5):
+        (notes / f"part{number:03}.txt").touch()
+    where, _ = folder_lines(notes, scratch=False)
+    assert quoted_names(where.replace(", and 5 more", "")) == [
+        f"part{number:03}.txt" for number in range(SHOWN_NAMES)
+    ]
+
+
+def test_a_huge_folder_is_read_only_so_far_and_says_there_are_more(notes):
+    for number in range(READ_ENTRIES + 1):
+        (notes / f"{number}.txt").touch()
+    where, _ = folder_lines(notes, scratch=False)
+    assert where.endswith(f", and over {READ_ENTRIES - SHOWN_NAMES} more.")
+
+
+def test_names_from_the_users_disk_read_back_whole_and_hold_no_template(home):
+    folder = home / "{% notes %}"
+    folder.mkdir()
+    names = ["{{ 7*7 }}.txt", "{% raw %}", "{#", "two\nlines.md", "it's.md", "<repl>"]
+    for name in names:
+        (folder / name).touch()
+    os.mkdir(os.fsencode(folder / "caf") + b"\xe9")  # a name that isn't UTF-8
+    where, how = folder_lines(folder, scratch=False)
+    assert "\n" not in where + how
+    assert not re.search(r"\{[{%#]", where + how)
+    assert sorted(quoted_names(where)) == sorted([*names, "caf\udce9/"])
+    assert "click '\\x7b% notes %}' under" in how

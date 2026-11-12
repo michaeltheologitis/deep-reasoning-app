@@ -35,6 +35,7 @@ from deep_reasoning.folders import (
     chosen_folder,
     data_folder,
     folder_gone,
+    folder_lines,
     holds_files,
     list_folders,
     remove_unless_kept,
@@ -562,7 +563,10 @@ def create_app(library, home):
             # A run's folder is named by its id.
             run = run_folder.name
             tools = run_folder / "tools"
-            config = engine_config(library, namespace, tools, chat["id"], run, names)
+            told = folder_lines(folder, scratch=chat["folder"] is None)
+            config = engine_config(
+                library, namespace, tools, chat["id"], run, names, told
+            )
             return config | {"model": model["name"], "client": client}
 
         run = runs.start(

@@ -647,6 +647,43 @@ def test_run_lines_are_inherited_shown_in_the_panel_and_never_stored(team, tmp_p
     assert its_own["source"] == "added by the app at run time"
 
 
+# What a run tells its agents of the chat's folder: where it is, and how to pick another.
+WHERE = "This chat's working folder is '/home/me/notes', the user's own: it is empty."
+HOW = "There is no upload: ask the user to click 'notes' under the message box."
+
+
+def told_of_the_folder(library, tmp_path, entry):
+    """Each namespace's system_suffix, as its agents get it, in a run entering *entry*."""
+    tools = tmp_path / "tools"
+    config = engine_config(library, entry, tools, CHAT, RUN, folder_lines=(WHERE, HOW))
+    registry = build_namespace_registry(V2Config.model_validate(config | CHATS_MODEL))
+    return {name: registry.resolve(name).system_suffix for name in registry.names}
+
+
+def test_every_agent_is_told_where_the_chats_folder_is_once_after_roots_suffix(
+    team, tmp_path
+):
+    told = told_of_the_folder(team, tmp_path, "planner")
+    assert {HISTORIAN, LIBRARIAN, "searcher.deep", "planner.team"} <= told.keys()
+    assert {name: suffix.count(WHERE) for name, suffix in told.items()} == (
+        dict.fromkeys(told, 1)
+    )
+    assert told[ROOT] == f"{ROOT_SUFFIX.rstrip()}\n\n{WHERE}"
+
+
+def test_the_agents_of_the_namespace_a_run_enters_are_told_last_how_to_pick_a_folder(
+    team, tmp_path
+):
+    from_root = told_of_the_folder(team, tmp_path, ROOT)
+    from_planner = told_of_the_folder(team, tmp_path, "planner")
+    assert from_root[ROOT].endswith(f"\n\n{HOW}")
+    assert from_planner["planner"].endswith(f"\n\n{HOW}")
+    # Root's lines reach every namespace, the planner's those under it.
+    assert {suffix.count(HOW) for suffix in from_root.values()} == {1}
+    told = {name for name, suffix in from_planner.items() if HOW in suffix}
+    assert told == {"planner", "planner.team"}
+
+
 def test_each_namespace_but_root_is_told_which_it_is(library, tmp_path):
     with closing(open_library(library)) as connection:
         add_namespace(connection, "statistician", "system_suffix: Compute.\n")

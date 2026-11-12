@@ -6,6 +6,7 @@ user chose is never deleted. Paths reach the page with your home folder written 
 """
 
 import hashlib
+import itertools
 import os
 import re
 import shutil
@@ -13,6 +14,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+import jinja2
 import structlog
 
 from deep_reasoning.chats import CHAT_ID
@@ -25,6 +27,27 @@ FILES = "files"
 PATH_DIGITS = 16
 HOME = "~"
 GONE = "That folder no longer exists — pick another."
+# What every agent of a run is told of the chat's folder: so many of its names at most,
+# from so many entries read, so a huge folder costs nothing.
+SHOWN_NAMES = 40
+READ_ENTRIES = 1_000
+FOLDER_LINE = jinja2.Template(
+    "This chat's working folder is {{ path }}, {% if scratch %}the chat's own scratch"
+    " folder, not one of the user's{% else %}the user's own{% endif %}{% if not read %}."
+    "{% elif names %}, holding (a / marks a folder): {{ names | join(', ') }}"
+    "{% if more %}, and {% if cut %}over {% endif %}{{ more }} more{% endif %}."
+    "{% else %}: it is empty.{% endif %}",
+    undefined=jinja2.StrictUndefined,
+)
+# Said last to the agents answering the user: told it among root's lines, they still asked
+# the user to paste or upload a file, 4 runs of 4. The folder button under the message box
+# shows the folder's name, or this for a scratch folder.
+SCRATCH = "scratch"
+PICK_LINE = jinja2.Template(
+    "There is no upload: for files that aren't in this chat's folder, ask the user to"
+    " click {{ button }} under the message box and pick the folder holding them.",
+    undefined=jinja2.StrictUndefined,
+)
 
 
 class FolderError(ValueError):
@@ -154,6 +177,56 @@ def working_folder(data: Path, chat: dict[str, Any]) -> Path:
     scratch = scratch_folder(data, chat["id"])
     scratch.mkdir(parents=True, exist_ok=True)
     return scratch
+
+
+def folder_lines(folder: Path, scratch: bool) -> tuple[str, str]:
+    """What a run tells its agents of the chat's working *folder*, its *scratch* folder
+    or one the user picked: where it is and the names in it, which every agent is told;
+    and how the user picks another, which those answering the user are told last."""
+    found = listing(folder)
+    names, whole = found or ([], True)
+    shown = [python_text(name) for name in names[:SHOWN_NAMES]]
+    where = FOLDER_LINE.render(
+        path=python_text(str(folder)),
+        scratch=scratch,
+        read=found is not None,
+        names=shown,
+        more=len(names) - len(shown),
+        cut=not whole,
+    )
+    button = SCRATCH if scratch else folder.name or str(folder)
+    return where, PICK_LINE.render(button=python_text(button))
+
+
+def listing(folder: Path) -> tuple[list[str], bool] | None:
+    """The names in *folder* but hidden ones, sorted, a folder's ending in /, from its
+    first READ_ENTRIES entries, and whether those were all; None when it can't be read."""
+    try:
+        with os.scandir(folder) as entries:
+            read = list(itertools.islice(entries, READ_ENTRIES + 1))
+    except OSError:
+        return None
+    names = [
+        marked(entry) for entry in read[:READ_ENTRIES] if not entry.name.startswith(".")
+    ]
+    return sorted(names, key=str.lower), len(read) <= READ_ENTRIES
+
+
+def marked(entry: os.DirEntry) -> str:
+    """*entry*'s name, with a / after a folder's."""
+    try:
+        is_folder = entry.is_dir()
+    except OSError:
+        is_folder = False
+    return f"{entry.name}/" if is_folder else entry.name
+
+
+def python_text(text: str) -> str:
+    """*text* as Python writes it, quoted, so a name from the user's disk reads whole
+    whatever it holds (a newline, a quote, bytes that aren't UTF-8) and copies into code
+    as it is; each { written \\x7b, as the engine renders the suffix it goes in as a
+    template."""
+    return repr(text).replace("{", "\\x7b")
 
 
 def holds_files(folder: Path) -> bool:
