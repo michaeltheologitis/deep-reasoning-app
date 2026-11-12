@@ -2887,6 +2887,21 @@ def test_each_librarian_write_records_its_change_as_this_chats_runs(fresh, info_
     } == {("chat", CHAT, CURRENT, "Helpers")}
 
 
+def test_a_librarian_write_that_changes_nothing_records_nothing(fresh):
+    tool = library_tool(fresh)
+    tool.write_decomposition("drafts", EXAMPLE)
+    tool.change_namespace("drafts", {"system_suffix": "Be brief."})
+    tool.write_tool("word_count", WORD_COUNT, "build")
+    recorded = tool.changes()
+    again = [
+        tool.write_decomposition("drafts", EXAMPLE),
+        tool.change_namespace("drafts", {"system_suffix": "Be brief."}),
+        tool.write_tool("word_count", WORD_COUNT, "build"),
+    ]
+    assert {each["done"] for each in again} == {NOTHING_CHANGED}
+    assert tool.changes() == recorded
+
+
 def test_changes_list_every_change_whoever_made_it_newest_first(fresh, tmp_path):
     titled(fresh, ANOTHER_CHAT, "Budget helpers")
     plant(fresh, CHAT, crafted())
