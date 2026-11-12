@@ -72,10 +72,10 @@ the chat whose run is going until it ends; open that chat and press Esc (on a to
 another tab started shows here, and stops here, but holds up nothing.
 
 **The agent's Python** runs on your computer by default, unsandboxed, in the chat's working folder, with the app's
-own Python packages: numpy, pandas (with tabulate, so `to_markdown()` works) and requests are there; scipy, sympy
-and matplotlib are not. Add packages by starting the app with them: `uv run --with scipy --with sympy
-deep-reasoning`; the agent never installs one itself, but names the one it lacks. A module file in the chat's folder
-imports too.
+own Python packages: numpy, pandas (with tabulate, so `to_markdown()` works), scipy, statsmodels and requests are
+there; sympy and matplotlib are not. Add packages by starting the app with them: `uv run --with sympy --with
+matplotlib deep-reasoning`; the agent never installs one itself, but names the one it lacks. A module file in the
+chat's folder imports too.
 
 ## What it supports
 
@@ -230,8 +230,9 @@ imports too.
   reach every chat's run (a key saved in settings goes only to its own provider's chats), so one that reads any
   other key is refused, as it would stop the chats that lack it.
 - A new Library's root has a `system_suffix`, which every namespace inherits, telling agents about the app and how to
-  answer, leaving their failed cells and the app's notes on their replies' format out of it; read, edit or delete it
-  in the panel.
+  answer: statistics with scipy or statsmodels, your own files changed only when you ask, naming each file written,
+  and leaving their failed cells and the app's notes on their replies' format out of it; read, edit or delete it in
+  the panel. Such a note, sent when a reply has no cell, goes to the model marked as the app's, not yours.
 
 **The librarian**
 - In a chat in `librarian`, the agent adds or edits worked examples, adds namespaces and changes their

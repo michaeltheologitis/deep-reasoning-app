@@ -12,6 +12,7 @@ from deep_reasoner.v2.cli import V2Config, build_reasoner, close_run
 from deep_reasoner.v2.messages import code, func
 from deep_reasoner.v2.repl_coro import REPL
 from genai_prices import Usage, calc_price
+from openai.resources.chat.completions import AsyncCompletions
 
 from deep_reasoning import worker
 from deep_reasoning.runs import LEFT_OUT
@@ -214,6 +215,44 @@ def test_the_conversation_is_never_forwarded():
     )
     assert all("messages" not in event for event in events)
     assert all("the whole prompt" not in json.dumps(event) for event in events)
+
+
+def engines_no_repl_turn(reply):
+    """The message deep_reasoner sends its model after *reply*, which has no <repl> block."""
+    reasoner = agent.DeepReasoner(llm="gpt-6-luna")
+    reasoner._build_neural()
+    asyncio.run(reasoner.after_think(reply))
+    [note] = reasoner._llm._pending
+    return note.to_llm()
+
+
+def test_the_engines_note_of_a_reply_with_no_repl_block_is_sent_as_the_apps(
+    monkeypatch,
+):
+    sent = []
+
+    async def create(self, **kwargs):
+        sent.append(kwargs["messages"])
+
+    monkeypatch.setattr(AsyncCompletions, "create", create)
+    worker.counting_calls(new_recorder(io.StringIO()))
+    note = engines_no_repl_turn("The answer is 4.")
+    conversation = [
+        {"role": "system", "content": "Answer in Python."},
+        {"role": "user", "content": "What is 2 + 2?"},
+        {"role": "assistant", "content": "The answer is 4."},
+        note,
+    ]
+    asyncio.run(AsyncCompletions.create(None, model="m", messages=conversation))
+    [messages] = sent
+    assert messages[:3] == conversation[:3]
+    assert messages[3] == {
+        "role": "user",
+        "content": "(An automated note from the app, not the user, who sees none of"
+        f" this: {note['content']})",
+    }
+    # The engine's own conversation, which its log records, keeps the note as it was.
+    assert conversation[3] == note
 
 
 def test_a_tools_model_call_is_priced_for_its_agent_but_is_not_a_thought():

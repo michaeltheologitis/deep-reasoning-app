@@ -15,6 +15,9 @@ dependencies = [
     "pydantic>=2.14.1",
     "python-dotenv>=1.2.4",
     "pyyaml>=6.0.3",
+    # for the agent's Python: statistics, which it would otherwise work out by hand
+    "scipy>=1.18.1",
+    "statsmodels>=0.15.0",
     "structlog>=25.5.0",
     # for the agent's Python: pandas' DataFrame.to_markdown() needs it
     "tabulate>=0.10.0",
