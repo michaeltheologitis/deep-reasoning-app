@@ -1,16 +1,16 @@
-{"seq": 1, "t": 1794180254.277243, "kind": "turn.start", "run": "20261108-232414-267410", "chat": "recorded", "prompt": "Tally the votes.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261108-232414-267410"}
-{"seq": 2, "t": 1794180255.1509626, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Tally the votes.", "namespace": "root", "drive": 1}
-{"seq": 3, "t": 1794180255.2327304, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1864, "tokens_out": 6, "cost": 0.00187}
-{"seq": 4, "t": 1794180255.232984, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Count them.', namespace='tallying'))"}
-{"seq": 5, "t": 1794180255.2386286, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Count them.", "namespace": "tallying", "drive": 1}
-{"seq": 6, "t": 1794180255.2387726, "kind": "example.left_out", "node": 2, "name": "tally", "namespace": "tallying", "why": "ZeroDivisionError: division by zero", "from": "tallying"}
-{"seq": 7, "t": 1794180255.2985158, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1906, "tokens_out": 4, "cost": 0.0019099999999999998}
-{"seq": 8, "t": 1794180255.2986925, "kind": "cell.start", "node": 2, "cell": 2, "code": "FinalAnswer(4)"}
-{"seq": 9, "t": 1794180255.2995093, "kind": "cell.end", "node": 2, "cell": 2, "code": "FinalAnswer(4)", "output": "FinalAnswer: 4", "status": "done"}
-{"seq": 10, "t": 1794180255.2996347, "kind": "agent.end", "node": 2, "status": "done", "result": "4", "detail": null}
-{"seq": 11, "t": 1794180255.3011217, "kind": "cell.end", "node": 1, "cell": 1, "code": "print(subagent('Count them.', namespace='tallying'))", "output": "4", "status": "done"}
-{"seq": 12, "t": 1794180255.3070672, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1872, "tokens_out": 4, "cost": 0.0018759999999999998}
-{"seq": 13, "t": 1794180255.3072107, "kind": "cell.start", "node": 1, "cell": 3, "code": "FinalAnswer('tallied')"}
-{"seq": 14, "t": 1794180255.307497, "kind": "cell.end", "node": 1, "cell": 3, "code": "FinalAnswer('tallied')", "output": "FinalAnswer: 'tallied'", "status": "done"}
-{"seq": 15, "t": 1794180255.307567, "kind": "agent.end", "node": 1, "status": "done", "result": "tallied", "detail": null}
-{"seq": 16, "t": 1794180255.3076158, "kind": "turn.end", "outcome": "answered", "answer": "tallied", "detail": null, "unfinished_calls": 0, "cost": 0.005656, "seconds": 1.0303728580474854}
+{"seq": 1, "t": 1794475295.380824, "kind": "turn.start", "run": "20261112-092135-369834", "chat": "recorded", "prompt": "Tally the votes.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261112-092135-369834"}
+{"seq": 2, "t": 1794475296.5930848, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Tally the votes.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794475296.684733, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1950, "tokens_out": 6, "cost": 0.001956}
+{"seq": 4, "t": 1794475296.6850393, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Count them.', namespace='tallying'))"}
+{"seq": 5, "t": 1794475296.6917973, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Count them.", "namespace": "tallying", "drive": 1}
+{"seq": 6, "t": 1794475296.691953, "kind": "example.left_out", "node": 2, "name": "tally", "namespace": "tallying", "why": "ZeroDivisionError: division by zero", "from": "tallying"}
+{"seq": 7, "t": 1794475296.7491348, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1979, "tokens_out": 4, "cost": 0.001983}
+{"seq": 8, "t": 1794475296.749291, "kind": "cell.start", "node": 2, "cell": 2, "code": "FinalAnswer(4)"}
+{"seq": 9, "t": 1794475296.7502115, "kind": "cell.end", "node": 2, "cell": 2, "code": "FinalAnswer(4)", "output": "FinalAnswer: 4", "status": "done"}
+{"seq": 10, "t": 1794475296.7503016, "kind": "agent.end", "node": 2, "status": "done", "result": "4", "detail": null}
+{"seq": 11, "t": 1794475296.7515147, "kind": "cell.end", "node": 1, "cell": 1, "code": "print(subagent('Count them.', namespace='tallying'))", "output": "4", "status": "done"}
+{"seq": 12, "t": 1794475296.7583444, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1958, "tokens_out": 4, "cost": 0.0019619999999999998}
+{"seq": 13, "t": 1794475296.7584887, "kind": "cell.start", "node": 1, "cell": 3, "code": "FinalAnswer('tallied')"}
+{"seq": 14, "t": 1794475296.7589643, "kind": "cell.end", "node": 1, "cell": 3, "code": "FinalAnswer('tallied')", "output": "FinalAnswer: 'tallied'", "status": "done"}
+{"seq": 15, "t": 1794475296.7591488, "kind": "agent.end", "node": 1, "status": "done", "result": "tallied", "detail": null}
+{"seq": 16, "t": 1794475296.7592251, "kind": "turn.end", "outcome": "answered", "answer": "tallied", "detail": null, "unfinished_calls": 0, "cost": 0.005901, "seconds": 1.3784010410308838}

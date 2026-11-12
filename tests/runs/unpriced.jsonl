@@ -1,25 +1,25 @@
-{"seq": 1, "t": 1794136958.393839, "kind": "turn.start", "run": "20261108-112238-369726", "chat": "recorded", "prompt": "Summarize two courses.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261108-112238-369726"}
-{"seq": 2, "t": 1794136959.4878762, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Summarize two courses.", "namespace": "root", "drive": 1}
-{"seq": 3, "t": 1794136959.586565, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1339, "tokens_out": 16, "cost": null}
-{"seq": 4, "t": 1794136959.5867496, "kind": "think", "node": 1, "text": "Fan out."}
-{"seq": 5, "t": 1794136959.586851, "kind": "cell.start", "node": 1, "cell": 1, "code": "r = run_all({c: anext(subagent().send(f'Summarize {c}.')) for c in ['C1', 'C2']})\nprint(r)"}
-{"seq": 6, "t": 1794136959.5894136, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Summarize C1.", "namespace": "root", "drive": 1}
-{"seq": 7, "t": 1794136959.5914702, "kind": "agent.start", "node": 3, "parent": 1, "cell": 1, "task": "Summarize C2.", "namespace": "root", "drive": 1}
-{"seq": 8, "t": 1794136959.631885, "kind": "usage", "node": 3, "model": "gpt-6-luna", "own": true, "tokens_in": 1338, "tokens_out": 6, "cost": null}
-{"seq": 9, "t": 1794136959.6320434, "kind": "think", "node": 3, "text": "Easy."}
-{"seq": 10, "t": 1794136959.632078, "kind": "cell.start", "node": 3, "cell": 2, "code": "FinalAnswer('C2: 4')"}
-{"seq": 11, "t": 1794136959.6324441, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1338, "tokens_out": 7, "cost": null}
-{"seq": 12, "t": 1794136959.632548, "kind": "cell.start", "node": 2, "cell": 3, "code": "print('C1 has 3 credits')"}
-{"seq": 13, "t": 1794136959.6336768, "kind": "cell.end", "node": 3, "cell": 2, "code": "FinalAnswer('C2: 4')", "output": "FinalAnswer: 'C2: 4'", "status": "done"}
-{"seq": 14, "t": 1794136959.6338606, "kind": "agent.end", "node": 3, "status": "done", "result": "C2: 4", "detail": null}
-{"seq": 15, "t": 1794136959.6344635, "kind": "cell.end", "node": 2, "cell": 3, "code": "print('C1 has 3 credits')", "output": "C1 has 3 credits", "status": "done"}
-{"seq": 16, "t": 1794136959.6398618, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1350, "tokens_out": 5, "cost": null}
-{"seq": 17, "t": 1794136959.639976, "kind": "cell.start", "node": 2, "cell": 4, "code": "FinalAnswer('C1: 3')"}
-{"seq": 18, "t": 1794136959.640404, "kind": "cell.end", "node": 2, "cell": 4, "code": "FinalAnswer('C1: 3')", "output": "FinalAnswer: 'C1: 3'", "status": "done"}
-{"seq": 19, "t": 1794136959.6406052, "kind": "agent.end", "node": 2, "status": "done", "result": "C1: 3", "detail": null}
-{"seq": 20, "t": 1794136959.6418576, "kind": "cell.end", "node": 1, "cell": 1, "code": "r = run_all({c: anext(subagent().send(f'Summarize {c}.')) for c in ['C1', 'C2']})\nprint(r)", "output": "{'C1': 'C1: 3', 'C2': 'C2: 4'}", "status": "done"}
-{"seq": 21, "t": 1794136959.64735, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1362, "tokens_out": 4, "cost": null}
-{"seq": 22, "t": 1794136959.6474571, "kind": "cell.start", "node": 1, "cell": 5, "code": "FinalAnswer(r)"}
-{"seq": 23, "t": 1794136959.6478622, "kind": "cell.end", "node": 1, "cell": 5, "code": "FinalAnswer(r)", "output": "FinalAnswer: {'C1': 'C1: 3', 'C2': 'C2: 4'}", "status": "done"}
-{"seq": 24, "t": 1794136959.6479685, "kind": "agent.end", "node": 1, "status": "done", "result": "{'C1': 'C1: 3', 'C2': 'C2: 4'}", "detail": null}
-{"seq": 25, "t": 1794136959.6480074, "kind": "turn.end", "outcome": "answered", "answer": "{'C1': 'C1: 3', 'C2': 'C2: 4'}", "detail": null, "unfinished_calls": 0, "cost": null, "seconds": 1.2541685104370117}
+{"seq": 1, "t": 1794475270.7969384, "kind": "turn.start", "run": "20261112-092110-789398", "chat": "recorded", "prompt": "Summarize two courses.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261112-092110-789398"}
+{"seq": 2, "t": 1794475271.949389, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Summarize two courses.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794475272.057684, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1950, "tokens_out": 16, "cost": null}
+{"seq": 4, "t": 1794475272.0578454, "kind": "think", "node": 1, "text": "Fan out."}
+{"seq": 5, "t": 1794475272.0579226, "kind": "cell.start", "node": 1, "cell": 1, "code": "r = run_all({c: anext(subagent().send(f'Summarize {c}.')) for c in ['C1', 'C2']})\nprint(r)"}
+{"seq": 6, "t": 1794475272.0607548, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Summarize C1.", "namespace": "root", "drive": 1}
+{"seq": 7, "t": 1794475272.0619283, "kind": "agent.start", "node": 3, "parent": 1, "cell": 1, "task": "Summarize C2.", "namespace": "root", "drive": 1}
+{"seq": 8, "t": 1794475272.1167397, "kind": "usage", "node": 3, "model": "gpt-6-luna", "own": true, "tokens_in": 1949, "tokens_out": 6, "cost": null}
+{"seq": 9, "t": 1794475272.1168609, "kind": "think", "node": 3, "text": "Easy."}
+{"seq": 10, "t": 1794475272.1169062, "kind": "cell.start", "node": 3, "cell": 2, "code": "FinalAnswer('C2: 4')"}
+{"seq": 11, "t": 1794475272.1170282, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1949, "tokens_out": 7, "cost": null}
+{"seq": 12, "t": 1794475272.1171002, "kind": "cell.start", "node": 2, "cell": 3, "code": "print('C1 has 3 credits')"}
+{"seq": 13, "t": 1794475272.1183124, "kind": "cell.end", "node": 3, "cell": 2, "code": "FinalAnswer('C2: 4')", "output": "FinalAnswer: 'C2: 4'", "status": "done"}
+{"seq": 14, "t": 1794475272.1185033, "kind": "agent.end", "node": 3, "status": "done", "result": "C2: 4", "detail": null}
+{"seq": 15, "t": 1794475272.119268, "kind": "cell.end", "node": 2, "cell": 3, "code": "print('C1 has 3 credits')", "output": "C1 has 3 credits", "status": "done"}
+{"seq": 16, "t": 1794475272.1261353, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1961, "tokens_out": 5, "cost": null}
+{"seq": 17, "t": 1794475272.1262457, "kind": "cell.start", "node": 2, "cell": 4, "code": "FinalAnswer('C1: 3')"}
+{"seq": 18, "t": 1794475272.1265872, "kind": "cell.end", "node": 2, "cell": 4, "code": "FinalAnswer('C1: 3')", "output": "FinalAnswer: 'C1: 3'", "status": "done"}
+{"seq": 19, "t": 1794475272.1266706, "kind": "agent.end", "node": 2, "status": "done", "result": "C1: 3", "detail": null}
+{"seq": 20, "t": 1794475272.1278255, "kind": "cell.end", "node": 1, "cell": 1, "code": "r = run_all({c: anext(subagent().send(f'Summarize {c}.')) for c in ['C1', 'C2']})\nprint(r)", "output": "{'C1': 'C1: 3', 'C2': 'C2: 4'}", "status": "done"}
+{"seq": 21, "t": 1794475272.1340137, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1973, "tokens_out": 4, "cost": null}
+{"seq": 22, "t": 1794475272.1341226, "kind": "cell.start", "node": 1, "cell": 5, "code": "FinalAnswer(r)"}
+{"seq": 23, "t": 1794475272.1344907, "kind": "cell.end", "node": 1, "cell": 5, "code": "FinalAnswer(r)", "output": "FinalAnswer: {'C1': 'C1: 3', 'C2': 'C2: 4'}", "status": "done"}
+{"seq": 24, "t": 1794475272.1345747, "kind": "agent.end", "node": 1, "status": "done", "result": "{'C1': 'C1: 3', 'C2': 'C2: 4'}", "detail": null}
+{"seq": 25, "t": 1794475272.1346385, "kind": "turn.end", "outcome": "answered", "answer": "{'C1': 'C1: 3', 'C2': 'C2: 4'}", "detail": null, "unfinished_calls": 0, "cost": null, "seconds": 1.3377001285552979}
