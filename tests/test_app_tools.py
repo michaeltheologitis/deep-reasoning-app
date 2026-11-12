@@ -57,6 +57,7 @@ from deep_reasoning.app_tools import (
     open_existing,
     secret_refusal,
 )
+from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
     CHANGED_MEANWHILE,
     FIELDS_MAPPING,
@@ -68,6 +69,7 @@ from deep_reasoning.library import (
     LIBRARIANS_EXAMPLES,
     LIBRARY_DESCRIPTION,
     MAX_YAML_CHARS,
+    PANEL,
     ROOTS_EXAMPLES,
     TOO_LONG_ROW,
     UNREAD_DECOMPOSITION,
@@ -77,12 +79,16 @@ from deep_reasoning.library import (
     YAML_NOT_TEXT,
     LibraryError,
     add_namespace,
+    by_chat,
     change_namespace,
+    delete_decomposition,
     delete_namespace,
     dump,
     left_out_note,
     open_library,
     parsed,
+    read_changes,
+    record,
     writing,
 )
 from deep_reasoning.pages import MAX_PAGE_CHARS, read_page
@@ -2800,28 +2806,134 @@ def test_changes_list_this_chats_library_changes_in_its_messages(library):
     }
 
 
-def test_changes_list_each_change_in_brief_what_where_and_in_which_message(library):
-    open_library(library).close()
-    plant(library, CHAT, recorded("namespaces"))
-    plant(library, CHAT, recorded("tools"))
-    first = {"turn": 1, "message": "Set up research."}
-    second = {"turn": 2, "message": "Make a word counter."}
-    research = {"what": "namespace", "namespace": "research", "name": "research"}
-    word_count = {"what": "tool", "name": "word_count"}
-    counting = {"what": "namespace", "namespace": "counting", "name": "counting"}
-    tool = library_tool(library)
+def titled(library, chat, title):
+    """A chat *chat* titled *title* in the app file."""
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(
+            "INSERT INTO chats (id, title, created) VALUES (?, ?, ?)",
+            (chat, title, time.time()),
+        )
+
+
+def test_each_librarian_write_records_its_change_as_this_chats_runs(fresh, info_logs):
+    titled(fresh, CHAT, "Helpers")
+    tool = library_tool(fresh)
+    with capture_logs() as logs:
+        tool.add_namespace("notes", "spawn: []\n")
+        tool.change_namespace("notes", {"system_suffix": "Be brief."})
+        tool.write_decomposition("drafts", EXAMPLE)
+        tool.write_tool("word_count", WORD_COUNT, "build")
+    logged = [entry for entry in logs if entry["event"] == "library.change"]
+    with closing(open_library(fresh)) as connection:
+        *recorded, drafts = read_changes(connection)
+    assert drafts["by"] == "panel"
+    assert [
+        (each["what"], each["name"], each["before"], each["after"]) for each in recorded
+    ] == [
+        (entry["what"], entry["name"], entry["before"], entry["after"])
+        for entry in reversed(logged)
+    ]
+    assert {
+        (each["by"], each["chat"], each["run"], each["label"]) for each in recorded
+    } == {("chat", CHAT, CURRENT, "Helpers")}
+
+
+def test_changes_list_every_change_whoever_made_it_newest_first(fresh, tmp_path):
+    titled(fresh, ANOTHER_CHAT, "Budget helpers")
+    plant(fresh, CHAT, crafted())
+    with closing(open_library(fresh)) as connection:
+        save_event(
+            connection,
+            CURRENT,
+            {"seq": 1, "t": 1.0, "kind": "turn.start"}
+            | {"prompt": "Go.", "run": CURRENT, "chat": CHAT},
+        )
+        add_namespace(
+            connection,
+            "budget",
+            "spawn: []\n",
+            by=by_chat(ANOTHER_CHAT, "20261027-110000-000000"),
+        )
+        config = tmp_path / "team.yaml"
+        config.write_text("max_iter: 3\n")
+        import_config(connection, config)
+        delete_namespace(connection, "budget", 0)
+    tool = library_tool(fresh)
+    tool.change_namespace("drafts", {"system_suffix": "Be brief."})
+    budget = {"what": "namespace", "namespace": "budget", "name": "budget"}
+    drafts = {"what": "namespace", "namespace": "drafts", "name": "drafts"}
+    max_iter = {"what": "setting", "name": "max_iter"}
+    deleted = {"id": 4, "when": "today", "by": "the Library panel", "done": "deleted"}
+    deleted |= budget
     assert tool.changes() == [
-        first | {"done": "added"} | research | {"fields": ["system_suffix", "vars"]},
-        first | {"done": "changed"} | research | {"fields": ["system_suffix"]},
-        second | {"done": "added"} | word_count,
-        second | {"done": "added"} | counting | {"fields": ["tools"]},
-        second | {"done": "changed"} | word_count,
+        {"id": 5, "when": "today", "by": "this chat", "turn": 2, "done": "changed"}
+        | drafts
+        | {"fields": ["system_suffix"]},
+        deleted | {"fields": ["spawn"]},
+        {"id": 3, "when": "today", "by": "an import of team.yaml", "done": "added"}
+        | max_iter,
+        {"id": 2, "when": "today", "by": 'the chat "Budget helpers"', "done": "added"}
+        | budget
+        | {"fields": ["spawn"]},
+        {"id": 1, "when": "today", "by": "the Library panel", "done": "added"}
+        | drafts
+        | {"fields": []},
     ]
-    assert [(each["turn"], each["name"]) for each in tool.changes(2)] == [
-        (2, "word_count"),
-        (2, "counting"),
-        (2, "word_count"),
+    assert tool.changes(id=4) == deleted | {
+        "before": "spawn: []\n",
+        "after": None,
+        "changed": {"spawn": {"before": [], "after": None}},
+    }
+
+
+def test_a_change_the_panel_made_is_undone_by_writing_its_before_back(fresh):
+    tool = library_tool(fresh)
+    name = tool.write_decomposition("drafts", EXAMPLE)["name"]
+    with closing(open_library(fresh)) as connection:
+        delete_decomposition(connection, "drafts", name, EXAMPLE)
+    [deleted, *_] = tool.changes()
+    assert (deleted["by"], deleted["done"], deleted["name"]) == (
+        "the Library panel",
+        "deleted",
+        name,
+    )
+    whole = tool.changes(id=deleted["id"])
+    assert whole["after"] is None
+    assert tool.write_decomposition("drafts", whole["before"])["done"] == "added"
+    assert stored_yaml(fresh, "drafts", name) == EXAMPLE
+
+
+def test_changes_list_the_newest_then_how_many_more_and_how_to_list_them(fresh):
+    rows = [
+        ("setting", None, f"s{each}", None, "1\n") for each in range(MAX_FOUND + 10)
     ]
+    with closing(open_library(fresh)) as connection, writing(connection):
+        record(connection, PANEL, rows)
+    # With fresh's own change first: ids 1 to 61.
+    tool = library_tool(fresh)
+    *lines, more = tool.changes()
+    assert [line["id"] for line in lines] == list(range(61, 11, -1))
+    note = "11 older not listed: changes(older_than=12) lists them."
+    assert more == {"more": 11, "note": note}
+    older = [line["id"] for line in tool.changes(older_than=12)]
+    assert older == list(range(11, 0, -1))
+
+
+@pytest.mark.parametrize(
+    ("asked", "refusal"),
+    [
+        ({"id": 99}, "There is no change 99: changes() lists them by id."),
+        ({"id": "1"}, "id should be a change's id, as changes() lists them."),
+        ({"id": True}, "id should be a change's id, as changes() lists them."),
+        (
+            {"older_than": 0},
+            "older_than should be a change's id, as changes() lists them.",
+        ),
+    ],
+)
+def test_a_change_that_isnt_there_says_which_are(fresh, asked, refusal):
+    with pytest.raises(ValueError, match=re.escape(refusal)):
+        library_tool(fresh).changes(**asked)
 
 
 def test_changes_of_a_message_are_whole_as_an_older_librarys_undo_example_reads_them(
@@ -2836,17 +2948,22 @@ def test_changes_of_a_message_are_whole_as_an_older_librarys_undo_example_reads_
     assert changed["after"] == RESEARCH_CHANGED
 
 
-def test_changes_in_brief_cut_a_long_message_short(fresh):
+def test_changes_of_a_message_give_it_whole(fresh):
     asked = "Set up research. " * 100
     added = {"kind": "library.change", "what": "namespace", "name": "research"}
     added |= {"namespace": "research", "before": None, "after": "tools: [llm]\n"}
     start, *rest = crafted(added)
     plant(fresh, CHAT, [start | {"prompt": asked}, *rest])
-    [brief] = library_tool(fresh).changes()
     [whole] = library_tool(fresh).changes(1)
-    cut_at = BRIEF_CHARS
-    assert brief["message"] == f"{asked[:cut_at]}…(+{len(asked) - cut_at:,} chars)"
     assert whole["message"] == asked
+
+
+def test_a_long_name_in_a_changes_line_is_cut_short(fresh):
+    name = "n" * (BRIEF_CHARS + 5)
+    with closing(open_library(fresh)) as connection, writing(connection):
+        record(connection, PANEL, [("setting", None, name, None, "1\n")])
+    [line, _] = library_tool(fresh).changes()
+    assert line["name"] == f"{name[:BRIEF_CHARS]}…(+5 chars)"
 
 
 def test_a_tools_before_written_back_restores_it_as_it_was(library):
@@ -2869,7 +2986,6 @@ def test_a_logged_tool_change_that_is_no_tools_row_reads_as_it_was_logged(librar
 
 
 def test_changes_in_a_chats_first_message_list_its_own_so_far(fresh):
-    assert library_tool(fresh).changes() == []
     # As this message's run saved it, when a cell has just written research.
     added = {"kind": "library.change", "what": "namespace", "name": "research"}
     added |= {"namespace": "research", "before": None, "after": "tools: [llm]\n"}

@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+import yaml
 from deep_reasoner.config import load_cli_config
 from deep_reasoner.namespaces import ROOT
 from deep_reasoner.v2.cli import (
@@ -32,6 +33,7 @@ from deep_reasoning.library import (
     engine_config,
     open_library,
     parsed,
+    read_changes,
     stored_config,
 )
 
@@ -307,6 +309,43 @@ def test_a_failed_import_leaves_the_library_unchanged(imported, tmp_path):
     with pytest.raises(ValueError, match='Tool "ghost" isn\'t in the Library'):
         import_into(imported, broken)
     assert dumped(imported) == before
+
+
+def recorded_in(library):
+    """The record's changes, oldest first: what, name, before, after, by and label."""
+    with closing(open_library(library)) as connection:
+        found = read_changes(connection)
+    keys = ("what", "name", "before", "after", "by", "label")
+    return [tuple(each[key] for key in keys) for each in reversed(found)]
+
+
+def test_an_import_records_each_change_it_makes_as_made_by_the_configs_file(
+    library, tmp_path
+):
+    written = config_file(
+        tmp_path,
+        "max_iter: 3\nnamespaces:\n  notes: {system_suffix: Be brief.}\n"
+        "  root: {tools: [llm], vars: {year: 2026}}\n",
+    )
+    import_into(library, written)
+    import_into(library, written)
+    by = ("import", "config.yaml")
+    setting, notes, root = recorded_in(library)
+    assert setting == ("setting", "max_iter", None, "3\n...\n", *by)
+    assert notes == ("namespace", "notes", None, "system_suffix: Be brief.\n", *by)
+    assert (root[:2], root[-2:]) == (("namespace", ROOT), by)
+    before, after = (yaml.safe_load(text) for text in root[2:4])
+    assert after == before | {"vars": {"year": 2026}}
+
+
+def test_an_import_refused_after_it_wrote_its_changes_records_none(library, tmp_path):
+    # The engine refuses the grant of a tool the Library doesn't hold once it is written.
+    broken = config_file(
+        tmp_path, "max_iter: 3\nnamespaces:\n  notes: {tools: [ghost]}\n"
+    )
+    with pytest.raises(ValueError, match='Tool "ghost" isn\'t in the Library'):
+        import_into(library, broken)
+    assert recorded_in(library) == []
 
 
 @pytest.mark.parametrize(

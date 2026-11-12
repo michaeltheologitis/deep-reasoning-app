@@ -1,7 +1,7 @@
 """The app file: the Library (every namespace, decomposition and custom tool, and the run
-settings) in one SQLite file, which also holds the chats, their runs' events and the app's
-own settings, so a copy of it carries the whole app but for the keys and the runs' working
-folders.
+settings) in one SQLite file, which also holds the chats, their runs' events, the app's
+own settings and the record of the Library's changes, so a copy of it carries the whole app
+but for the keys and the runs' working folders.
 
 Each Library row holds the engine's own YAML, so the file turns back into a deep_reasoner
 config at run start. chats.py, runs.py and settings.py keep the chats, the runs' events and
@@ -84,12 +84,14 @@ log = structlog.get_logger()
 WARNED = set()
 WARNINGS_KEPT = 4096
 
-SCHEMA_VERSION = 4
-# Version 1 held the Library alone, version 2 added the chats and the app's settings, and
-# version 3 the runs; a file of any opens and gains the tables of the versions after it.
+SCHEMA_VERSION = 5
+# Version 1 held the Library alone, version 2 added the chats and the app's settings,
+# version 3 the runs and version 4 the pages; a file of any opens and gains the tables of
+# the versions after it.
 LIBRARY_ONLY = 1
 BEFORE_EVENTS = 2
 BEFORE_PAGES = 3
+BEFORE_CHANGES = 4
 LIBRARY_SCHEMA = (
     "CREATE TABLE settings (key TEXT PRIMARY KEY, yaml TEXT NOT NULL)",
     "CREATE TABLE namespaces (name TEXT PRIMARY KEY, yaml TEXT NOT NULL)",
@@ -133,12 +135,26 @@ PAGE_SCHEMA = (
     ),
     "CREATE INDEX pages_by_chat ON pages (chat)",
 )
+CHANGE_TABLES = {"changes"}
+# The record of every change to the Library, newest last (id): when it was made, to which
+# row (what: namespace, decomposition, tool or setting; a decomposition's namespace, or a
+# namespace's own name; name), its text before and after (null when there was none), and
+# who made it (by): the panel, an import (label: the config's file name) or a chat (chat,
+# run, and label: its title then).
+CHANGE_SCHEMA = (
+    (
+        "CREATE TABLE changes (id INTEGER PRIMARY KEY, made REAL NOT NULL,"
+        " what TEXT NOT NULL, namespace TEXT, name TEXT NOT NULL, before TEXT, after TEXT,"
+        " by TEXT NOT NULL, chat TEXT, run TEXT, label TEXT)"
+    ),
+)
 # The tables each version added, and how.
 ADDED_IN = {
     LIBRARY_ONLY: (LIBRARY_TABLES, LIBRARY_SCHEMA),
     BEFORE_EVENTS: (APP_TABLES, APP_SCHEMA),
     BEFORE_PAGES: (RUN_TABLES, RUN_SCHEMA),
-    SCHEMA_VERSION: (PAGE_TABLES, PAGE_SCHEMA),
+    BEFORE_CHANGES: (PAGE_TABLES, PAGE_SCHEMA),
+    SCHEMA_VERSION: (CHANGE_TABLES, CHANGE_SCHEMA),
 }
 # Upserts keep a row's place, so decompositions stay in the order they were added.
 UPSERT_SETTING = "INSERT INTO settings VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET yaml = excluded.yaml"
@@ -184,8 +200,8 @@ LIBRARIAN_SUFFIX = """\
 You are the librarian, the namespace the user picks to change this app's Library, \
 which you do with the library tool. Your jobs: add namespaces and change their fields \
 (system_suffix, vars, tools, spawn); write worked examples into them; write custom \
-Python tools, try them, fix them and grant them; and undo the changes made in this chat. \
-Asked what you can do, say these jobs. Read before you write: library.show() lists the \
+Python tools, try them, fix them and grant them; and undo changes. Asked what you can \
+do, say these jobs. Read before you write: library.show() lists the \
 namespaces, library.tools() the tools. A spawn left unset means any namespace. For a \
 page about the Library, read it, and hand the historian, which makes pages but can't \
 read it, the request with every fact to show.
@@ -223,9 +239,10 @@ in its yaml from library.show(name). When the user gives a definition or answer 
 with one (churn is X divided by Y; one decimal), write it into its namespace's \
 system_suffix too, as a rule for every such question, and say so: agents keep to it \
 only there. Never type a repl tag inside your cell: the cell would end there and run \
-the example's code instead. To undo a change, find it with library.changes(), read its \
-message's whole with changes(turn) and write its before back; never write a before \
-from memory.
+the example's code instead. Asked what changed, answer from library.changes(), which \
+lists every change: in the panel, by an import and in every chat. To undo one, read it \
+whole with changes(id=...) and write its before back; never write a before from \
+memory.
 Say when a worked example disagrees with its namespace's suffix. Only the user can \
 change what the tool locks, or delete anything: say so plainly, and how, as the tool's \
 refusals and description do.
@@ -534,19 +551,25 @@ is shown, as a shared file's the engine can't read: name, yaml and problems).
 "the app's"), factory, settings, granted_in (the namespaces that grant it themselves), \
 description and source (a custom tool's Python, else None), each text cut after 200 \
 characters. tools(name) gives tool `name` whole.
-  library.changes(turn=None): what this chat changed in the Library, in each of its \
-messages (this one's so far included), each change in a line: turn, message (cut after \
-200 characters), done (added or changed), what (namespace, decomposition or tool), \
-namespace (but for a tool), name, and a namespace's fields (those it changed); what \
-other chats changed is listed under their answers, not here. changes(turn) gives \
-message `turn`'s (numbered from 1, the chat's first) whole: turn, message, what, \
-namespace, name, before (None when it was added) and after; a \
-namespace's with changed (each field it changed, before and after), and a tool's \
-before and after as {source, factory, settings}. To undo a change, read its message's \
-whole and write its before back, from the value changes() returned, never retyped: for a \
-namespace, each field it changed, change_namespace(name, {field: value["before"] for \
-field, value in change["changed"].items()}), which keeps what later changes set in \
-other fields; write_decomposition(namespace, change["before"]); write_tool(name, \
+  library.changes(): every change to the Library, whoever made it (in the Library \
+panel, by an import, in this chat or in another), newest first, each in a line: id, \
+when (today, yesterday or its date), by (the Library panel; an import of its file; \
+this chat, with turn, the number of its message that made it; or another chat, by its \
+title), done (added, changed or deleted), what (namespace, decomposition, tool or \
+setting, a run setting), namespace (a decomposition's, or the namespace itself), name, \
+and a namespace's fields (those it changed). At most 50, then {more, note}: \
+changes(older_than=id) lists those before change `id`. Asked what changed, answer from \
+these lines, never from a chat's messages, which miss the panel's, imports' and other \
+chats' changes. changes(id=id) gives change `id` whole: those fields, before (None when \
+it was added) and after (None when it was deleted); a namespace's with changed (each \
+field it changed, before and after), and a tool's before and after as {source, \
+factory, settings}. changes(turn) gives this chat's changes in its message `turn` \
+(numbered from 1, the chat's first) whole, as they were logged. To undo a change, read \
+it whole and write its before back, from the value changes() returned, never retyped: \
+for a namespace, each field it changed, change_namespace(name, {field: value["before"] \
+for field, value in change["changed"].items()}), which keeps what later changes set in \
+other fields, or add_namespace(name, change["before"]) for one deleted; \
+write_decomposition(namespace, change["before"]); write_tool(name, \
 **change["before"]). A change whose before is None added something, \
 and undoing it is deleting it, which this tool never does: the user can, in the Library \
 panel (a namespace in its Namespaces tab, a decomposition in its Decompositions tab, a \
@@ -1048,11 +1071,12 @@ def tool_text(name, text, source):
     return f"{text}# {tool_file(name)}\n{source}"
 
 
-def fitting(column):
-    """SQL reading *column* only when its bytes could hold MAX_YAML_CHARS characters, then
-    its size in bytes, NULL for NULL: length() of text would stop at a NUL."""
+def fitting(column, most=MAX_ROW_BYTES):
+    """SQL reading *column* only when it holds at most *most* bytes, by default as many
+    as MAX_YAML_CHARS characters could take, then its size in bytes, NULL for NULL:
+    length() of text would stop at a NUL."""
     size = f"length(CAST({column} AS BLOB))"
-    return f"CASE WHEN {size} <= {MAX_ROW_BYTES} THEN {column} END, {size}"
+    return f"CASE WHEN {size} <= {most} THEN {column} END, {size}"
 
 
 def row_text(text, size):
@@ -2691,12 +2715,215 @@ def decomposition_problems(decomposition, names):
     return example_problems(decomposition) + template_problems(decomposition, names)
 
 
-def add_decomposition(connection, namespace, text, replace=False, allowed=None):
+# Who made a change, as the record of changes keeps it: the panel, unless said otherwise.
+PANEL = {"by": "panel", "chat": None, "run": None, "label": None}
+# Each kind of row the record keeps, and where its text is: a tool's is its block, then
+# its Python (tool_text()).
+RECORDED = {
+    "namespace": ("namespaces", "name = :name"),
+    "decomposition": ("decompositions", "namespace = :namespace AND name = :name"),
+    "tool": ("tools", "name = :name"),
+    "setting": ("settings", "key = :name"),
+}
+CHANGE_KEYS = ("what", "namespace", "name", "before", "after")
+# The record keeps the newest changes, so the file doesn't grow without end: this many,
+# holding at most this many bytes of text before and after.
+CHANGES_KEPT = 1_000
+CHANGE_BYTES_KEPT = 50_000_000
+# A tool's text holds two rows, its block and its Python, and a line between.
+MAX_CHANGE_BYTES = 3 * MAX_ROW_BYTES
+# The panel lists this many of the newest changes, each text cut past this many
+# characters, as a change may be a million long.
+CHANGES_SHOWN = 30
+CHANGE_CHARS_SHOWN = 20_000
+# The latest time a change can have been made: the year 9999 begins, which a date shows
+# in any time zone.
+LAST_SECOND = 253_370_764_800
+ADD_CHANGE = (
+    "INSERT INTO changes (made, what, namespace, name, before, after, by, chat, run, label)"
+    " VALUES (:made, :what, :namespace, :name, :before, :after, :by, :chat, :run, :label)"
+)
+KEEP_NEWEST_CHANGES = f"""
+DELETE FROM changes WHERE id IN (
+    SELECT id FROM (
+        SELECT id, row_number() OVER newest AS place, sum(
+            coalesce(length(CAST(before AS BLOB)), 0)
+            + coalesce(length(CAST(after AS BLOB)), 0)
+        ) OVER newest AS bytes
+        FROM changes WINDOW newest AS (ORDER BY id DESC)
+    )
+    WHERE place > {CHANGES_KEPT} OR bytes > {CHANGE_BYTES_KEPT}
+)"""
+# A chat's title as it is now, else as it was when the change was made.
+READ_CHANGES = f"""
+SELECT change.id, change.made, change.what, change.namespace, change.name,
+    {fitting("change.before", MAX_CHANGE_BYTES)}, {fitting("change.after", MAX_CHANGE_BYTES)},
+    change.by, change.chat, change.run, coalesce(chat.title, change.label)
+FROM changes AS change LEFT JOIN chats AS chat ON chat.id = change.chat
+WHERE change.id < :older_than ORDER BY change.id DESC LIMIT :newest"""
+
+
+def by_import(path):
+    """Who made the changes of an import of the config at *path*, as record() takes it."""
+    return PANEL | {"by": "import", "label": Path(path).name}
+
+
+def by_chat(chat, run):
+    """Who made the changes of run *run* of *chat*, as record() takes it."""
+    return PANEL | {"by": "chat", "chat": chat, "run": run}
+
+
+def text_now(connection, what, namespace, name):
+    """The text of the Library's row *name* (of *namespace*, for a decomposition) of the
+    kind *what*, as the record of changes keeps it: a namespace's own YAML, a tool's
+    block then its Python, or for one too long or not text a note saying why; None when
+    there is none."""
+    table, where = RECORDED[what]
+    source = f", {fitting('source')}" if what == "tool" else ""
+    found = connection.execute(
+        f"SELECT {fitting('yaml')}{source} FROM {table} WHERE {where}",
+        {"namespace": namespace, "name": name},
+    ).fetchone()
+    if found is None:
+        return None
+    try:
+        text = row_text(*found[:2])
+        if what == "namespace":
+            return own_yaml(text)
+        if what == "tool" and found[3] is not None:
+            return tool_text(name, text, row_text(*found[2:]))
+    except LibraryError as error:
+        return left_out_note(str(error))
+    return text
+
+
+@contextmanager
+def recorded(connection, by, *rows):
+    """Record each of *rows*, (what, namespace, name), that the block changes, as made
+    *by* (record()); inside the caller's transaction, so a write it rolls back records
+    nothing."""
+    befores = [text_now(connection, *row) for row in rows]
+    yield
+    changes = [
+        (*row, before, text_now(connection, *row))
+        for row, before in zip(rows, befores, strict=True)
+    ]
+    record(connection, by, changes)
+
+
+def record(connection, by, changes):
+    """Add each of *changes*, (what, namespace, name, before, after), whose before and
+    after differ, to the record of changes, made *by*: PANEL, by_import() or by_chat(),
+    whose chat's title it reads. Then keep only the newest."""
+    made = {"made": time.time()} | by
+    if by["by"] == "chat":
+        found = connection.execute(
+            "SELECT title FROM chats WHERE id = ?", (by["chat"],)
+        ).fetchone()
+        made["label"] = found[0] if found and type(found[0]) is str else None
+    rows = [
+        made | dict(zip(CHANGE_KEYS, change, strict=True))
+        for change in changes
+        if change[-2] != change[-1]
+    ]
+    if rows:
+        connection.executemany(ADD_CHANGE, rows)
+        connection.execute(KEEP_NEWEST_CHANGES)
+
+
+def read_changes(connection, newest=CHANGES_KEPT, older_than=None):
+    """The record's changes, newest first: at most *newest* of them, and only those
+    before the one of id *older_than* when given. Each is checked as the app could have
+    written it, and one that isn't, as a shared file may hold, is left out with a
+    warning."""
+    rows = connection.execute(
+        READ_CHANGES,
+        {
+            "newest": newest,
+            "older_than": sys.maxsize if older_than is None else older_than,
+        },
+    )
+    found = []
+    for row in rows:
+        try:
+            found.append(checked_change(*row))
+        except LibraryError as error:
+            warn_left_out("changes", row[0], str(error))
+    return found
+
+
+def checked_change(
+    id, made, what, namespace, name, before, before_size, after, after_size, *maker
+):
+    """A row of the record as read_changes() reads it, as a dict; a LibraryError saying
+    why when the app couldn't have written it."""
+    by, chat, run, label = maker
+    texts = [change_text(before, before_size), change_text(after, after_size)]
+    when = type(made) in (int, float) and 0 <= made <= LAST_SECOND
+    named = type(name) is str and (
+        type(namespace) is str
+        if what in ("namespace", "decomposition")
+        else namespace is None
+    )
+    in_a_chat = by == "chat" and type(chat) is str and type(run) is str
+    made_by = by == "panel" or (by == "import" and type(label) is str) or in_a_chat
+    problems = [
+        type(id) is not int and "Its id isn't a number.",
+        not when and "Its time isn't one a change could be made at.",
+        what not in RECORDED and "It is a change to no kind of row the Library holds.",
+        not named and "Its name isn't text.",
+        texts == [None, None] and "It has no text, before or after.",
+        not made_by and "It says no panel, import or chat made it.",
+        type(label) not in (str, type(None)) and "Its title isn't text.",
+    ]
+    if why := next(filter(None, problems), None):
+        raise LibraryError(why)
+    return {
+        "id": id,
+        "made": made,
+        "what": what,
+        "namespace": namespace,
+        "name": name,
+        "before": texts[0],
+        "after": texts[1],
+        "by": by,
+        "chat": chat,
+        "run": run,
+        "label": label,
+    }
+
+
+def listed_change(change):
+    """A change as the panel lists it, each text cut past CHANGE_CHARS_SHOWN: the
+    chat's id and run are the library tool's."""
+    shown = {key: value for key, value in change.items() if key not in ("chat", "run")}
+    for key in ("before", "after"):
+        if shown[key] is not None and len(shown[key]) > CHANGE_CHARS_SHOWN:
+            shown[key] = cut_text(shown[key], CHANGE_CHARS_SHOWN)
+    return shown
+
+
+def cut_text(text, limit):
+    return f"{text[:limit]}…(+{len(text) - limit:,} chars)"
+
+
+def change_text(text, size):
+    """A change's text before or after, as fitting() read it: None for none; a
+    LibraryError saying why it can't be read."""
+    if size is None or type(text) is str:
+        return text
+    raise LibraryError(f"Its text is {'too long' if text is None else 'not text'}.")
+
+
+def add_decomposition(
+    connection, namespace, text, replace=False, allowed=None, by=PANEL
+):
     """Store the decomposition written as YAML *text* under *namespace*, or raise
     LibraryError saying why not: one of its name there is refused, or with *replace* put in
     its place. *allowed*, given the connection under the write lock first, raises to refuse.
     A worked example with problems is stored all the same, so a draft can be saved.
-    The stored row with its problems, and the YAML it replaced (None when it is new)."""
+    The stored row with its problems, and the YAML it replaced (None when it is new); the
+    change is recorded as made *by* (record())."""
     check_size(text, "A decomposition's YAML")
     decomposition = parsed(text)
     name = decomposition.name
@@ -2710,7 +2937,8 @@ def add_decomposition(connection, namespace, text, replace=False, allowed=None):
         if found is not None and not replace:
             raise already_has(namespace, name)
         check_templates(connection, decomposition)
-        connection.execute(UPSERT_DECOMPOSITION, tuple(stored.values()))
+        with recorded(connection, by, ("decomposition", namespace, name)):
+            connection.execute(UPSERT_DECOMPOSITION, tuple(stored.values()))
     problems = example_problems(decomposition)
     return stored | {"problems": problems}, found
 
@@ -2746,12 +2974,12 @@ def already_has(namespace, name):
     )
 
 
-def edit_decomposition(connection, namespace, name, was, text):
+def edit_decomposition(connection, namespace, name, was, text, by=PANEL):
     """Put the decomposition written as YAML *text* in the place of *namespace*'s
     decomposition *name*, which the person opened as *was*; it may take another name
     that *namespace* doesn't hold. Raises LibraryError saying why not, and
     ChangedMeanwhile if *name* is no longer stored as *was*. The name it is stored
-    under."""
+    under; the change is recorded under it, as made *by*."""
     check_size(text, "A decomposition's YAML")
     decomposition = parsed(text)
     with writing(connection):
@@ -2767,13 +2995,15 @@ def edit_decomposition(connection, namespace, name, was, text):
             raise already_has(namespace, decomposition.name) from error
         if edited.rowcount == 0:
             raise changed_meanwhile(f'"{name}" in {namespace}')
+        change = ("decomposition", namespace, decomposition.name, was, text)
+        record(connection, by, [change])
     return decomposition.name
 
 
-def delete_decomposition(connection, namespace, name, was):
+def delete_decomposition(connection, namespace, name, was, by=PANEL):
     """Delete *namespace*'s decomposition *name*, which the person was shown as *was*, or
     as None for one too long to show; ChangedMeanwhile if it is no longer stored so, or at
-    all."""
+    all. The change is recorded as made *by*."""
     with writing(connection):
         found = decomposition_row(connection, namespace, name)
         if found is None:
@@ -2786,10 +3016,11 @@ def delete_decomposition(connection, namespace, name, was):
                 " it wasn't deleted. Look at it as it is now, then delete it again if"
                 " you still want to."
             )
-        connection.execute(
-            "DELETE FROM decompositions WHERE namespace = ? AND name = ?",
-            (namespace, name),
-        )
+        with recorded(connection, by, ("decomposition", namespace, name)):
+            connection.execute(
+                "DELETE FROM decompositions WHERE namespace = ? AND name = ?",
+                (namespace, name),
+            )
 
 
 def namespace_problem(error):
@@ -3038,18 +3269,20 @@ def text_of(node):
     )
 
 
-def add_namespace(connection, name, text, allowed=None):
+def add_namespace(connection, name, text, allowed=None, by=PANEL):
     """Store a new namespace *name* with the fields its YAML *text* gives, or raise
     LibraryError saying why not; the YAML stored. Its decompositions are added afterwards.
     *allowed*, given the connection under the write lock first, the namespace and the
-    Library as read then (read_library()), raises to refuse."""
+    Library as read then (read_library()), raises to refuse. The change is recorded as
+    made *by*."""
     check_name(name)
     namespace, stored = authored(name, text)
     with writing(connection):
         if allowed is not None:
             allowed(connection, namespace, read_library(connection))
         check_place(connection, name)
-        write_namespace(connection, name, stored, adding=True, vars_before={})
+        with recorded(connection, by, ("namespace", name, name)):
+            write_namespace(connection, name, stored, adding=True, vars_before={})
     return stored
 
 
@@ -3168,12 +3401,15 @@ def merged(before, text):
     return together
 
 
-def change_namespace(connection, name, text, allowed=None, was=NOT_OPENED, merge=False):
+def change_namespace(
+    connection, name, text, allowed=None, was=NOT_OPENED, merge=False, by=PANEL
+):
     """Give namespace *name* the fields its YAML *text* gives in place of its own, keeping
     its decompositions, or raise LibraryError saying why not; with *merge*, only those
     fields, keeping the rest. *allowed* as add_namespace takes it. Given *was*, the YAML
     the person opened it on, None for one too long to show, ChangedMeanwhile unless it is
-    still stored so. The YAML it replaced (namespace_yaml()), and the YAML stored."""
+    still stored so. The YAML it replaced (namespace_yaml()), and the YAML stored; the
+    change is recorded as made *by*."""
     with writing(connection):
         read = read_library(connection)
         if merge:
@@ -3183,7 +3419,8 @@ def change_namespace(connection, name, text, allowed=None, was=NOT_OPENED, merge
         if allowed is not None:
             allowed(connection, namespace, read)
         before, vars_before = check_unchanged(read, name, was)
-        write_namespace(connection, name, stored, False, vars_before)
+        with recorded(connection, by, ("namespace", name, name)):
+            write_namespace(connection, name, stored, False, vars_before)
     return before, stored
 
 
@@ -3290,12 +3527,12 @@ def same_grants(built, locks, connection, namespace, read):
         raise LibraryError(CHANGED_MEANWHILE)
 
 
-def store_tool(connection, name, block, source, allowed=None):
+def store_tool(connection, name, block, source, allowed=None, by=PANEL):
     """Store tool *name* as its config *block* and Python *source*, in place of one of its
     name, inside a transaction that keeps it only if the engine accepts the Library;
     *allowed*, given the connection under the write lock first, raises to refuse. The row
     it replaced as a change logs it (tool_text()), or for one the engine can't read a note
-    saying why; None when it is new."""
+    saying why; None when it is new. The change is recorded as made *by*."""
     with writing(connection):
         if allowed is not None:
             allowed(connection)
@@ -3303,15 +3540,17 @@ def store_tool(connection, name, block, source, allowed=None):
         before = left_out_note(left[name]) if name in left else None
         if name in tools:
             before = tool_text(name, dump(tools[name][0]), tools[name][1])
-        connection.execute(UPSERT_TOOL, (name, dump(block), source))
+        with recorded(connection, by, ("tool", None, name)):
+            connection.execute(UPSERT_TOOL, (name, dump(block), source))
         accepted(connection)
     return before
 
 
-def delete_tool(connection, name):
+def delete_tool(connection, name, by=PANEL):
     """Delete the Library's tool *name*, or raise LibraryError saying why not: a
     namespace grants it, or the Library holds no row for it. One left out, whose grants
-    runs ignore, goes though granted: they stay in their namespaces' YAML, ignored."""
+    runs ignore, goes though granted: they stay in their namespaces' YAML, ignored. The
+    change is recorded as made *by*."""
     with writing(connection):
         read = read_library(connection)
         granting = grants_of(read["namespaces"], name)
@@ -3321,7 +3560,8 @@ def delete_tool(connection, name):
         refusal = tool_refusal(name, granting, stored.fetchone() is not None)
         if refusal:
             raise LibraryError(refusal)
-        connection.execute("DELETE FROM tools WHERE name = ?", (name,))
+        with recorded(connection, by, ("tool", None, name)):
+            connection.execute("DELETE FROM tools WHERE name = ?", (name,))
 
 
 def tool_refusal(name, granting, stored):
@@ -3342,9 +3582,9 @@ def tool_refusal(name, granting, stored):
     return None if stored else f'The Library holds no tool "{name}" to delete.'
 
 
-def delete_setting(connection, key):
+def delete_setting(connection, key, by=PANEL):
     """Delete run setting *key*, or raise LibraryError saying why not: the engine reads it,
-    as it does each it knows but one left out."""
+    as it does each it knows but one left out. The change is recorded as made *by*."""
     with writing(connection):
         left = read_run_settings(connection)[1]
         if key in ENGINE_SETTINGS and key not in left:
@@ -3355,12 +3595,14 @@ def delete_setting(connection, key):
         found = connection.execute("SELECT 1 FROM settings WHERE key = ?", (key,))
         if found.fetchone() is None:
             raise LibraryError(f'The Library holds no run setting "{key}".')
-        connection.execute("DELETE FROM settings WHERE key = ?", (key,))
+        with recorded(connection, by, ("setting", None, key)):
+            connection.execute("DELETE FROM settings WHERE key = ?", (key,))
 
 
-def delete_namespace(connection, name, decompositions):
+def delete_namespace(connection, name, decompositions, by=PANEL):
     """Delete namespace *name* and its decompositions, as many as the caller was told it
-    has, or raise LibraryError saying why not; if new chats started there, they start in root."""
+    has, or raise LibraryError saying why not; if new chats started there, they start in
+    root. Each row it deletes is recorded as made *by*, the namespace last."""
     with writing(connection):
         if not has_namespace(connection, name):
             raise LibraryError(f'The Library has no namespace "{name}" to delete.')
@@ -3379,10 +3621,21 @@ def delete_namespace(connection, name, decompositions):
             )
         # Read first: once it is gone, an entry_namespace naming it reads as left out.
         entry = stored_settings(connection).get(ENTRY_NAMESPACE)
-        connection.execute("DELETE FROM decompositions WHERE namespace = ?", (name,))
-        connection.execute("DELETE FROM namespaces WHERE name = ?", (name,))
-        if entry == name:
-            connection.execute("DELETE FROM settings WHERE key = ?", (ENTRY_NAMESPACE,))
+        held = connection.execute(
+            "SELECT name FROM decompositions WHERE namespace = ? ORDER BY rowid",
+            (name,),
+        )
+        rows = [("decomposition", name, each) for (each,) in held]
+        rows += [("setting", None, ENTRY_NAMESPACE), ("namespace", name, name)]
+        with recorded(connection, by, *rows):
+            connection.execute(
+                "DELETE FROM decompositions WHERE namespace = ?", (name,)
+            )
+            connection.execute("DELETE FROM namespaces WHERE name = ?", (name,))
+            if entry == name:
+                connection.execute(
+                    "DELETE FROM settings WHERE key = ?", (ENTRY_NAMESPACE,)
+                )
         accepted(connection)
 
 
@@ -4054,7 +4307,8 @@ def chats_on(connection):
 
 
 def panel(connection):
-    """What the Library panel shows: run settings, namespaces as the engine resolves them, tools, tabular vars."""
+    """What the Library panel shows: run settings, namespaces as the engine resolves them,
+    tools, tabular vars, and the newest changes."""
     with reading(connection):
         read = read_library(connection)
         config, registry = run_config_and_registry(config_of(read))
@@ -4066,4 +4320,7 @@ def panel(connection):
             "namespaces": namespace_rows(read, config, registry, chats),
             "tools": listed_tools(read, config, registry, names),
             "variables": variables(registry, names),
+            "changes": list(
+                map(listed_change, read_changes(connection, CHANGES_SHOWN))
+            ),
         }

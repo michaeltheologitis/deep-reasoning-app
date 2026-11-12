@@ -1,6 +1,8 @@
 // The Library panel: the decompositions, namespaces, tools and data every run draws on, read from the server's Library file; adding, editing and deleting save there.
+// Its Changes tab lists the newest changes, whoever made them.
 import { LIBRARY_CHANGED, PANEL_CLOSE, TOUCH, caret, chatNamespace, closeOtherPanels, element, libraryChanged, nameParts, request, showPanel } from "./app.js";
 import { shownName } from "./models.js";
+import { MS_PER_SECOND } from "./tree.js";
 import { turnProblems } from "./turns.js";
 
 const LIBRARY_URL = "api/library";
@@ -12,7 +14,7 @@ const RUN_SETTINGS_URL = "api/run-settings";
 const CONFLICT = 409;
 // the server's refusal of what was sent, as against a failure the same text may pass when sent again
 const REFUSED = 400;
-const TABS = ["Decompositions", "Namespaces", "Tools", "Data"];
+const TABS = ["Decompositions", "Namespaces", "Tools", "Data", "Changes"];
 const ROOT = "root";
 const ROLES = ["user", "assistant", "system"];
 const DECOMPOSITION_KEYS = ["name", "messages"];
@@ -912,7 +914,39 @@ function renderData() {
   return [group("Preloaded variables", rows)];
 }
 
-const RENDERERS = { Decompositions: renderDecompositions, Namespaces: renderNamespaces, Tools: renderTools, Data: renderData };
+// Who made a change, as the record says: the panel, an import of its file, or a chat by its title.
+function madeBy({ by, label }) {
+  if (by === "panel") return "in the panel";
+  if (by === "import") return `by an import of ${label}`;
+  return label == null ? "in a chat since deleted" : `in the chat "${label}"`;
+}
+
+function changeLine({ what, namespace, name, before, after }) {
+  const done = before == null ? "Added" : after == null ? "Deleted" : "Changed";
+  if (what === "namespace") return `${done} namespace ${shownName(name)}`;
+  if (what === "decomposition") return `${done} decomposition "${name}" in ${shownName(namespace)}`;
+  return `${done} ${what === "tool" ? "tool" : "run setting"} ${name}`;
+}
+
+// today's at their time, older ones on their day
+function madeAt(made) {
+  const when = new Date(made * MS_PER_SECOND);
+  const today = when.toDateString() === new Date().toDateString();
+  return when.toLocaleString(undefined, today ? { timeStyle: "short" } : { dateStyle: "medium", timeStyle: "short" });
+}
+
+// Each opens onto its text before and after, as the record holds them, shown as text: a shared file's may hold anything.
+function renderChanges() {
+  if (!library.changes.length) return [element("p", { class: "lib-note" }, "No changes yet: each add, edit or delete, made here, by an import or in a chat, is listed here.")];
+  const text = (label, value) => value != null && [element("p", { class: "lib-note" }, `${label}:`), sideways(label, value)];
+  const rows = library.changes.map((change) =>
+    disclosure(`c:${change.id}`, rowHead(changeLine(change), madeBy(change), madeAt(change.made)), () => [text("Before", change.before), text("After", change.after)]),
+  );
+  const note = element("p", { class: "lib-note" }, "The newest changes, whoever made them. To undo one, ask the librarian.");
+  return [element("div", { class: "lib-changes" }, group("Recent changes", [note, rows]))];
+}
+
+const RENDERERS = { Decompositions: renderDecompositions, Namespaces: renderNamespaces, Tools: renderTools, Data: renderData, Changes: renderChanges };
 
 // A field being typed in when the agent's change redraws the panel is drawn again as itself, so it keeps focus and caret.
 function render() {

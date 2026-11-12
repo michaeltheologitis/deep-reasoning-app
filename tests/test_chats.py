@@ -24,6 +24,7 @@ from deep_reasoning.chats import (
 )
 from deep_reasoning.library import (
     ADDED_IN,
+    BEFORE_CHANGES,
     BEFORE_EVENTS,
     BEFORE_PAGES,
     HISTORIAN,
@@ -31,8 +32,10 @@ from deep_reasoning.library import (
     LIBRARY_ONLY,
     SCHEMA_VERSION,
     LibraryError,
+    add_namespace,
     default_namespace,
     open_library,
+    read_changes,
     schema_version,
     stored_config,
     writing,
@@ -138,6 +141,33 @@ def test_a_version_3_file_opens_with_all_it_holds_kept_and_gains_pages(
     assert kept == (library, [run])
     assert events == [started]
     assert page["blocks"] == blocks
+
+
+def test_a_version_4_file_opens_with_all_it_holds_kept_and_gains_the_record_of_changes(
+    imported, tmp_path
+):
+    chat = create_chat(imported, str(tmp_path))["id"]
+    run = "20261025-120000-000000"
+    started = {"seq": 1, "t": 100.0, "kind": "turn.start", "chat": chat}
+    blocks = [{"type": "text", "text": "Kept."}]
+    with closing(open_library(imported)) as connection:
+        save_event(connection, run, started)
+        page = add_page(connection, chat, run, 1, "Kept", json.dumps(blocks))
+        library = stored_config(connection)
+    chats = list_chats(imported)
+    as_made_by(BEFORE_CHANGES, imported)
+    with closing(open_library(imported)) as connection:
+        version = schema_version(connection)
+        kept = (stored_config(connection), read_events(connection, run))
+        kept_page = read_page(connection, page)
+        add_namespace(connection, "notes", "")
+        recorded = read_changes(connection)
+    assert version == SCHEMA_VERSION
+    assert (kept, list_chats(imported)) == ((library, [started]), chats)
+    assert kept_page["blocks"] == blocks
+    assert [(each["what"], each["name"], each["by"]) for each in recorded] == [
+        ("namespace", "notes", "panel")
+    ]
 
 
 def test_new_chats_are_titled_new_chat_and_listed_newest_first(library):

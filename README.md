@@ -160,8 +160,10 @@ imports too.
   **Namespaces** adds, edits (as YAML) and deletes namespaces, showing each field and where it comes from, and the
   run settings, read only (one the engine doesn't read can be deleted); **Tools** shows each tool, what agents are
   told it does and a custom tool's Python, and deletes one of yours no namespace grants; **Data** shows each
-  namespace's `vars` that are tables (a list of records) as tables, to read (edit them in Namespaces). In its
-  editors Tab indents, Esc leaves, and Ctrl+Enter or Cmd+Enter saves.
+  namespace's `vars` that are tables (a list of records) as tables, to read (edit them in Namespaces); **Changes**
+  lists the newest changes to the Library, whoever made them (the panel, an import, or the librarian in which chat),
+  each opening onto what it was before and after. In its editors Tab indents, Esc leaves, and Ctrl+Enter or Cmd+Enter
+  saves.
 - Each worked example is marked ✓ or ✗ by whether its turns are shaped like `deep_reasoner`'s own (the task; each
   assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last), and a ✗
   says why; it still saves, as a draft agents are shown from the next message. A new one starts in the namespace of
@@ -258,8 +260,10 @@ imports too.
   namespace's suffix too, and it is told of a cell leaving a variable's `{name}` in a string without `f`, and fixes
   it.
 - Each change shows under its answer and in the tree, opens onto its YAML (or a tool's Python) before and after, and
-  applies from your next message; the panel and namespace menu show it at once. Ask it to undo one and it writes the
-  before back from the record.
+  applies from your next message; the panel and namespace menu show it at once. Ask it what changed (today, say) and
+  it answers from the app's record of every change, made in the panel, by an import or in any chat (the newest 1,000
+  kept). Ask it to undo one, wherever it was made, and it writes the before back from the record, a deleted item
+  included.
 - A tool it writes, or a tool of yours it grants afresh, is built first as another chat would build it, and refused
   if it doesn't build, naming a package the app lacks and how to add it; that works only in a chat whose namespace
   runs the local REPL. It then tries a tool it wrote on a few realistic inputs, and fixes it before answering if a

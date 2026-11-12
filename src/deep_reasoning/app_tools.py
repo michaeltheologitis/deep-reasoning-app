@@ -23,7 +23,9 @@ can't, and never a key. It guards the tool, not the file: a cell can open the fi
 A tool it writes, or a custom tool a namespace it writes grants afresh, is built first as
 another chat's run would build it: in a process of its own (tool_check.py), from an empty
 folder. Each change is logged as library.change, which the worker records as a run event,
-and changes() reads this chat's back, so the agent can write a before back.
+and kept in the app file's record of changes, beside the panel's and imports', which
+changes() reads, so the agent can say what changed, whoever changed it, and write a before
+back.
 """
 
 import ast
@@ -34,6 +36,7 @@ import math
 import os
 import re
 import sqlite3
+import sys
 import textwrap
 import threading
 import tokenize
@@ -42,6 +45,7 @@ from concurrent.futures import Future
 from contextlib import closing, contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from functools import cached_property, partial, wraps
 from importlib.util import find_spec
 from pathlib import Path
@@ -71,12 +75,14 @@ from deep_reasoning.library import (
     add_decomposition,
     add_namespace,
     built_grants,
+    by_chat,
     change_namespace,
     check_size,
     check_tool_block,
     config_and_registry,
     config_of,
     count,
+    cut_text,
     distrust,
     dump,
     expanded_shape,
@@ -87,6 +93,7 @@ from deep_reasoning.library import (
     loaded,
     namespace_rows,
     parsed_python,
+    read_changes,
     read_library,
     reading,
     refuse_keys,
@@ -619,10 +626,6 @@ def cut(
         return copy
 
     return copied(value, 0)
-
-
-def cut_text(text: str, limit: int) -> str:
-    return f"{text[:limit]}…(+{len(text) - limit:,} chars)"
 
 
 def error_of(output: Any) -> str | None:
@@ -1792,6 +1795,102 @@ def chat_changes(library: str, chat: str, turn: Any) -> list[dict[str, Any]]:
     return found
 
 
+def recorded_changes(library: str, chat: str, older_than: Any) -> list[Event]:
+    """The Library's newest MAX_FOUND changes, whoever made them, older than the one of
+    id *older_than* when given, each in a line, then how many more; *chat* is this
+    run's, whose changes say so."""
+    check_change_id(older_than, "older_than")
+    with app_file(library, "ro") as connection, reading(connection):
+        found = read_changes(connection, MAX_FOUND, older_than)
+        turns = turns_of(connection, chat, found)
+        last = found[-1]["id"] if found else 0
+        older = connection.execute("SELECT count(*) FROM changes WHERE id < ?", (last,))
+        [(more,)] = older
+    lines = [
+        cut(change_head(each, chat, turns) | recorded_in_brief(each), BRIEF_CHARS)
+        for each in found
+    ]
+    if more:
+        note = f"{more:,} older not listed: changes(older_than={last}) lists them."
+        lines.append({"more": more, "note": note})
+    return lines
+
+
+def recorded_change(library: str, chat: str, id: Any) -> Event:
+    """The Library's change of id *id*, whole, as changes(turn) gives this chat's."""
+    check_change_id(id, "id")
+    with app_file(library, "ro") as connection, reading(connection):
+        found = read_changes(connection, 1, id + 1)
+        turns = turns_of(connection, chat, found)
+    if not found or found[0]["id"] != id:
+        raise ValueError(f"There is no change {id}: changes() lists them by id.")
+    return change_head(found[0], chat, turns) | as_written(found[0])
+
+
+def check_change_id(value: Any, name: str) -> None:
+    if value is not None and not (type(value) is int and 0 < value < sys.maxsize):
+        raise ValueError(f"{name} should be a change's id, as changes() lists them.")
+
+
+def turns_of(
+    connection: sqlite3.Connection, chat: str, changes: list[Event]
+) -> dict[str, int]:
+    """The turn of *chat*'s, by its run, that made each of *changes* made there."""
+    if not any(change["chat"] == chat for change in changes):
+        return {}
+    turns = chat_turns(connection, chat)
+    return {turn["run"]: number for number, turn in enumerate(turns, start=1)}
+
+
+def change_head(change: Event, chat: str, turns: dict[str, int]) -> Event:
+    """A recorded *change*'s id, when it was made, by whom (this chat's, *chat*, with
+    the turn, by *turns*, of the run that made it), and what it did."""
+    head = {"id": change["id"], "when": day_of(change["made"])}
+    head["by"] = made_by(change, chat)
+    if change["chat"] == chat and change["run"] in turns:
+        head["turn"] = turns[change["run"]]
+    return head | {"done": done_of(change)}
+
+
+def done_of(change: Event) -> str:
+    if change["before"] is None:
+        return "added"
+    return "deleted" if change["after"] is None else "changed"
+
+
+def day_of(made: float) -> str:
+    """The day a change was *made*: today, yesterday, else its date."""
+    day, today = datetime.fromtimestamp(made).date(), date.today()
+    named = {today: "today", today - timedelta(days=1): "yesterday"}
+    return named.get(day, day.isoformat())
+
+
+def made_by(change: Event, chat: str) -> str:
+    """Who made a recorded *change*, in words: the panel, an import, this chat
+    (*chat*) or another, by its title."""
+    if change["by"] == "panel":
+        return "the Library panel"
+    if change["by"] == "import":
+        return f"an import of {change['label']}"
+    if change["chat"] == chat:
+        return "this chat"
+    title = change["label"]
+    return "a chat since deleted" if title is None else f'the chat "{title}"'
+
+
+def recorded_in_brief(change: Event) -> Event:
+    """A recorded *change*'s row, in a line: what, where and its name, and a
+    namespace's fields it changed."""
+    brief = {"what": change["what"]}
+    if change["namespace"] is not None:
+        brief["namespace"] = change["namespace"]
+    brief["name"] = change["name"]
+    if change["what"] == "namespace":
+        changed = field_changes(change["before"] or "", change["after"] or "")[0]
+        brief["fields"] = list(changed)
+    return brief
+
+
 def check_builds(
     tools: dict[str, tuple[dict[str, Any], str]], tools_dir: Path, done: str
 ) -> None:
@@ -1846,6 +1945,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
     key_names, tools_dir = params["key_names"], Path(params["tools_dir"])
     editors = params.get("editors", [])
     pick = PICK_AN_EDITOR.render(editors=editors)
+    by = by_chat(params["chat"], params["run"])
 
     def show(name: str | None = None, whole: bool = False) -> Any:
         """Every namespace in brief, or namespace *name* in full: its fields as the panel
@@ -1881,10 +1981,16 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             return cut(rows, limit=BRIEF_CHARS)
         return named(rows, name, "tool", "tools()")
 
-    def changes(turn: int | None = None) -> list[dict[str, Any]]:
-        """This chat's Library changes: in every message, each in a line; or in message
-        *turn*, whole."""
-        return chat_changes(library, params["chat"], turn)
+    def changes(
+        turn: int | None = None, id: int | None = None, older_than: int | None = None
+    ) -> Any:
+        """Every change to the Library, newest first, each in a line; or the one of id
+        *id*, whole; or this chat's in its message *turn*, whole, as they were logged."""
+        if id is not None:
+            return recorded_change(library, params["chat"], id)
+        if turn is not None:
+            return chat_changes(library, params["chat"], turn)
+        return recorded_changes(library, params["chat"], older_than)
 
     def check_grant(registry: NamespaceRegistry) -> None:
         """Raise unless this run's chat is in a namespace that grants the library tool, as
@@ -1969,6 +2075,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
                 text,
                 replace=True,
                 allowed=may_write,
+                by=by,
             )
             done = "added" if before is None else "replaced"
             change = logged(
@@ -1994,7 +2101,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         allowed = grants_built(name, text, adding=True)
 
         def write() -> Event:
-            stored = written(library, add_namespace, name, text, allowed=allowed)
+            stored = written(library, add_namespace, name, text, allowed=allowed, by=by)
             return logged(
                 "added", None, stored, what="namespace", namespace=name, name=name
             )
@@ -2012,7 +2119,13 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
 
         def write() -> tuple[str, str, Event | None]:
             before, stored = written(
-                library, change_namespace, name, text, allowed=allowed, merge=merge
+                library,
+                change_namespace,
+                name,
+                text,
+                allowed=allowed,
+                merge=merge,
+                by=by,
             )
             done = None if stored == before else logged("changed", before, stored, **at)
             return before, stored, done
@@ -2045,7 +2158,9 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
 
         def write() -> Event:
             allowed = partial(may_write_tool, name=name, settings=settings or {})
-            before = written(library, store_tool, name, block, source, allowed=allowed)
+            before = written(
+                library, store_tool, name, block, source, allowed=allowed, by=by
+            )
             after = tool_text(name, dump(block), source)
             done = "added" if before is None else "replaced"
             return logged(done, before, after, what="tool", name=name)

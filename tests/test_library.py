@@ -36,9 +36,14 @@ from deep_reasoning import library as library_module
 from deep_reasoning.importing import import_config
 from deep_reasoning.library import (
     APP_TOOLS_FILE,
+    BEFORE_CHANGES,
     BEFORE_EVENTS,
     BEFORE_PAGES,
     CELL_ESCAPE,
+    CHANGE_BYTES_KEPT,
+    CHANGE_CHARS_SHOWN,
+    CHANGES_KEPT,
+    CHANGES_SHOWN,
     ESCAPE,
     FIELDS_MAPPING,
     FILLED_IN,
@@ -63,6 +68,7 @@ from deep_reasoning.library import (
     NO_DESCRIPTION,
     NO_SUB_AGENTS,
     PAGE_DESCRIPTION,
+    PANEL,
     PAST_THE_LIMIT,
     RENDER_S,
     ROOT_SUFFIX,
@@ -105,6 +111,8 @@ from deep_reasoning.library import (
     open_library,
     panel,
     parsed,
+    read_changes,
+    record,
     running_code,
     sandbox_templates,
     store_tool,
@@ -1270,7 +1278,9 @@ def test_a_fresh_library_carries_a_generic_repl_prompt(library, tmp_path):
     assert "FinalAnswer" in prompt
 
 
-@pytest.mark.parametrize("version", [0, LIBRARY_ONLY, BEFORE_EVENTS, BEFORE_PAGES])
+@pytest.mark.parametrize(
+    "version", [0, LIBRARY_ONLY, BEFORE_EVENTS, BEFORE_PAGES, BEFORE_CHANGES]
+)
 def test_a_file_that_is_not_a_library_is_refused_and_left_alone(tmp_path, version):
     other = tmp_path / "chats.sqlite"
     with closing(sqlite3.connect(other)) as connection:
@@ -1282,7 +1292,9 @@ def test_a_file_that_is_not_a_library_is_refused_and_left_alone(tmp_path, versio
     assert other.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [LIBRARY_ONLY, BEFORE_EVENTS, BEFORE_PAGES])
+@pytest.mark.parametrize(
+    "version", [LIBRARY_ONLY, BEFORE_EVENTS, BEFORE_PAGES, BEFORE_CHANGES]
+)
 def test_an_older_file_that_already_holds_a_later_versions_tables_is_refused_and_left_alone(
     library, version
 ):
@@ -3283,3 +3295,232 @@ def test_a_save_granting_a_tool_runs_would_ignore_says_why(library):
     # Another namespace saves all the same, and drafts once it takes them out.
     change(library, add_namespace, "notes", "")
     change(library, change_namespace, "drafts", "tools: []\n")
+
+
+WORD_COUNT_BLOCK = "factory: build\nfactory_from: word_count.py\n"
+WORD_COUNT_SOURCE = "def build(client, params):\n    return len\n"
+EDITED = ADDED.replace("hi", "hello")
+RECORDED_KEYS = ("what", "namespace", "name", "before", "after", "by")
+
+
+@pytest.fixture
+def stocked(library):
+    """A Library holding research, with the decomposition added, a tool no namespace
+    grants and a run setting the engine doesn't read, written as a shared file holds
+    them: the record holds no change."""
+    with closing(open_library(library)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("research", RESEARCH))
+        connection.execute(UPSERT_DECOMPOSITION, ("research", "added", ADDED))
+        connection.execute(
+            UPSERT_TOOL, ("word_count", WORD_COUNT_BLOCK, WORD_COUNT_SOURCE)
+        )
+        connection.execute(UPSERT_SETTING, ("legacy", "1\n"))
+    return library
+
+
+def changes_in(library):
+    """The record's changes, oldest first, each as RECORDED_KEYS."""
+    with closing(open_library(library)) as connection:
+        found = read_changes(connection)
+    return [tuple(each[key] for key in RECORDED_KEYS) for each in reversed(found)]
+
+
+def test_a_new_library_records_no_change(library):
+    assert changes_in(library) == []
+
+
+@pytest.mark.parametrize(
+    ("act", "recorded"),
+    [
+        (
+            lambda connection: add_decomposition(
+                connection, "research", EDITED.replace("added", "new")
+            ),
+            [
+                (
+                    "decomposition",
+                    "research",
+                    "new",
+                    None,
+                    EDITED.replace("added", "new"),
+                )
+            ],
+        ),
+        (
+            lambda connection: edit_decomposition(
+                connection, "research", "added", ADDED, EDITED
+            ),
+            [("decomposition", "research", "added", ADDED, EDITED)],
+        ),
+        (
+            lambda connection: delete_decomposition(
+                connection, "research", "added", ADDED
+            ),
+            [("decomposition", "research", "added", ADDED, None)],
+        ),
+        (
+            lambda connection: add_namespace(connection, "notes", "spawn: []\n"),
+            [("namespace", "notes", "notes", None, "spawn: []\n")],
+        ),
+        (
+            lambda connection: change_namespace(
+                connection, "research", "vars: {topic: ai}\n"
+            ),
+            [("namespace", "research", "research", RESEARCH, "vars: {topic: ai}\n")],
+        ),
+        (
+            lambda connection: delete_namespace(connection, "research", 1),
+            [
+                ("decomposition", "research", "added", ADDED, None),
+                ("namespace", "research", "research", RESEARCH, None),
+            ],
+        ),
+        (
+            lambda connection: delete_tool(connection, "word_count"),
+            [
+                (
+                    "tool",
+                    None,
+                    "word_count",
+                    tool_text("word_count", WORD_COUNT_BLOCK, WORD_COUNT_SOURCE),
+                    None,
+                )
+            ],
+        ),
+        (
+            lambda connection: delete_setting(connection, "legacy"),
+            [("setting", None, "legacy", "1\n", None)],
+        ),
+    ],
+    ids=[
+        "add decomposition",
+        "edit decomposition",
+        "delete decomposition",
+        "add namespace",
+        "change namespace",
+        "delete namespace",
+        "delete tool",
+        "delete setting",
+    ],
+)
+def test_each_panel_write_records_each_row_it_changes_with_its_before_and_after(
+    stocked, act, recorded
+):
+    with closing(open_library(stocked)) as connection:
+        act(connection)
+    assert changes_in(stocked) == [(*row, "panel") for row in recorded]
+
+
+def test_a_write_that_changes_nothing_records_nothing(stocked):
+    with closing(open_library(stocked)) as connection:
+        change_namespace(connection, "research", RESEARCH)
+        edit_decomposition(connection, "research", "added", ADDED, ADDED)
+    assert changes_in(stocked) == []
+
+
+def test_a_refused_write_records_nothing(stocked):
+    with closing(open_library(stocked)) as connection:
+        with pytest.raises(ChangedMeanwhile):
+            edit_decomposition(connection, "research", "added", EDITED, ADDED)
+        with pytest.raises(LibraryError, match="spawn names"):
+            change_namespace(connection, "research", "spawn: [nowhere]\n")
+        change_namespace(connection, "research", "tools: [word_count]\n")
+        with pytest.raises(LibraryError, match="is granted in research"):
+            delete_tool(connection, "word_count")
+    assert [row[:3] for row in changes_in(stocked)] == [
+        ("namespace", "research", "research")
+    ]
+
+
+def test_the_record_keeps_only_its_newest_changes(library):
+    rows = [
+        ("setting", None, f"s{each}", None, f"{each}\n")
+        for each in range(CHANGES_KEPT + 1)
+    ]
+    with closing(open_library(library)) as connection, writing(connection):
+        record(connection, PANEL, rows)
+    names = [name for _, _, name, *_ in changes_in(library)]
+    assert names == [f"s{each}" for each in range(1, CHANGES_KEPT + 1)]
+
+
+def test_the_record_keeps_only_as_many_newest_changes_as_fit_its_bytes(library):
+    fifth = "a" * (CHANGE_BYTES_KEPT // 5 + 1)
+    rows = [("setting", None, f"s{each}", None, fifth) for each in range(5)]
+    with closing(open_library(library)) as connection, writing(connection):
+        record(connection, PANEL, rows)
+    assert [name for _, _, name, *_ in changes_in(library)] == ["s1", "s2", "s3", "s4"]
+
+
+GOOD_CHANGE = {
+    "made": 1_800_000_000.0,
+    "what": "namespace",
+    "namespace": "notes",
+    "name": "notes",
+    "before": None,
+    "after": "spawn: []\n",
+    "by": "panel",
+    "chat": None,
+    "run": None,
+    "label": None,
+}
+CRAFTED_CHANGES = {
+    "a time as text": {"made": "yesterday"},
+    "a time past any date": {"made": 1e300},
+    "an unknown row": {"what": "page"},
+    "a name not text": {"name": b"notes"},
+    "a decomposition in no namespace": {"what": "decomposition", "namespace": None},
+    "no text": {"after": None},
+    "a text not text": {"after": b"\xff\xfe"},
+    "an unknown maker": {"by": "someone"},
+    "an import of no file": {"by": "import"},
+    "a chat with no run": {"by": "chat", "chat": "a-chat"},
+    "a title not text": {"label": b"Helpers"},
+}
+
+
+def test_a_shared_files_crafted_changes_are_left_out_with_a_warning(library):
+    columns = ", ".join(GOOD_CHANGE)
+    values = ", ".join(f":{key}" for key in GOOD_CHANGE)
+    with closing(open_library(library)) as connection, writing(connection):
+        for crafted in CRAFTED_CHANGES.values():
+            connection.execute(
+                f"INSERT INTO changes ({columns}) VALUES ({values})",
+                GOOD_CHANGE | crafted,
+            )
+        connection.execute(
+            f"INSERT INTO changes ({columns}) VALUES ({values})", GOOD_CHANGE
+        )
+    with capture_logs() as logs, closing(open_library(library)) as connection:
+        found = read_changes(connection)
+        shown = panel(connection)["changes"]
+    good = {key: GOOD_CHANGE[key] for key in RECORDED_KEYS}
+    assert [{key: each[key] for key in RECORDED_KEYS} for each in found] == [good]
+    assert [each["id"] for each in shown] == [len(CRAFTED_CHANGES) + 1]
+    left_out = {row for table, row in left_out_rows(logs) if table == "changes"}
+    assert left_out == {repr(id) for id in range(1, len(CRAFTED_CHANGES) + 1)}
+
+
+def test_the_panel_lists_the_newest_changes_each_text_cut_short(library):
+    long = "a" * (CHANGE_CHARS_SHOWN + 5)
+    rows = [
+        ("setting", None, f"s{each}", None, long) for each in range(CHANGES_SHOWN + 1)
+    ]
+    with closing(open_library(library)) as connection:
+        with writing(connection):
+            record(connection, PANEL, rows)
+        shown = panel(connection)["changes"]
+    assert [each["name"] for each in shown] == [
+        f"s{each}" for each in range(CHANGES_SHOWN, 0, -1)
+    ]
+    assert shown[0]["after"] == f"{'a' * CHANGE_CHARS_SHOWN}…(+5 chars)"
+    assert set(shown[0]) == {
+        "id",
+        "made",
+        "what",
+        "namespace",
+        "name",
+        "before",
+        "after",
+        "by",
+        "label",
+    }
