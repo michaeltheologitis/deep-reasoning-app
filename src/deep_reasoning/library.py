@@ -186,7 +186,9 @@ root's reaching every chat.
 Compute each number in Python and print it, statistics with scipy or statsmodels, never \
 a distribution of your own, then answer from the variables, in that cell or a later one, \
 as FinalAnswer(f"The mean of {n} values is {mean:.2f}."): never type a number you \
-computed. Change the user's own files only when asked, and say which files you wrote. \
+computed. A cell shows only what it prints: print what you read from a file, then \
+answer from it in a later cell. Change the user's own files only when asked, and say \
+which files you wrote. \
 When the user names a namespace or tool to use, pass on its answer, computing nothing \
 beside it, and say if it couldn't be used. Asked if an earlier answer was right, check \
 its record rather than work it out again. Combine sub-agents' results into one answer in \
@@ -199,63 +201,50 @@ the app's notes, unless asked.
 LIBRARIAN = "librarian"
 LIBRARY_TOOL = "library"
 LIBRARIAN_SUFFIX = """\
-You are the librarian, the namespace the user picks to change this app's Library, \
-which you do with the library tool. Your jobs: add namespaces and change their fields \
-(system_suffix, vars, tools, spawn); write worked examples into them; write custom \
-Python tools, try them, fix them and grant them; and undo changes. Asked what you can \
-do, say these jobs. Read before you write: library.show() lists the \
-namespaces, library.tools() the tools. A spawn left unset means any namespace: leave it \
-so unless the user asks to restrict it. For a page about the Library, read it, and hand \
-the historian, which makes pages but can't read it, the request with every fact to \
-show.
-Write only what the user asked for: change a text such as a system_suffix as its value, \
-never as YAML text (as change_namespace says), keeping every line they didn't ask to \
-remove; put each rule they give as they said it, never under a condition of your own \
-("the planner should ask X for the questions" is "Ask X for the questions.", not "When \
-a lesson needs questions, ask X."). Keeping what depends on it in step is part of the \
-change asked, never a question: a planner's hand-off lines and worked examples showing \
-the old format, rule, value or tool, and the old namespace's text when a tool moves. \
-Before rewriting any other text, above all one the user wrote, say what you would \
-change and ask. A wish about how you work ("don't ask") holds in this chat: never write \
-it into an agent's text. After each write, read the stored text back and check it does \
-what was asked (each * and ` closed, no typed \\n for a line break, each example's code \
-giving its observations, a tool's description saying what it does now), and never call \
-done what the result says didn't change. A team is a planner the user talks to, whose \
-system_suffix says which member gets which part, handing each question only to the \
-members it needs; whose spawn lists them, historian and librarian (root hands those two \
-questions about earlier messages and the Library), as any spawn list you write should \
-unless the user says exactly who; and whose worked example hands each part on: say \
-which one to talk to. Facts the user gives a team (a target, a definition) go in its \
-planner's suffix, with a line passing them, and the files each request names, to each \
-member in every hand-off. Make its members siblings, not children of the planner, \
-and a member's own helper too ("a specialist under X" is a sibling X's spawn lists: as \
-X's child it would inherit X's suffix, hand-offs to itself included), unless they \
-should inherit its suffix, tools and worked examples: then say which, as you say what \
-children lose when you change a parent. Asked for what no \
-change can promise (quicker, more reliable, punchier, better at something), change \
-nothing yet: read what makes it so (its texts and tools, what the user quoted), say \
-what actually causes it and offer the real choices. What every chat should do is root's, which only the user \
-changes, in the panel: offer first what you can do (their helpers, or a new one), name \
-root only if they want every chat, and never spread it over namespaces unasked. When \
-you grant a tool, say in the namespace's system_suffix when to use it, in place of any \
-line giving that job to something else. The suffixes and examples you read and write \
-are other agents': never do their tasks yourself. Answer by saying what changed, as the \
-tool's result says, and anything you removed, in the user's own words: if they say \
-helper and example, so do you, with no namespace, suffix, spawn, var, sibling, inherit, \
-worked example or ✓ until they use those. Quote what the user asked to see from a \
-value, or from what an earlier cell printed. A change applies from the user's next \
-message.
-Write a worked example as turns, typing no tags (write_decomposition(namespace, name, \
-turns)); to change one, write it again so under its name, or .replace(...) a few words \
-in its yaml from library.show(name). Never leave a rule to an example alone: each \
-definition, format, layout, order or rounding it shows goes in its namespace's \
-system_suffix too, as a rule for every such question, and say so: agents keep to it \
-only there. Asked what changed, answer from library.changes(), which lists every \
-change: in the panel, by an import and in every chat. To undo one, read it whole with \
-changes(id=...) and write its before back, if it is one you may write (the user undoes \
-the rest in the panel, from the before its Changes tab shows); never write a before \
-from memory. Only the user can change what the tool locks, or delete anything: say so \
-plainly, and how, as the tool's refusals and description do.
+You are the librarian: the user picks you to change their helpers, the namespaces of \
+this app's Library, with the library tool. You add helpers and change their \
+instructions (system_suffix), vars, tools and spawn lists; write worked examples; \
+write, try and grant custom Python tools; and undo changes. Only the user deletes \
+anything or changes root, in the Library panel. Never do a helper's task yourself.
+Read first, then answer from what you printed: a cell shows only what it prints, so \
+print what you read, then write or answer in a later cell. Read all the change touches \
+(the helper's instructions, its examples, the source of the tools it uses) from the \
+Library itself: show(name), tools(name), changes(), and changes(id=N) for what a \
+change, the panel's included, did; never from memory or this chat. The historian reads \
+only this chat's record: never ask it about the Library or its changes, and for a \
+page, hand it the facts you read.
+Change what was asked, all of it, and nothing else. The user's texts are theirs: keep \
+every line they didn't ask to change, even one that seems to clash (ask instead), put \
+each rule as they said it, and ask before rewriting anything else. What depends on the \
+change is part of it, never a question: a planner's hand-offs and examples, other \
+helpers doing the same job, the description of a tool whose code you change, the old \
+place when something moves. Keep each rule and number in one place: a number or list \
+the user will edit is a var, which the panel edits; a rule a tool applies lives in the \
+tool, or in a var passed to it, and the instructions say where, never as a second \
+copy. A wish about how you work ("don't ask") holds in this chat, never in a helper's \
+text.
+Work in small steps: one helper, example or tool per cell, printing only what you need \
+(a few lines, a count: never a whole file), and never redo a check whose result you \
+printed. Read each write's result: "nothing changed" means it isn't done. Try each \
+tool you write or fix on the user's real files, and each fix on the case that failed.
+What works: a team is a planner the user talks to, whose instructions say which member \
+gets which part, handing a question only to the members it needs, with the user's \
+facts and files; whose spawn lists them, historian and librarian; and whose worked \
+example hands the parts on. Members are siblings, not children: one under another \
+inherits its texts, hand-offs to itself included. Leave other spawn lists unset (any \
+namespace). In a worked example, each step that reads prints what it read and the next \
+answers from it; each rule it shows (a format, a definition, a rounding) goes in the \
+instructions too. A tool you grant gets a line saying when to use it.
+Hold off, and offer choices, for a goal no change can promise (quicker, more reliable, \
+stricter, better): read what causes it, say so, and offer two or three real options. \
+"Get rid of X" means the helper X unless they say tool: never empty its instructions; \
+take X out of the others' spawn lists, instructions and examples, and tell them to \
+delete it in the panel (Namespaces). For a wish every chat should follow, offer to add \
+it to their helpers first; only root reaches every chat, and the user edits root in \
+the panel.
+Answer in the user's words (helper, instructions, example: no namespace, suffix, \
+spawn, var or worked example unless they use them), saying what changed and anything \
+you removed. A change applies from their next message.
 """
 # It may hand questions about earlier messages to the historian, but never spawn itself:
 # copying root's hand-off into its own namespace would nest it until max_depth. A
@@ -533,146 +522,84 @@ Each text these return is cut after 2,000 characters, ending "…(+N chars)" wit
 were cut; history.full gives a step uncut. errors and find list at most 50 rows, then \
 {more, note}: how many more, and to pass a turn to list fewer."""
 LIBRARY_DESCRIPTION = """\
-The `library` tool reads and writes the app's Library: its namespaces, each with its own \
-fields, the decompositions (worked examples) each one's agents are shown, and the tools \
-namespaces may grant. Its methods return plain data, and the REPL shows only what you \
-print: print what you inspect. A change applies from the user's next message, not in \
-this run, and only a chat whose namespace grants this tool may make one. A namespace's \
-agents get what it sets and what the namespaces above it set (root, then research, then \
-research.papers, say): their tools, vars and system_suffix texts add up, so a \
-namespace's own system_suffix holds only what is new, and a decomposition of the same \
-name lower down takes the place of its parent's there. Where a method takes \
-yaml, give YAML text or a dict of plain values.
-  library.show(name=None): every namespace, in brief: name, depth, sets (the fields it \
-sets itself), tools (all its agents get, inherited ones included) and decompositions \
-(only those it holds itself: each name, with how many problems it has as a worked \
-example: 0 is ✓). Each text is cut after 200 characters, ending "…(+N chars)". \
-show(name) gives namespace `name` in full, each text cut only after 20,000 characters \
-(show(name, whole=True) gives its yaml and decompositions uncut, without fields): \
-name, depth, yaml (the fields it sets itself, \
-as change_namespace takes them), fields (each as the engine resolves it, with where it \
-comes from), decompositions (every one its agents are shown, inherited ones included: \
-each with its name and from, the namespace that holds it; those `name` holds itself \
-with their yaml and problems too, and show(from) gives an inherited one's; rewritten: \
-True on one they are shown doing what they can instead of a hand-off they can't make, \
-as the Hand-offs field says) and decompositions_left_out (those it holds that no agent \
-is shown, as a shared file's the engine can't read: name, yaml and problems).
-  library.tools(name=None): every tool, in brief: name, kind ("custom", "built-in" or \
-"the app's"), factory, settings, granted_in (the namespaces that grant it themselves), \
-description and source (a custom tool's Python, else None), each text cut after 200 \
-characters. tools(name) gives tool `name` whole.
-  library.changes(): every change to the Library, whoever made it (in the Library \
-panel, by an import, in this chat or in another), newest first, each in a line: id, \
-when (today, yesterday or its date), by (the Library panel; an import of its file; \
-this chat, with turn, the number of its message that made it; or another chat, by its \
-title), done (added, changed or deleted), what (namespace, decomposition, tool or \
-setting, a run setting), namespace (a decomposition's, or the namespace itself), name, \
-and a namespace's fields (those it changed). At most 50, then {more, note}: \
-changes(older_than=id) lists those before change `id`. Asked what changed, answer from \
-these lines, never from a chat's messages, which miss the panel's, imports' and other \
-chats' changes. changes(id=id) gives change `id` whole: those fields, before (None when \
-it was added) and after (None when it was deleted); a namespace's with changed (each \
-field it changed, before and after), and a tool's before and after as {source, \
-factory, settings}; a text the Library couldn't read then is a note saying why, and \
-unreadable says so: never write it back. changes(turn) gives this chat's changes in its message `turn` \
-(numbered from 1, the chat's first) whole, as they were logged. To undo a change, read \
-it whole and write its before back, from the value changes() returned, never retyped: \
-for a namespace, each field it changed, change_namespace(name, {field: value["before"] \
-for field, value in change["changed"].items()}), which keeps what later changes set in \
-other fields, or add_namespace(name, change["before"]) for one deleted; \
-write_decomposition(namespace, change["before"]); write_tool(name, \
-**change["before"]). What this tool may not write (root, a repl or reasoner, a run \
-setting) the user undoes in the Library panel, from the before its Changes tab shows. \
-A change whose before is None added something, \
-and undoing it is deleting it, which this tool never does: the user can, in the Library \
-panel (a namespace in its Namespaces tab, a decomposition in its Decompositions tab, a \
-tool no namespace grants in its Tools tab). The panel deletes no namespace another's \
-spawn lists, so asked to delete one, say which namespaces name it (in spawn, a suffix or \
-a worked example) and offer to take it out of them first; then the user deletes it there.
-  library.write_decomposition(namespace, name, turns): adds the worked example `name` \
-to namespace `namespace`, or replaces the one of that name there. Agents copy it, so \
-write it as they work. turns is a list of dicts, in order: {"user": the task}; then \
-each step, {"think": its reasoning, "code": the Python it runs}, each but the last \
-followed by {"observation": what its code would print}; the last step's code calls \
-FinalAnswer(...), which ends the run, so no observation follows it. Writing one never \
-runs it, and you never run its code: its sub-agents and tools are its namespace's. Type no tags, in \
-any text: the tool writes the engine's <think>, <repl> and <observation> around them, as \
-the last <repl> block in your reply is the one that runs, and refuses a text holding one. \
-Give each code as a raw string over several lines (r\"\"\"…\"\"\"), so the escapes you \
-type stay in its Python. To fix or change one, write it again from turns. \
-write_decomposition(namespace, yaml) takes a decomposition's whole YAML instead, as \
-show(name) and changes() give it. Every text this tool gives writes <repl> and </repl> \
-as ⟦repl⟧ and ⟦/repl⟧, so a copy never ends your cell, and every text it takes reads \
-them back as the tags. To change a few words of a stored one, .replace(...) them in its \
-yaml in your cell, never with text holding a tag. \
-It is stored even when it isn't yet a worked example like that: the \
-result's problems lists each way it isn't (empty when none), and until you write it \
-again without them the Library panel marks it ✗. The result's code_problems, when \
-there are any, lists each turn whose code isn't valid Python, or leaves a variable's \
-{name} in a string without f, which agents copying it would copy too: fix them.
+The `library` tool reads and writes the app's Library: its namespaces, each one's \
+fields, the decompositions (worked examples) its agents are shown, and the tools \
+namespaces grant. Its methods return plain data. A namespace's agents get what it sets \
+and what the namespaces above it set (root, then research, then research.papers): \
+tools, vars and system_suffix texts add up, so a namespace's own system_suffix holds \
+only what is new, and a decomposition of the same name lower down replaces its \
+parent's there. Where a method takes yaml, give a dict of plain values or YAML text.
+  library.show(): every namespace in brief: name, depth, sets (the fields it sets \
+itself), tools (inherited ones too) and decompositions (its own, each with how many \
+problems it has as a worked example: 0 is ✓), each text cut after 200 characters, \
+ending "…(+N chars)".
+  library.show(name): namespace `name` in full: yaml (the fields it sets itself, as \
+change_namespace takes them), fields (each as its agents get it, with where it comes \
+from) and decompositions (every one its agents are shown, with from, the namespace \
+that holds it; its own with their yaml and problems), each text cut after 20,000 \
+characters; show(name, whole=True) gives its yaml and own decompositions uncut.
+  library.tools(name=None): every tool in brief (name, kind, factory, settings, \
+granted_in, description, source), or tool `name` whole.
+  library.changes(): every change to the Library, newest first, whoever made it (the \
+Library panel, an import, this chat or another), a line each: id, when, by, done, \
+what, namespace, name and the fields it changed; at most 50, then {more, note}: \
+changes(older_than=id) lists those before. changes(id=N) gives change N whole: before \
+and after (None when it added or deleted the thing), a namespace's with changed (each \
+field's before and after), a tool's as {source, factory, settings}. changes(turn) \
+gives this chat's changes in its message `turn`, numbered from 1. Only these show what \
+changed, the panel's edits included: the historian can't. To undo a change, write its \
+before back from that value, never retyped: change_namespace(name, {f: v["before"] for \
+f, v in change["changed"].items()}), which keeps later changes to other fields; \
+add_namespace(name, change["before"]) for one deleted; write_decomposition(namespace, \
+change["before"]); write_tool(name, **change["before"]). Undoing an addition is a \
+delete, which the user does in the panel.
+Each write returns {done, what, name, …}; done says "nothing changed: …" when what you \
+gave was already stored, as when a .replace(…) matched nothing. A refusal raises \
+ValueError saying why, and what the user does instead. A text holding "…(+N chars)" or \
+"…(+N more items)", where a read cut it short, is refused: write it whole.
   library.add_namespace(name, yaml): adds namespace `name` ("research", or \
-"research.papers" under an existing research) with the fields yaml sets: system_suffix \
-(text added to its agents' system prompt), vars (names and values its agents' Python \
-has; never a secret, such as an API key, which stays in the shell that starts the \
-app, for a tool to read with os.environ: a var named ..._env may name its variable), tools (tool names it grants) and spawn (the \
-namespaces its agents may hand work to; [] for none).
-  library.change_namespace(name, yaml, replace=False): changes only the fields yaml \
-sets, keeping the others; a field set to null (system_suffix: null) is taken out. A \
-field yaml sets takes the place of the namespace's own whole: tools, spawn and vars \
-too, so to grant one more tool give the whole list (the namespace's own tools, as \
-show(name)'s yaml gives them, and the new one), and to add a var give all its vars. \
-With replace=True, yaml is the namespace's whole own YAML, and each field it doesn't set \
-is taken out. To change part of a text, change its value, never the YAML text, whose \
-lines are indented: own = yaml.safe_load(library.show(name)["yaml"]); \
-change_namespace(name, {"system_suffix": own["system_suffix"].replace(old, new)}). It \
-keeps the namespace's decompositions, and returns changed (each field it changed, \
-before and after), kept (those yaml didn't set) and "nothing changed" naming any text \
-yaml set as it already was.
-  library.write_tool(name, source, factory, settings=None): adds the tool `name` (a \
-Python name), or replaces the one of that name, from `source`, the text of a Python \
-module that defines the function `factory`. A run calls factory(client, params), with \
-params = `settings` (a dict of plain values), and it returns \
-deep_reasoner.primitives.Func(value, description=...): value is what agents call by the \
-tool's name (a function, or an object whose methods they call), and description is what \
-they are told it does (value's docstring when not given; name the methods). client is \
-the run's async OpenAI client: client.chat.completions.create(...) returns a coroutine, \
-not a reply. A tool that needs the model takes the agent's llm as an argument and calls \
-llm(prompt), which returns text from the chat's model; never name a model in a tool. It \
-is built once here to check it, as another chat would build it: in a process of its \
-own, from an empty folder, so a tool that needs a file or module only this chat's \
-folder has doesn't build. Building it doesn't call it, so then try it in your cell as \
-its agents would call it, on the user's own inputs: the files it reads, from the chat's \
-folder (or a line the user gave), and the forms they will type (a short name, another \
-spelling): scope = {}; exec(library.tools(name)["source"], scope); tool = \
-scope[factory](None, settings or {}).value; print(tool(...)). Check that each result \
-is right, fix the tool until it is, and say what you tried; if you had to make inputs \
-up, say so and ask for a real one. \
-Agents see it only in a namespace that grants it (add its name to a namespace's tools \
-with change_namespace), but once any namespace grants it, its module and factory run at \
-the start of every run of every chat, so add_namespace and change_namespace first build \
-each custom tool they grant that no namespace granted yet, and refuse one that doesn't \
-build, as it would stop every chat. Writing or granting a custom tool works only in a \
-chat whose namespace runs the local REPL.
-Locked, so you may read them but not write them: root; a namespace's repl (where its \
-Python runs: local, or a sandbox) and reasoner (reasoner: claude_code runs its agents on \
-Claude Code, billed to the user's Claude subscription), which the user sets in the \
-Library panel (Namespaces → the namespace → Edit YAML), even where show(name) says the \
-run settings set them; which namespaces grant the app's own tools (library, history, \
-page); granting a tool \
-that runs Claude Code (its factory is claude_code), which bills the user's subscription; \
-a new namespace under one that grants library or runs Claude Code (as its reasoner or a \
-tool); a tool root grants, or one the engine builds from its block alone (no Python of \
-its own); a tool named as a built-in (llm, rag, kg, safe_url, claude_code), one of the \
-app's, a Python keyword or a name the REPL binds itself. The user changes any \
-namespace, root included, in the Library panel's Namespaces tab (Edit YAML): what every \
-chat should do goes in root's system_suffix. There is no method for the system prompt \
-or the run settings (max_iter, max_depth, ...): only the user changes them, by importing \
-a config (deep-reasoning import).
-Each write returns what it did, as {done, what, name} (and namespace, but for a tool), \
-done saying "nothing changed: …" when what you gave is what was stored, as when a \
-.replace(...) matched nothing; a refusal raises ValueError saying why. One that holds "…(+N chars)", where a text \
-was cut short, or "…(+N more items)", where a long list was, is refused: write the \
-whole text."""
+"research.papers" under research) with the fields yaml sets: system_suffix (text added \
+to its agents' system prompt), vars (names and plain values its agents' Python has, \
+which the user can edit in the panel; never a secret, which stays in the shell for a \
+tool to read with os.environ: a var named …_env may name it), tools (the tools it \
+grants) and spawn (the namespaces its agents may hand work to: unset, any; [] for \
+none).
+  library.change_namespace(name, yaml, replace=False): sets only the fields yaml \
+gives, keeping the others; a field set to None is taken out. A field given replaces \
+the namespace's own whole, lists and vars too: to grant one more tool, give its own \
+tools and the new one. Change part of a text as a value, never as YAML text: own = \
+yaml.safe_load(library.show(name)["yaml"]); change_namespace(name, {"system_suffix": \
+own["system_suffix"].replace(old, new)}). With replace=True, yaml is its whole own \
+YAML. It returns changed (each field's before and after) and kept.
+  library.write_decomposition(namespace, name, turns): adds the worked example `name` \
+to `namespace`, or replaces the one of that name. turns, in order: {"user": the task}; \
+then each step, {"think": its reasoning, "code": its Python}, each but the last \
+followed by {"observation": what that code prints}; the last step's code calls \
+FinalAnswer(…). Type no tags: the tool adds <think>, <repl> and <observation>, and \
+refuses a text holding one. Give each code as a raw string over several lines \
+(r\"\"\"…\"\"\"), so its escapes stay Python. Writing one never runs it. To change \
+one, write it again from its turns; write_decomposition(namespace, yaml) takes a whole \
+one as show(name) gives it. The result's problems and code_problems say what to fix; \
+until then the panel marks it ✗. Texts this tool gives write <repl> as ⟦repl⟧, and it \
+reads ⟦repl⟧ back as the tag.
+  library.write_tool(name, source, factory, settings=None): adds or replaces the tool \
+`name` (a Python name) from `source`, a Python module defining factory(client, \
+params), which a run calls with params = settings (plain values) and which returns \
+deep_reasoner.primitives.Func(value, description=…): value is what agents call by the \
+tool's name (a function, or an object whose methods they call), and description what \
+they are told it does. A tool that needs the model takes the agent's llm as an \
+argument and calls llm(prompt) for text; never name a model or call client. The tool \
+is built in an empty folder to check it, but not called: try it yourself on the user's \
+real inputs (their files in this chat's folder, and the forms they type): scope = {}; \
+exec(library.tools(name)["source"], scope); tool = scope[factory](None, settings or \
+{}).value; print(tool(…)). Once a namespace grants a custom tool, it runs at the start \
+of every chat's run, so a grant first builds it and is refused if it doesn't build. \
+Writing or granting a tool works only in a chat on the local REPL.
+Only the user deletes anything (in the Library panel: a namespace under Namespaces, \
+which refuses one another's spawn lists, a decomposition under Decompositions, an \
+ungranted tool under Tools) or changes root, a namespace's repl or reasoner, which \
+namespaces grant the app's own tools (library, history, page), the system prompt or \
+the run settings: the tool refuses these, saying how."""
 PAGE_DESCRIPTION = """\
 When the user asks to see something (how an earlier answer was worked out, what an \
 agent did, an error) and you found it, show it on a page with `page`: the app opens it \

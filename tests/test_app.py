@@ -2408,18 +2408,18 @@ async def test_the_worked_example_the_librarians_example_writes_runs_as_written(
                 api, await send(api, await librarian_chat(api), asking.content)
             )
             namespaces = (await api.get("/api/library")).json()["namespaces"]
-            [written] = next(
-                each for each in namespaces if each["name"] == "astronomy"
-            )["decompositions"]
+            [written] = next(each for each in namespaces if each["name"] == "recipes")[
+                "decompositions"
+            ]
             question, *answering = parsed(written["yaml"]).messages
-            # An agent in astronomy that does just as the example it was shown does.
+            # An agent in recipes that does just as the example it was shown does.
             plan[question.content] = [
                 turn.content for turn in answering if turn.role == "assistant"
             ]
-            chat = await chat_in(api, "astronomy")
+            chat = await chat_in(api, "recipes")
             events = await run_events(api, await send(api, chat, question.content))
     assert written["problems"] == []
-    assert events[-1]["answer"].startswith("| step | value |\n|---|---|\n| distance |")
+    assert events[-1]["answer"].startswith("You can make leek and potato soup")
 
 
 @pytest.mark.anyio
@@ -2451,7 +2451,11 @@ async def test_root_hands_a_question_about_the_library_to_the_librarian_which_ma
     reading = named(LIBRARIANS_EXAMPLES, "read the Library")
     question = reading.messages[0].content
     roots = {question: [handing_off.messages[-1].content]}
-    librarians = {question: [reading.messages[-1].content]}
+    librarians = {
+        question: [
+            turn.content for turn in reading.messages if turn.role == "assistant"
+        ]
+    }
     responder = told_or(LIBRARIAN_SUFFIX, scripted(librarians), scripted(roots))
     with FakeOpenAI(responder) as fake:
         async with connect(library_on(fake)) as api:

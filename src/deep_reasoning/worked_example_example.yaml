@@ -1,39 +1,49 @@
 name: add a namespace with a worked example
 messages:
-  - {role: user, content: "Set up astronomy for me: its answers should lay each step of the calculation out in a table. Give it one example."}
+  - {role: user, content: "Set up a recipes helper: it answers from my recipe files, the .txt files in my folder, and always names the recipe it used. Give it one example."}
   - role: assistant
     content: |
-      <think>Add the namespace, with a system_suffix saying what its agents always do, then a worked example of an agent doing it, as turns: the task, then each step's think and code, with what the code printed after it. I type no tags: the tool writes them. Each code is a raw string over several lines, so its "\n" stays an escape in its Python.</think>
+      <think>One write per cell. First the helper, its instructions saying what it always does, in the user's words.</think>
       <repl>
-      print(library.add_namespace("astronomy", {"system_suffix": "Always show your working in a Markdown table: each step, then the answer."}))
-      turns = [
-          {"user": "How many light-years away is Proxima Centauri, which is 4.0e13 km from us?"},
-          {"think": "Divide the distance by the kilometres in a light-year, and print it.", "code": r"""
-      km = 4.0e13
-      km_per_light_year = 9.461e12
-      light_years = km / km_per_light_year
-      print(light_years)
-      """},
-          {"observation": "4.227882887644013"},
-          {"think": "Lay each step out in a table, from the variables.", "code": r"""
-      FinalAnswer(f"| step | value |\n|---|---|\n| distance | {km:.1e} km |\n| one light-year | {km_per_light_year:.3e} km |\n| distance / light-year | {light_years:.2f} light-years |\n\nProxima Centauri is about {light_years:.2f} light-years away.")
-      """},
-      ]
-      print(library.write_decomposition("astronomy", "light-years to Proxima Centauri", turns))
+      print(library.add_namespace("recipes", {"system_suffix": "Answer from the recipe files, the .txt files in the working folder, and always name the recipe you used."}))
       </repl>
   - role: user
     content: |
       <observation>
-      {'done': 'added', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy'}
-      {'done': 'added', 'what': 'decomposition', 'namespace': 'astronomy', 'name': 'light-years to Proxima Centauri', 'problems': []}
+      {'done': 'added', 'what': 'namespace', 'namespace': 'recipes', 'name': 'recipes'}
+      </observation>
+  - role: assistant
+    content: |
+      <think>Now the example, as turns, typing no tags: its first step prints what it reads, as a cell shows only what it prints, and the next answers from what was printed, naming the recipe. Each code is a raw string over several lines.</think>
+      <repl>
+      turns = [
+          {"user": "What can I make with leeks?"},
+          {"think": "Read the recipe files and print each one that mentions leeks.", "code": r"""
+      from pathlib import Path
+      for path in sorted(Path().glob("*.txt")):
+          text = path.read_text(encoding="utf-8")
+          if "leek" in text.lower():
+              print(path.name, "|", text)
+      """},
+          {"observation": "leek_soup.txt | Leek and potato soup. Serves 4: 3 leeks, 2 potatoes, 1 litre of stock."},
+          {"think": "One recipe has leeks: answer from it, naming it.", "code": r"""
+      FinalAnswer("You can make leek and potato soup (leek_soup.txt): it serves 4 and needs 3 leeks, 2 potatoes and a litre of stock.")
+      """},
+      ]
+      print(library.write_decomposition("recipes", "what can I make with leeks", turns))
+      </repl>
+  - role: user
+    content: |
+      <observation>
+      {'done': 'added', 'what': 'decomposition', 'namespace': 'recipes', 'name': 'what can I make with leeks', 'problems': []}
       </observation>
   - role: assistant
     content: |
       <think>Both were written, and the example has no problems.</think>
       <repl>
       FinalAnswer(
-          "I set up astronomy: it always shows its working in a table, and has one example to "
-          'follow, "light-years to Proxima Centauri". Pick astronomy under the message box to '
-          "use it from your next message."
+          "I set up a recipes helper: it answers from the recipe files in your folder and always "
+          'names the recipe it used, with one example to follow, "what can I make with leeks". '
+          "Pick recipes under the message box to use it from your next message."
       )
       </repl>
