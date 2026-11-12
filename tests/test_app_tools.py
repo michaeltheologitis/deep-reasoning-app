@@ -461,6 +461,8 @@ MODEL_DOWN = (
     "InternalServerError: Error code: 500 - {'error': {'message': 'the fake model is"
     " down'}}"
 )
+# What the worker says it means, as the parent's cell and the sub-agent's end say it.
+MODEL_DOWN_LEAD = "The model provider failed (500) after 1 s of waiting."
 
 
 def test_errors_list_each_failed_cell_the_top_agents_included_and_each_failed_agent(
@@ -476,11 +478,11 @@ def test_errors_list_each_failed_cell_the_top_agents_included_and_each_failed_ag
         | {"index": 1, "error": "ZeroDivisionError: division by zero"}
         | {"code": "print(1 / 0)"},
         top
-        | {"index": 2, "error": f"openai.{MODEL_DOWN}"}
+        | {"index": 2, "error": f"openai.{MODEL_DOWN}\n{MODEL_DOWN_LEAD}"}
         | {"code": "r = subagent('Break the model.')\nprint(r)"},
         {"turn": 2, "node": 2, "namespace": "root", "task": "Break the model."}
         | {"index": None}
-        | {"error": f"It ended failed: {MODEL_DOWN}", "code": None},
+        | {"error": f"It ended failed: {MODEL_DOWN_LEAD}\n{MODEL_DOWN}", "code": None},
     ]
     assert history.errors() == history.errors(2)
     for error in history.errors(2)[:2]:
@@ -1696,8 +1698,8 @@ def test_a_change_keeping_the_repl_and_app_tools_the_user_set_is_written(fresh):
         "namespace": "drafts",
         "name": "drafts",
         "changed": {
-            "tools": {"before": ["history"], "after": ["llm", "history"]},
-            "system_suffix": {"before": None, "after": "Draft."},
+            "tools": {"was": ["history"], "now": ["llm", "history"]},
+            "system_suffix": {"was": None, "now": "Draft."},
         },
         "kept": ["repl"],
     }
@@ -1737,10 +1739,10 @@ def test_a_change_with_replace_sets_every_field_as_the_panels_edit_yaml_does(fre
     done = tool.change_namespace("research", "spawn: [historian]\n", replace=True)
     assert ("research", "spawn: [historian]\n") in stored_namespaces(fresh)
     assert done["changed"] == {
-        "system_suffix": {"before": "Cite a source.", "after": None},
-        "tools": {"before": ["llm"], "after": None},
-        "vars": {"before": {"year": 2026}, "after": None},
-        "spawn": {"before": None, "after": ["historian"]},
+        "system_suffix": {"was": "Cite a source.", "now": None},
+        "tools": {"was": ["llm"], "now": None},
+        "vars": {"was": {"year": 2026}, "now": None},
+        "spawn": {"was": None, "now": ["historian"]},
     }
     assert done["kept"] == []
 
@@ -1769,7 +1771,7 @@ def test_a_spawn_list_naming_helpers_gets_the_historian_added_and_says_so_first(
         name, {"spawn": ["drafts"]}, replace=replace
     )
     assert own_fields(fresh, name)["spawn"] == ["drafts", HISTORIAN]
-    assert done["changed"]["spawn"]["after"] == ["drafts", HISTORIAN]
+    assert done["changed"]["spawn"]["now"] == ["drafts", HISTORIAN]
     assert next(iter(done.items())) == ("note", kept_note(name))
 
 
@@ -3133,6 +3135,21 @@ def test_a_change_the_panel_made_is_undone_by_writing_its_before_back(fresh):
     assert whole["after"] is None
     assert tool.write_decomposition("drafts", whole["before"])["done"] == "added"
     assert stored_yaml(fresh, "drafts", name) == EXAMPLE
+
+
+def test_an_undos_result_says_what_the_field_was_and_is_now_not_before_and_after(
+    fresh,
+):
+    tool = library_tool(fresh)
+    tool.add_namespace("plates", {"vars": {"outlier_mad_cutoff": 3.5}})
+    with closing(open_library(fresh)) as connection:
+        change_namespace(connection, "plates", "vars: {outlier_mad_cutoff: 4}\n")
+    panel_edit = tool.changes(id=tool.changes()[0]["id"])
+    undo = {f: v["before"] for f, v in panel_edit["changed"].items()}
+    done = tool.change_namespace("plates", undo)
+    assert done["changed"] == {
+        "vars": {"was": {"outlier_mad_cutoff": 4}, "now": {"outlier_mad_cutoff": 3.5}}
+    }
 
 
 def test_a_rename_in_the_panel_is_undone_by_writing_the_old_back_and_deleting_the_new(

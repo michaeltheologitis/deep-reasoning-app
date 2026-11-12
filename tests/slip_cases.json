@@ -1,0 +1,57 @@
+[
+  {
+    "case": "a line added unindented at the end of system_suffix",
+    "text": "tools:\n- llm\nsystem_suffix: |\n  You are an agent of Deep Reasoning.\n  Answer in plain words.\nAnswer in British English.\n",
+    "words": "Line 6, \"Answer in British English.\", isn't indented like the lines of system_suffix above it, so it ends that text: start it with 2 spaces, as they do."
+  },
+  {
+    "case": "an unindented line before the next field",
+    "text": "system_suffix: |\n  You are an agent of Deep Reasoning.\n  Answer in plain words.\nAnswer in British English.\ntools: [llm]\n",
+    "words": "Line 4, \"Answer in British English.\", isn't indented like the lines of system_suffix above it, so it ends that text: start it with 2 spaces, as they do."
+  },
+  {
+    "case": "two unindented lines, the first named",
+    "text": "system_suffix: |\n  You are an agent of Deep Reasoning.\n  Answer in plain words.\nAnswer in British English.\nCite each source.\n",
+    "words": "Line 4, \"Answer in British English.\", isn't indented like the lines of system_suffix above it, so it ends that text: start it with 2 spaces, as they do."
+  },
+  {
+    "case": "a line after a text kept without its last line break",
+    "text": "system_suffix: |-\n  Answer in one sentence.\n\nGive distances in light-years.\nvars: {unit: ly}\n",
+    "words": "Line 4, \"Give distances in light-years.\", isn't indented like the lines of system_suffix above it, so it ends that text: start it with 2 spaces, as they do."
+  },
+  {
+    "case": "a var's text, a line indented less than its lines",
+    "text": "vars:\n  note: |\n    Plates are 96 wells.\n  Rows A to H.\n",
+    "words": "Line 4, \"Rows A to H.\", isn't indented like the lines of note above it, so it ends that text: start it with 4 spaces, as they do."
+  },
+  {
+    "case": "a decomposition's turn, a line indented less than its lines",
+    "text": "name: count\nmessages:\n- role: user\n  content: |\n    How many tickets are open?\n  And how many closed?\n",
+    "words": "Line 6, \"And how many closed?\", isn't indented like the lines of content above it, so it ends that text: start it with 4 spaces, as they do."
+  },
+  {
+    "case": "a long line, shown only to its first 40 characters",
+    "text": "system_suffix: |\n  You are an agent of Deep Reasoning.\n  Answer in plain words.\nAlways give 🧪 the plate, the well and the concentration in µM.\n",
+    "words": "Line 4, \"Always give 🧪 the plate, the well and th…\", isn't indented like the lines of system_suffix above it, so it ends that text: start it with 2 spaces, as they do."
+  },
+  {
+    "case": "a text with nothing indented under it",
+    "text": "system_suffix: |\nAnswer in one sentence.\ntools: [llm]\n",
+    "words": null
+  },
+  {
+    "case": "a field after a text, then a list left open",
+    "text": "system_suffix: |\n  You are an agent of Deep Reasoning.\n  Answer in plain words.\ntools: [llm\n",
+    "words": null
+  },
+  {
+    "case": "a text's own line reading as a text's head",
+    "text": "system_suffix: |\n  Format: |\n    a table\n  then a sentence.\ntools: [llm\n",
+    "words": null
+  },
+  {
+    "case": "a list left open, before an unindented line",
+    "text": "tools: [llm\nsystem_suffix: |\n  You are an agent of Deep Reasoning.\n  Answer in plain words.\nAnswer in British English.\n",
+    "words": null
+  }
+]

@@ -1,4 +1,5 @@
-// A decomposition's turns checked as a worked example, as library.py's turn_problems checks them, in its words.
+// A decomposition's turns checked as a worked example, as library.py's turn_problems checks them, in its words; and the
+// commonest slip behind a YAML error, as its slip_words says it.
 const THINK = /<think>[\s\S]*?<\/think>/;
 const REPL = "<repl>";
 const REPL_END = "</repl>";
@@ -64,4 +65,35 @@ export function turnProblems(messages) {
   if (role === "user") problems.push(`It ends on turn ${number} (user); end with the assistant's turn that calls FinalAnswer(...).`);
   else if (!answers(content)) problems.push(`Turn ${number} (assistant), the last, should call FinalAnswer(...) in its <repl>.`);
   return problems;
+}
+
+// a block text's head, "key: |" or "- |", or > for folded text, with any indicators; and a line of its own, as may end one
+const BLOCK_HEAD = /^ *(?:- +)*(?:(\S[^#]*?):[ \t]+)?[|>][-+1-9]*[ \t]*(?:#.*)?$/;
+const OWN_LINE = /^ *(?:#|-(?: |$)|[^\s#].*?:(?: |$))/;
+const indentOf = (line) => line.match(/^ */)[0].length;
+const isBlank = (line) => /^[ \t]*$/.test(line);
+// enough of a line to find it by, as the editor numbers no lines; in characters as Python counts them
+const SLIP_SHOWN_CHARS = 40;
+
+// A line at or before errorLine that ends a block text above it, being less indented than that text's lines, and is no key,
+// item or comment of its own, in plain words; null for none.
+export function slipWords(text, errorLine) {
+  const lines = text.split("\n").slice(0, errorLine);
+  let at = 0;
+  while (at < lines.length) {
+    const head = lines[at].match(BLOCK_HEAD);
+    at += 1;
+    if (!head) continue;
+    while (at < lines.length && isBlank(lines[at])) at += 1;
+    if (at === lines.length || indentOf(lines[at]) <= indentOf(head[0])) continue;
+    const body = indentOf(lines[at]);
+    while (at < lines.length && (isBlank(lines[at]) || indentOf(lines[at]) >= body)) at += 1;
+    if (at < lines.length && !OWN_LINE.test(lines[at])) {
+      const textOf = head[1] ? `the lines of ${head[1]}` : "the text's lines";
+      const chars = [...lines[at].replace(/^[ \t]+|[ \t]+$/g, "")];
+      const shown = chars.length > SLIP_SHOWN_CHARS ? `${chars.slice(0, SLIP_SHOWN_CHARS).join("")}…` : chars.join("");
+      return `Line ${at + 1}, "${shown}", isn't indented like ${textOf} above it, so it ends that text: start it with ${body} space${body === 1 ? "" : "s"}, as they do.`;
+    }
+  }
+  return null;
 }

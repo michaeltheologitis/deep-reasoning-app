@@ -602,7 +602,8 @@ the namespace's own whole, lists and vars too: to grant one more tool, give its 
 tools and the new one. Change part of a text as a value, never as YAML text: own = \
 yaml.safe_load(library.show(name)["yaml"]); change_namespace(name, {"system_suffix": \
 own["system_suffix"].replace(old, new)}). With replace=True, yaml is its whole own \
-YAML. It returns changed (each field's before and after) and kept.
+YAML. It returns changed, each field it changed with what it was and what it is now \
+({field: {was, now}}), and kept.
   library.write_decomposition(namespace, name, turns): adds the worked example `name` \
 to `namespace`, or replaces the one of that name. turns, in order: {"user": the task}; \
 then each step, {"think": its reasoning, "code": its Python}, each but the last \
@@ -849,6 +850,12 @@ LEFT_OUT_NOTE = re.compile(r"# Left out: [^\n]*\n(?:# [^\n]*\n)*")
 # Half of a character, which a YAML escape can make (PyYAML reads an emoji's escaped pair
 # as two halves) but no text written as UTF-8, so no response or run's spec, can hold.
 SURROGATE = re.compile("[\ud800-\udfff]")
+# A block text's head: "key: |" or "- |", or > for folded text, with any indicators.
+BLOCK_HEAD = re.compile(r"^ *(?:- +)*(?:(\S[^#]*?):[ \t]+)?[|>][-+1-9]*[ \t]*(?:#.*)?$")
+# A line of its own, as may end a block text: a key, an item or a comment.
+OWN_LINE = re.compile(r"^ *(?:#|-(?: |$)|[^\s#].*?:(?: |$))")
+# Enough of a line to find it by, as the panel's editor numbers no lines.
+SLIP_SHOWN_CHARS = 40
 
 
 def unwritable(error):
@@ -2065,6 +2072,43 @@ def problem(error):
     return f"{'.'.join(map(str, error['loc']))}: {error['msg']}."
 
 
+def slip_words(text, error_line):
+    """The commonest slip behind a YAML error at line *error_line*, in plain words: a line
+    at or before it that ends a block text ("key: |") above it, being less indented than
+    that text's lines, and is no key, item or comment of its own; None for none. As
+    web/turns.js's slipWords, held to its words by tests/slip_cases.json."""
+    lines = text.split("\n")[:error_line]
+    at = 0
+    while at < len(lines):
+        head = BLOCK_HEAD.match(lines[at])
+        at += 1
+        if head is None:
+            continue
+        while at < len(lines) and not lines[at].strip(" \t"):
+            at += 1
+        if at == len(lines) or indent_of(lines[at]) <= indent_of(head[0]):
+            continue
+        body = indent_of(lines[at])
+        while at < len(lines) and (
+            not lines[at].strip(" \t") or indent_of(lines[at]) >= body
+        ):
+            at += 1
+        if at < len(lines) and not OWN_LINE.match(lines[at]):
+            text_of = f"the lines of {head[1]}" if head[1] else "the text's lines"
+            shown = lines[at].strip(" \t")
+            if len(shown) > SLIP_SHOWN_CHARS:
+                shown = f"{shown[:SLIP_SHOWN_CHARS]}…"
+            return (
+                f'Line {at + 1}, "{shown}", isn\'t indented like {text_of} above it, so'
+                f" it ends that text: start it with {count(body, 'space')}, as they do."
+            )
+    return None
+
+
+def indent_of(line):
+    return len(line) - len(line.lstrip(" "))
+
+
 class RepeatsLoader(yaml.SafeLoader):
     """yaml.safe_load's loader, noting where a mapping first gives a key twice, however
     written (1 and 0x1, true and yes, null and ~), as it keeps only the last. A key given
@@ -2133,8 +2177,10 @@ def loaded(text, repeated=None):
         mark = getattr(error, "problem_mark", None)
         where = f"line {mark.line + 1}: " if mark else ""
         reason = getattr(error, "problem", None) or error
+        slip = slip_words(text, mark.line + 1) if mark else None
         raise LibraryError(
-            f"The YAML doesn't parse ({where}{reason}). Check the indentation and quoting on that line."
+            slip
+            or f"The YAML doesn't parse ({where}{reason}). Check the indentation and quoting on that line."
         ) from error
     except RecursionError as error:
         raise LibraryError("The YAML is nested too deeply to read.") from error

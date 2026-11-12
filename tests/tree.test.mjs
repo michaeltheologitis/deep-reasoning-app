@@ -214,6 +214,8 @@ const PROVIDER_ERRORS = [
   ["PermissionDeniedError: Error code: 403 - {}", "The provider denied this key access (403)"],
   ["RateLimitError: Error code: 429 - {}", "The provider's rate limit or quota ran out (429)"],
   ["InternalServerError: Error code: 503 - {}", "The provider failed (503)"],
+  // a gateway's 502 in plain text, as testers' read
+  ["InternalServerError: upstream request failed", "The provider failed"],
 ];
 
 for (const [raw, plain] of PROVIDER_ERRORS) {
@@ -265,6 +267,13 @@ test("a sub-agent that failed on a provider's error leads with plain words, a sh
   const raw = "NotFoundError: Error code: 404 - {'error': {'message': 'The model `fake-small` does not exist'}}";
   const [, under] = renderAgent(drive({ status: "failed", result: raw })).children;
   assert.equal(under.textContent, `⎿The provider has no model fake-small (404) · ${raw}`);
+});
+
+test("a sub-agent the worker says a provider ended leads with its words, the provider's own after", () => {
+  const lead = "The model provider failed (502) after 196 s of waiting.";
+  const raw = "InternalServerError: upstream request failed";
+  const [, under] = renderAgent(drive({ status: "failed", result: `${lead}\n${raw}` })).children;
+  assert.equal(under.textContent, `⎿${lead} · ${raw}`);
 });
 
 // Answers seen mangled when every answer went through Markdown, and others that hold no Markdown.

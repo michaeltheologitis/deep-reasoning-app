@@ -50,8 +50,11 @@ const EXCEPTION_MODULE = /^(?:[A-Za-z_]\w*\.)+(?=[A-Za-z_]\w*(?::|$))/;
 // as the OpenAI client words a provider's errors: "NotFoundError: Error code: 404 - {...}"
 const PROVIDER_STATUS = /^(?:openai\.)?(?:APIStatus|Authentication|PermissionDenied|NotFound|RateLimit|InternalServer)Error: Error code: (\d{3})\b/;
 const UNREACHABLE = /^(?:openai\.)?APIConnectionError: /;
+// a 5xx whose body isn't JSON, as a gateway's "upstream request failed", which the client words without its code
+const SERVER_FAILED = /^(?:openai\.)?InternalServerError: /;
 // how the worker's own first line begins (worker.py's PROVIDER_LEAD and OUT_OF_TURNS)
 const APPS_LEADS = ["The model provider ", "The agent used all "];
+const ledByWorker = (text) => APPS_LEADS.some((lead) => text.startsWith(lead));
 const TIMED_OUT = /^(?:openai\.)?APITimeoutError: /;
 // the model a provider's 404 names: "The model `x` does not exist", 'model "x" not found'
 const NAMED_MODEL = /\bmodel\s*[`'"]([^`'"\n]+)[`'"]/i;
@@ -246,7 +249,8 @@ function plainFailure(text, model = null) {
   const status = Number(text.match(PROVIDER_STATUS)?.[1]);
   if (status === NOT_FOUND) return `${missing(text, model)} (${status})`;
   const words = STATUS_WORDS[status] ?? (status >= SERVER_ERROR ? PROVIDER_FAILED : null);
-  return words && `${words} (${status})`;
+  if (words) return `${words} (${status})`;
+  return SERVER_FAILED.test(text) ? PROVIDER_FAILED : null;
 }
 
 // A 404 that speaks of a model is the model's; any other, the address's.
@@ -258,7 +262,7 @@ function missing(text, model) {
 // A failure led by what a provider's error means, then its own words: on a line of their own, or after on one cut short. The worker
 // leads a run a provider ended, or that ran out of turns, with what it means itself, on its first line.
 function failureView(text, { model = null, after = "\n" } = {}) {
-  const cut = APPS_LEADS.some((lead) => text.startsWith(lead)) ? text.indexOf("\n") : -1;
+  const cut = ledByWorker(text) ? text.indexOf("\n") : -1;
   const [lead, own] = cut > 0 ? [text.slice(0, cut), text.slice(cut + 1)] : [plainFailure(text, model), text];
   return lead ? [lead, after, element("span", { class: "raw" }, own)] : text;
 }
@@ -437,8 +441,11 @@ function renderUnder(agent) {
     return last ? out(stepLabel(last)) : null;
   }
   if (!tone || !agent.result) return null;
-  return out(failureView(agent.result.split("\n")[0], { model: agent.model, after: CUT_SEPARATOR }), { tone });
+  return out(failureView(reasonLine(agent.result), { model: agent.model, after: CUT_SEPARATOR }), { tone });
 }
+
+// A failed agent's reason, cut to its first line, after the worker's own leading it when it gives one.
+const reasonLine = (text) => text.split("\n").slice(0, ledByWorker(text) ? 2 : 1).join("\n");
 
 const waiting = (word = WAITING) => element("div", { class: "waiting" }, word);
 
