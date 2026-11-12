@@ -259,14 +259,16 @@ chat's folder imports too.
   `library` tool. A chat in another namespace can't, even through a sub-agent.
 - It reads first and answers from what it printed: all a change touches (the helper's suffix, its worked examples,
   the source of the tools it uses), from the Library itself, and what any change did, the panel's included, from
-  the app's record, never from memory or the historian. It changes only what you ask, all of it: it keeps every line
-  you didn't ask to change (asking when one seems to clash), writes each rule as you said it, and asks before
-  rewriting any other text; what depends on the change (a planner's hand-offs and worked examples, helpers doing the
+  the app's record, never from memory or the historian; your files by their names in the chat's folder, never a
+  pattern it guessed; and it says so when something you name isn't there. It changes only what you ask, all of it:
+  it keeps every line you didn't ask to change (asking when one seems to clash), writes each rule as you said it and
+  none of its own (one it added, such as keeping every figure in a hand-off, overrode yours or another helper's), and
+  asks before rewriting any other text; what depends on the change (a planner's hand-offs and worked examples, helpers doing the
   same job, a tool's description, the old place when something moves) it keeps in step without asking, and a wish
   about how it works ("don't ask") holds in that chat, never in an agent's text. Each rule and number lives in one
   place: a number you will want to edit becomes a var, which the panel edits, and a rule a tool applies lives in the
   tool or a var passed to it, with the suffix saying where. It works in small steps (one namespace, worked example or
-  tool per cell, short printouts, no check run twice), and a write that leaves a text as it was says "nothing
+  tool per cell, short printouts, no check run twice, stopping once what you asked works), and a write that leaves a text as it was says "nothing
   changed", so it isn't reported done. A team it sets up is a planner you talk to, handing each question only to the
   members it needs with your facts and files, with a spawn list of its members, `historian` and `librarian`, and a
   worked example handing each part on; members are siblings rather than children, and other spawn lists stay unset.
@@ -275,8 +277,8 @@ chat's folder imports too.
   Asked to get rid of a helper, it never empties its suffix: it takes it out of the others' spawn lists, suffixes and
   worked examples, then says to delete it in the panel, which deletes no namespace a spawn list names. Asked for
   what no change can promise (quicker, more reliable, stricter), it reads what causes it, says so and offers the
-  choices before changing anything. A lasting wish goes in a helper (yours, or a new one); root, which you edit in
-  the panel, only for every chat. It answers in your words, keeping the Library's terms for when you use them, and
+  choices before changing anything. A lasting wish goes in a helper (yours, or a new one); root only for every chat,
+  and it gives you the panel's steps (Namespaces, root, Edit YAML, a line indented like the others). It answers in your words, keeping the Library's terms for when you use them, and
   for a page about the Library it hands the historian the facts. Granting a tool, it says in the namespace's suffix
   when to use it.
 - It writes a worked example from its steps (the task; each step's reasoning and code; what the code printed), so
@@ -284,18 +286,18 @@ chat's folder imports too.
   every text it reads gives each `<repl>` as `⟦repl⟧`, read back when it writes, so copying a worked example never
   ends its cell and writing one back changes nothing. A definition, format, layout, order or rounding a worked
   example shows goes in the namespace's suffix too, and it is told of a cell leaving a variable's `{name}` in a
-  string without `f`, and fixes it. In the examples it writes, a step that reads prints what it read, and the next
-  answers from it.
+  string without `f`, and fixes it. The examples it writes show a helper's whole job, their code working for any
+  input, never with the answer typed in; a step that reads prints what it read, and the next answers from it.
 - Each change shows under its answer and in the tree, opens onto its YAML (or a tool's Python) before and after, and
   applies from your next message; the panel and namespace menu show it at once. Ask it what changed (today, or in
-  the last hour: it knows each change's time) and it answers from the app's record of every change, made in the
+  the last hour: it knows each change's time) and it names each one from the app's record of every change, made in the
   panel, by an import or in any chat (the newest 1,000 kept), and what any one of them, a panel edit included,
   changed, before and after. Ask it to undo one, wherever it was made, and it
   writes the before back from the record, a deleted item included, if it is one it may write (below); the rest, such
   as root or a run setting, you undo in the panel from the before its Changes tab shows.
 - A tool it writes, or a tool of yours it grants afresh, is built first as another chat would build it, and refused
   if it doesn't build, naming a package the app lacks and how to add it; that works only in a chat whose namespace
-  runs the local REPL. It then tries a tool it wrote on your own inputs (the files it reads in the chat's folder, a
+  runs the local REPL. It tries a tool it writes on your own inputs before writing it (the files it reads in the chat's folder, a
   line you gave, the short names you type), says so when it had to make inputs up, and fixes it before answering if
   a result is wrong. Writing a worked example never runs its code.
 - It never changes root, a namespace's REPL or backbone, which namespaces grant `library`, `history` or `page`, the
