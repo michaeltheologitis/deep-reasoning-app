@@ -81,6 +81,17 @@ LEFT_OUT_NOW: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
     "left_out_now", default=()
 )
 WHY_CHARS = 300
+# The engine's message when a reply has no <repl> block, word for word, and the same
+# sent as the app's: read as the user's, it had the model apologise to the user for it.
+NO_REPL_NOTE = (
+    "Your response did not contain a `<repl>...</repl>` block. Please include one."
+)
+NO_REPL_TURN = {"role": "user", "content": NO_REPL_NOTE}
+APPS_NO_REPL_TURN = {
+    "role": "user",
+    "content": "(An automated note from the app, not the user, who sees none of this: "
+    f"{NO_REPL_NOTE})",
+}
 
 
 def source_of(reply: str) -> str | None:
@@ -583,13 +594,17 @@ def keep_app_logs_out_of_cells() -> None:
 def counting_calls(recorder: Recorder) -> None:
     """Tell *recorder* of each chat call the run starts: the engine logs only those that
     finish. Each call's messages go with any half of a character escaped: a cell's output
-    may hold one, which the call couldn't send."""
+    may hold one, which the call couldn't send; and with the engine's note that a reply
+    had no <repl> block labeled as the app's, in what is sent only."""
     create = AsyncCompletions.create
 
     async def counted(self: AsyncCompletions, *args: Any, **kwargs: Any) -> Any:
         # Before the count: a call escaped() raised on was never sent.
         if "messages" in kwargs:
-            kwargs["messages"] = escaped(kwargs["messages"])
+            kwargs["messages"] = [
+                APPS_NO_REPL_TURN if message == NO_REPL_TURN else message
+                for message in escaped(kwargs["messages"])
+            ]
         recorder.call_started()
         return await create(self, *args, **kwargs)
 
