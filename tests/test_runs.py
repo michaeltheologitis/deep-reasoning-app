@@ -742,26 +742,33 @@ async def test_a_huge_cell_output_is_cut_in_what_is_sent_and_kept_whole_in_the_r
     assert REPEATED_NOTE not in fake.calls[2].messages[-1]["content"]
 
 
-async def test_an_output_within_the_limit_and_a_worked_examples_are_sent_whole(
-    home, library, fake_config
-):
+async def test_an_output_up_to_the_limit_is_sent_whole(home, library, fake_config):
+    chapter = "x" * SENT_OUTPUT_CHARS
+    plan = {"Read the chapter.": [repl(f"print({chapter!r})"), repl("FinalAnswer(1)")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        await run_to_the_end(
+            Runs(library, home), "Read the chapter.", fake_config(fake)
+        )
+    sent = fake.calls[1].messages[-1]["content"]
+    assert sent.startswith(f"<observation>\n{chapter}\n</observation>\n")
+
+
+async def test_a_worked_examples_huge_output_is_sent_whole(home, library, fake_config):
+    printed = {"role": "user", "content": f"<observation>\n{SALES}\n</observation>"}
     example = {
         "name": "count the sales",
         "messages": [
             {"role": "user", "content": "How many sales?"},
             {"role": "assistant", "content": PRINT_SALES},
-            {"role": "user", "content": f"<observation>\n{SALES}\n</observation>"},
+            printed,
             {"role": "assistant", "content": repl("FinalAnswer(20_000)")},
         ],
     }
-    chapter = "x" * SENT_OUTPUT_CHARS
-    plan = {"Read the chapter.": [repl(f"print({chapter!r})"), repl("FinalAnswer(1)")]}
+    plan = {"How many lattes?": [repl("FinalAnswer(20_000)")]}
     with FakeOpenAI(scripted(plan)) as fake:
         config = fake_config(fake, namespaces={"root": {"decompositions": [example]}})
-        await run_to_the_end(Runs(library, home), "Read the chapter.", config)
-    assert example["messages"][2] in fake.calls[1].messages
-    sent = fake.calls[1].messages[-1]["content"]
-    assert sent.startswith(f"<observation>\n{chapter}\n</observation>\n")
+        await run_to_the_end(Runs(library, home), "How many lattes?", config)
+    assert printed in fake.calls[0].messages
 
 
 async def test_each_call_costs_what_its_server_says_it_cost(home, library, fake_config):

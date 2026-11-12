@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import re
 import signal
 import subprocess
 import sys
@@ -24,14 +25,18 @@ from openai.resources.chat.completions import AsyncCompletions
 from deep_reasoning import worker
 from deep_reasoning.runs import LEFT_OUT
 from deep_reasoning.worker import (
+    REPEATED_NOTE,
+    SENT_OUTPUT_CHARS,
     Recorder,
     build_failure,
     cost_of,
+    cut,
     exhausted_detail,
     failure_detail,
     final_answer_of,
     output_of,
     tool_line,
+    with_apps_notes,
 )
 
 ROOT, CHILD = 1, 2
@@ -265,6 +270,56 @@ def test_the_engines_note_of_a_reply_with_no_repl_block_is_sent_as_the_apps(
     }
     # The engine's own conversation, which its log records, keeps the note as it was.
     assert conversation[3] == note
+
+
+HALF = SENT_OUTPUT_CHARS // 2
+SALES = "\n".join(f"sale {n}: 1 latte" for n in range(20_000))
+RAISED = 'Traceback (most recent call last):\n  File "<repl>", line 1\nValueError: '
+
+
+def cut_apart(sent):
+    """A cut output's start, note and end, and how many characters its note says it
+    left out."""
+    head, _, rest = sent.partition("\n(An automated note from the app")
+    note, _, tail = rest.partition(".)\n")
+    left = int(re.search(r"the middle ([\d,]+) of", note)[1].replace(",", ""))
+    return head, note, tail, left
+
+
+def test_a_cut_keeps_whole_lines_and_says_exactly_how_much_it_left_out():
+    head, note, tail, left = cut_apart(cut(SALES))
+    assert SALES.startswith(f"{head}\n") and SALES.endswith(f"\n{tail}")
+    assert len(head) > HALF / 2 and len(tail) > HALF / 2
+    assert left == len(SALES) - len(head) - len(tail) - len("\n\n")
+    assert f"of this output's {len(SALES):,} characters" in note
+    assert "mid-line" not in note
+
+
+def test_a_cut_through_a_huge_line_keeps_a_sample_of_it_and_says_it_cut_mid_line():
+    """A one-line export between two short lines was sent as those two lines alone."""
+    line = repr(list(range(600_000)))
+    output = f"Loaded export:\n{line}\ndone"
+    head, note, tail, left = cut_apart(cut(output))
+    assert (head, tail) == (output[:HALF], output[-HALF:])
+    assert left == len(output) - 2 * HALF
+    assert "mid-line" in note
+
+
+@pytest.mark.parametrize(
+    ("ending", "noted"),
+    [("x" * 60_000, True), (RAISED + "x" * 60_000, False)],
+    ids=["printed", "raised"],
+)
+def test_a_huge_output_printed_again_is_noted_unless_it_raised_where_the_cut_is(
+    ending, noted
+):
+    output = f"{SALES[: HALF + 10_000]}\n{ending}"
+    cell = {"role": "assistant", "content": "<repl>\nprint(sales)\n</repl>"}
+    printed = {"role": "user", "content": f"<observation>\n{output}\n</observation>"}
+    task = {"role": "user", "content": "Total the sales."}
+    sent = with_apps_notes([task, cell, printed, cell, printed], MAX_ITER)
+    assert RAISED not in sent[-1]["content"]
+    assert (REPEATED_NOTE in sent[-1]["content"]) is noted
 
 
 def test_a_tools_model_call_is_priced_for_its_agent_but_is_not_a_thought():
