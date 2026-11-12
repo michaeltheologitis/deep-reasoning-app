@@ -139,8 +139,8 @@ CHANGE_TABLES = {"changes"}
 # The record of every change to the Library, newest last (id): when it was made, to which
 # row (what: namespace, decomposition, tool or setting; a decomposition's namespace, or a
 # namespace's own name; name), its text before and after (null when there was none), and
-# who made it (by): the panel, an import (label: the config's file name) or a chat (chat,
-# run, and label: its title then).
+# who made it (by): the panel, an import (label: the config's file name) or a chat (chat
+# and run; never its title, which goes with the chat).
 CHANGE_SCHEMA = (
     (
         "CREATE TABLE changes (id INTEGER PRIMARY KEY, made REAL NOT NULL,"
@@ -2770,11 +2770,12 @@ DELETE FROM changes WHERE id IN (
     )
     WHERE place > {CHANGES_KEPT} OR bytes > {CHANGE_BYTES_KEPT}
 )"""
-# A chat's title as it is now, else as it was when the change was made.
+# A chat's change is labelled with its title as it is now: none once it is deleted.
 READ_CHANGES = f"""
 SELECT change.id, change.made, change.what, change.namespace, change.name,
     {fitting("change.before", MAX_CHANGE_BYTES)}, {fitting("change.after", MAX_CHANGE_BYTES)},
-    change.by, change.chat, change.run, coalesce(chat.title, change.label)
+    change.by, change.chat, change.run,
+    CASE WHEN change.by = 'chat' THEN chat.title ELSE change.label END
 FROM changes AS change LEFT JOIN chats AS chat ON chat.id = change.chat
 WHERE change.id < :older_than ORDER BY change.id DESC LIMIT :newest"""
 
@@ -2829,14 +2830,9 @@ def recorded(connection, by, *rows):
 
 def record(connection, by, changes):
     """Add each of *changes*, (what, namespace, name, before, after), whose before and
-    after differ, to the record of changes, made *by*: PANEL, by_import() or by_chat(),
-    whose chat's title it reads. Then keep only the newest."""
+    after differ, to the record of changes, made *by*: PANEL, by_import() or by_chat().
+    Then keep only the newest."""
     made = {"made": time.time()} | by
-    if by["by"] == "chat":
-        found = connection.execute(
-            "SELECT title FROM chats WHERE id = ?", (by["chat"],)
-        ).fetchone()
-        made["label"] = found[0] if found and type(found[0]) is str else None
     rows = [
         made | dict(zip(CHANGE_KEYS, change, strict=True))
         for change in changes

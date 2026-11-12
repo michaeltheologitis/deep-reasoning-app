@@ -2920,6 +2920,23 @@ def test_changes_list_every_change_whoever_made_it_newest_first(fresh, tmp_path)
     }
 
 
+def test_another_chats_change_shows_its_title_now_and_never_outlives_it(fresh):
+    titled(fresh, ANOTHER_CHAT, "Budget helpers")
+    with closing(open_library(fresh)) as connection:
+        by = by_chat(ANOTHER_CHAT, "20261027-110000-000000")
+        add_namespace(connection, "budget", "spawn: []\n", by=by)
+        connection.execute(
+            "UPDATE chats SET title = 'Groceries' WHERE id = ?", (ANOTHER_CHAT,)
+        )
+    tool = library_tool(fresh)
+    assert tool.changes()[0]["by"] == 'the chat "Groceries"'
+    with closing(open_library(fresh)) as connection:
+        connection.execute("DELETE FROM chats WHERE id = ?", (ANOTHER_CHAT,))
+        stored = connection.execute("SELECT label FROM changes").fetchall()
+    assert tool.changes()[0]["by"] == "a chat since deleted"
+    assert stored == [(None,), (None,)]
+
+
 def test_a_change_the_panel_made_is_undone_by_writing_its_before_back(fresh):
     tool = library_tool(fresh)
     name = tool.write_decomposition("drafts", EXAMPLE)["name"]
