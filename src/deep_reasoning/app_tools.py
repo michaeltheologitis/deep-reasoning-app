@@ -26,7 +26,9 @@ folder. Each change is logged as library.change, which the worker records as a r
 and changes() reads this chat's back, so the agent can write a before back.
 """
 
+import ast
 import copy
+import io
 import json
 import math
 import os
@@ -34,6 +36,7 @@ import re
 import sqlite3
 import textwrap
 import threading
+import tokenize
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future
 from contextlib import closing, contextmanager
@@ -158,6 +161,15 @@ NOT_THIS_CHAT = jinja2.Template(
 )
 NOT_TEXT = (
     "The namespace's name should be text, and the YAML text or a dict of plain values."
+)
+# A {name} field, not {{ … }}, in a string written without f stays as typed, so a worked
+# example passing one passes the braces, not the variable.
+FIELD = re.compile(r"(?<!\{)\{([A-Za-z_]\w*)[^{}]*\}(?!\})")
+FORMAT_METHODS = {"format", "format_map"}
+UNFILLED = jinja2.Template(
+    "{{ what }} has {{ '{' }}{{ name }}{{ '}' }} in a string without f, which stays as"
+    " typed: an f-string puts {{ name }}'s value there.",
+    undefined=jinja2.StrictUndefined,
 )
 # Where a brief list, or history, cut a text, list or dict short.
 CUT_MARK = re.compile(r"…\(\+[\d,]+ (?:chars|more items)\)")
@@ -1290,18 +1302,61 @@ def check_writable(namespace: str, text: str, key_names: list[str]) -> Any:
 
 def code_problems(decomposition: dict[str, Any]) -> list[str]:
     """Each assistant turn of *decomposition*, as data the store took, whose code, the
-    <repl> block the engine runs, isn't valid Python."""
-    problems = []
+    <repl> block the engine runs, isn't valid Python, or leaves the {name} of a variable
+    its code or an earlier turn's sets in a string without f."""
+    problems, names = [], set()
     for number, turn in enumerate(decomposition["messages"], start=1):
         if turn["role"] != "assistant":
             continue
+        what = f"Turn {number} (assistant)'s code"
+        source = running_code(turn["content"])
         try:
-            parsed_python(
-                running_code(turn["content"]), f"Turn {number} (assistant)'s code"
-            )
+            tree = parsed_python(source, what)
         except LibraryError as error:
             problems.append(str(error))
+            continue
+        names |= set_names(tree)
+        problems += [
+            UNFILLED.render(what=what, name=name)
+            for name in dict.fromkeys(fields_without_f(source, tree))
+            if name in names
+        ]
     return problems
+
+
+def set_names(tree: ast.AST) -> set[str]:
+    """The names the code *tree* sets: by assignment, a loop or a function's argument."""
+    stored = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
+    return stored | {node.arg for node in ast.walk(tree) if isinstance(node, ast.arg)}
+
+
+def fields_without_f(source: str, tree: ast.AST) -> Iterator[str]:
+    """The name in each {name} field of each string in *source*, parsed as *tree*,
+    written without f, but those .format() fills in."""
+    formatted = [
+        node.func.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in FORMAT_METHODS
+    ]
+    spans = [
+        ((node.lineno, node.col_offset), (node.end_lineno, node.end_col_offset))
+        for node in formatted
+    ]
+    # A parsed source tokenizes: f-strings come as tokens of their own, never STRING.
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type != tokenize.STRING:
+            continue
+        if any(start <= token.start and token.end <= end for start, end in spans):
+            continue
+        value = ast.literal_eval(token.string)
+        if isinstance(value, str):
+            yield from FIELD.findall(value)
 
 
 def plain(value: Any) -> bool:

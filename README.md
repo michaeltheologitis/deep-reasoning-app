@@ -230,27 +230,33 @@ imports too.
   reach every chat's run (a key saved in settings goes only to its own provider's chats), so one that reads any
   other key is refused, as it would stop the chats that lack it.
 - A new Library's root has a `system_suffix`, which every namespace inherits, telling agents about the app and how to
-  answer; read, edit or delete it in the panel.
+  answer, leaving their failed cells and the app's notes on their replies' format out of it; read, edit or delete it
+  in the panel.
 
 **The librarian**
 - In a chat in `librarian`, the agent adds or edits worked examples, adds namespaces and changes their
   `system_suffix`, `vars`, `tools` and `spawn`, and writes Python tools of its own and grants them, with the app's
   `library` tool. A chat in another namespace can't, even through a sub-agent.
 - It changes only what you name, keeps every line of a text you didn't ask to remove (saying what it removed),
-  writes each rule you give as you said it, asks before rewriting any other text (a worked example, above all one
-  you wrote), leaves `spawn` unset unless you ask, and says when a worked example disagrees with its namespace's
-  suffix. A team it sets up is a planner you talk to, which it names, with a spawn list of its members and a worked
-  example handing each part on; members are siblings rather than children of the planner, unless they should
-  inherit its suffix and worked examples. Asked for what no change can promise, such as quicker answers, it says
-  where the time goes and offers the choices before changing anything. It answers in your words, keeping the
-  Library's terms for when you use them, and for a page about the Library it reads it and hands the historian the
-  facts. Granting a tool, it says in the namespace's suffix when to use it;
-  changing a var, it names the worked examples that hard-code the old value. What all agents should do it leaves
-  to root's suffix, which you edit in the panel, rather than spreading it over namespaces.
+  writes each rule you give as you said it, asks before rewriting a text you didn't name (a worked example, above
+  all one you wrote), leaves `spawn` unset unless you ask, and says when a worked example disagrees with its
+  namespace's suffix. A team it sets up is a planner you talk to, which it names, with a spawn list of its members,
+  `historian` and `librarian`, and a worked example handing each part on; facts you give a team go in the planner's
+  suffix, which passes them and your file names to each member; members are siblings rather than children of the
+  planner, unless they should inherit its suffix and worked examples. Asked to delete a namespace that others name
+  (in a spawn list, a suffix or a worked example), it says which and offers to take it out of them first, as the
+  panel deletes none a spawn list names, then says to delete it in the panel. Asked for what no change can promise,
+  such as quicker answers, it says where the time goes and offers the choices before changing anything. It answers
+  in your words, keeping the Library's terms for when you use them, and for a page about the Library it reads it and
+  hands the historian the facts. Granting a tool, it says in the namespace's suffix when to use it; changing a var,
+  it names the worked examples that hard-code the old value. What all agents should do it leaves to root's suffix,
+  which you edit in the panel, rather than spreading it over namespaces.
 - It writes a worked example from its steps (the task; each step's reasoning and code; what the code printed), so
   it never types the tags that would run the example's code in place of its own: a step holding one is refused, and
   every text it reads gives each `<repl>` as `⟦repl⟧`, read back when it writes, so copying a worked example never
-  ends its cell and writing one back changes nothing.
+  ends its cell and writing one back changes nothing. A definition or answer format you give with one goes in the
+  namespace's suffix too, and it is told of a cell leaving a variable's `{name}` in a string without `f`, and fixes
+  it.
 - Each change shows under its answer and in the tree, opens onto its YAML (or a tool's Python) before and after, and
   applies from your next message; the panel and namespace menu show it at once. Ask it to undo one and it writes the
   before back from the record.
