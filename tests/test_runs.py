@@ -14,6 +14,7 @@ import time
 from contextlib import aclosing, closing
 from datetime import UTC, date, datetime
 from functools import partial
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,7 @@ from deep_reasoning.runs import (
     save_event,
 )
 from deep_reasoning.settings import VENDORS
+from deep_reasoning.worker import OWN_OUTPUT_NOTE, REPEATED_NOTE, TURNS_LEFT_NOTE
 
 log = structlog.get_logger()
 
@@ -566,6 +568,110 @@ async def test_the_note_that_a_reply_had_no_repl_block_reaches_the_model_as_the_
     # The run records the reply as a thought, and nothing of the note.
     assert of_kind(events, "think")[0]["text"] == "It is 4."
     assert all("note from the app" not in str(event) for event in events)
+
+
+PLOTS = """\
+date,plot,crop,what,amount
+2026-03-02,Plot 1,broad beans,sown,2 rows
+2026-04-25,Plot 2,parsnips,sown,1 row
+2026-05-30,Plot 2,tomatoes,planted out,8 plants
+2026-08-20,Plot 2,tomatoes,harvested,6 kg
+2026-10-05,Plot 1,garlic,planted,40 cloves"""
+READ_PLOTS = repl(f"print({PLOTS!r})")
+# A worked example whose cell printed what the live one will: a file may hold just that.
+READ_THE_PLOTS = {
+    "name": "read the plots",
+    "messages": [
+        {"role": "user", "content": "What is in plot 1?"},
+        {"role": "assistant", "content": READ_PLOTS},
+        {"role": "user", "content": f"<observation>\n{PLOTS}\n</observation>"},
+        {"role": "assistant", "content": repl("FinalAnswer('broad beans')")},
+    ],
+}
+
+
+def last_messages(fake):
+    return [call.messages[-1]["content"] for call in fake.calls]
+
+
+def each_call_begins_as_the_last_ended(fake):
+    return all(
+        later.messages[: len(earlier.messages)] == earlier.messages
+        for earlier, later in pairwise(fake.calls)
+    )
+
+
+async def test_each_cell_output_is_marked_as_the_agents_own_and_repeats_are_noted(
+    home, library, fake_config
+):
+    plan = {
+        "What is in plot 2?": [
+            READ_PLOTS,
+            repl("print('Plot 3: leeks')"),
+            READ_PLOTS,
+            repl("FinalAnswer('parsnips')"),
+        ]
+    }
+    with FakeOpenAI(scripted(plan)) as fake:
+        root = {"decompositions": [READ_THE_PLOTS]}
+        config = fake_config(fake, namespaces={"root": root})
+        _, events = await run_to_the_end(
+            Runs(library, home), "What is in plot 2?", config
+        )
+    assert events[-1]["answer"] == "parsnips"
+    assert READ_THE_PLOTS["messages"][2] in fake.calls[0].messages
+    noted = [REPEATED_NOTE in message for message in last_messages(fake)]
+    assert noted == [False, False, False, True]
+    owned = [OWN_OUTPUT_NOTE in message for message in last_messages(fake)]
+    assert owned == [False, True, True, True]
+    assert each_call_begins_as_the_last_ended(fake)
+    assert all(REPEATED_NOTE not in str(event) for event in events)
+
+
+async def test_an_agent_with_three_turns_left_is_told_to_finish(
+    home, library, fake_config
+):
+    plan = {"Count to five.": [repl(f"print({n})") for n in range(1, 5)]}
+    plan["Count to five."].append(repl("FinalAnswer(5)"))
+    with FakeOpenAI(scripted(plan)) as fake:
+        config = fake_config(fake, max_iter=6)
+        _, events = await run_to_the_end(Runs(library, home), "Count to five.", config)
+    assert events[-1]["answer"] == "5"
+    told = [TURNS_LEFT_NOTE in message for message in last_messages(fake)]
+    assert told == [False, False, False, True, False]
+    assert each_call_begins_as_the_last_ended(fake)
+
+
+async def test_a_run_out_of_turns_says_so_in_plain_words_first(
+    home, library, fake_config
+):
+    plan = {"Count forever.": [repl("print(1)"), repl("print(2)")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        config = fake_config(fake, max_iter=4)
+        _, events = await run_to_the_end(Runs(library, home), "Count forever.", config)
+    end = events[-1]
+    sentence = "Agent failed to produce a final answer within 4 iterations."
+    assert (end["outcome"], end["answer"]) == ("exhausted", sentence)
+    assert end["detail"] == (
+        f"The agent used all its turns without answering. Ask again in smaller steps.\n{sentence}"
+    )
+
+
+@pytest.mark.parametrize(
+    "cell",
+    [repl("print('ok')"), repl("raise ValueError('no rows: ' + 'x' * 300)")],
+    ids=["short", "an error"],
+)
+async def test_a_short_or_failing_cell_repeated_gets_no_note_to_answer(
+    home, library, fake_config, cell
+):
+    """An agent mid-debug, or a librarian between writes, repeats such outputs."""
+    plan = {"Check it.": [cell, cell, repl("FinalAnswer('checked')")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        await run_to_the_end(Runs(library, home), "Check it.", fake_config(fake))
+    outputs = last_messages(fake)[1:]
+    assert all(OWN_OUTPUT_NOTE in output for output in outputs)
+    assert not any(REPEATED_NOTE in output for output in outputs)
 
 
 async def test_each_call_costs_what_its_server_says_it_cost(home, library, fake_config):

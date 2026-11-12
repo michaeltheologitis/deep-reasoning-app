@@ -1,15 +1,15 @@
-{"seq": 1, "t": 1794475274.387493, "kind": "turn.start", "run": "20261112-092114-380920", "chat": "recorded", "prompt": "Ask a smaller model.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261112-092114-380920"}
-{"seq": 2, "t": 1794475275.584016, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Ask a smaller model.", "namespace": "root", "drive": 1}
-{"seq": 3, "t": 1794475275.6730733, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1951, "tokens_out": 8, "cost": 0.001959}
-{"seq": 4, "t": 1794475275.6732702, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Count on fewer weights.', model='fake-small'))"}
-{"seq": 5, "t": 1794475275.6760163, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Count on fewer weights.", "namespace": "root", "drive": 1}
-{"seq": 6, "t": 1794475275.726087, "kind": "usage", "node": 2, "model": "fake-small", "own": true, "tokens_in": 1951, "tokens_out": 4, "cost": 0.0019549999999999997}
-{"seq": 7, "t": 1794475275.7262464, "kind": "cell.start", "node": 2, "cell": 2, "code": "FinalAnswer(3)"}
-{"seq": 8, "t": 1794475275.7271955, "kind": "cell.end", "node": 2, "cell": 2, "code": "FinalAnswer(3)", "output": "FinalAnswer: 3", "status": "done"}
-{"seq": 9, "t": 1794475275.7273016, "kind": "agent.end", "node": 2, "status": "done", "result": "3", "detail": null}
-{"seq": 10, "t": 1794475275.7282946, "kind": "cell.end", "node": 1, "cell": 1, "code": "print(subagent('Count on fewer weights.', model='fake-small'))", "output": "3", "status": "done"}
-{"seq": 11, "t": 1794475275.7347915, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1961, "tokens_out": 4, "cost": 0.0019649999999999997}
-{"seq": 12, "t": 1794475275.7349117, "kind": "cell.start", "node": 1, "cell": 3, "code": "FinalAnswer('asked')"}
-{"seq": 13, "t": 1794475275.73537, "kind": "cell.end", "node": 1, "cell": 3, "code": "FinalAnswer('asked')", "output": "FinalAnswer: 'asked'", "status": "done"}
-{"seq": 14, "t": 1794475275.7356036, "kind": "agent.end", "node": 1, "status": "done", "result": "asked", "detail": null}
-{"seq": 15, "t": 1794475275.7356632, "kind": "turn.end", "outcome": "answered", "answer": "asked", "detail": null, "unfinished_calls": 0, "cost": 0.005878999999999999, "seconds": 1.348170280456543}
+{"seq": 1, "t": 1794476362.2459393, "kind": "turn.start", "run": "20261112-093922-239413", "chat": "recorded", "prompt": "Ask a smaller model.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261112-093922-239413"}
+{"seq": 2, "t": 1794476363.354815, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Ask a smaller model.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794476363.4453328, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1968, "tokens_out": 8, "cost": 0.001976}
+{"seq": 4, "t": 1794476363.445737, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Count on fewer weights.', model='fake-small'))"}
+{"seq": 5, "t": 1794476363.4494908, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Count on fewer weights.", "namespace": "root", "drive": 1}
+{"seq": 6, "t": 1794476363.5295992, "kind": "usage", "node": 2, "model": "fake-small", "own": true, "tokens_in": 1968, "tokens_out": 4, "cost": 0.001972}
+{"seq": 7, "t": 1794476363.5297596, "kind": "cell.start", "node": 2, "cell": 2, "code": "FinalAnswer(3)"}
+{"seq": 8, "t": 1794476363.5313134, "kind": "cell.end", "node": 2, "cell": 2, "code": "FinalAnswer(3)", "output": "FinalAnswer: 3", "status": "done"}
+{"seq": 9, "t": 1794476363.5315216, "kind": "agent.end", "node": 2, "status": "done", "result": "3", "detail": null}
+{"seq": 10, "t": 1794476363.5396357, "kind": "cell.end", "node": 1, "cell": 1, "code": "print(subagent('Count on fewer weights.', model='fake-small'))", "output": "3", "status": "done"}
+{"seq": 11, "t": 1794476363.5408745, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 2005, "tokens_out": 4, "cost": 0.002009}
+{"seq": 12, "t": 1794476363.5409722, "kind": "cell.start", "node": 1, "cell": 3, "code": "FinalAnswer('asked')"}
+{"seq": 13, "t": 1794476363.5416067, "kind": "cell.end", "node": 1, "cell": 3, "code": "FinalAnswer('asked')", "output": "FinalAnswer: 'asked'", "status": "done"}
+{"seq": 14, "t": 1794476363.5416973, "kind": "agent.end", "node": 1, "status": "done", "result": "asked", "detail": null}
+{"seq": 15, "t": 1794476363.5417802, "kind": "turn.end", "outcome": "answered", "answer": "asked", "detail": null, "unfinished_calls": 0, "cost": 0.005957, "seconds": 1.2958409786224365}

@@ -1,24 +1,24 @@
-{"seq": 1, "t": 1794475281.9088848, "kind": "turn.start", "run": "20261112-092121-902309", "chat": "recorded", "prompt": "Raise three ways.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261112-092121-902309"}
-{"seq": 2, "t": 1794475283.0103345, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Raise three ways.", "namespace": "root", "drive": 1}
-{"seq": 3, "t": 1794475283.1124694, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1950, "tokens_out": 5, "cost": 0.0019549999999999997}
-{"seq": 4, "t": 1794475283.1126769, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Raise them.'))"}
-{"seq": 5, "t": 1794475283.1154537, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Raise them.", "namespace": "root", "drive": 1}
-{"seq": 6, "t": 1794475283.1668234, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1949, "tokens_out": 4, "cost": 0.0019529999999999999}
-{"seq": 7, "t": 1794475283.1669831, "kind": "cell.start", "node": 2, "cell": 2, "code": "print('counting')"}
-{"seq": 8, "t": 1794475283.1681657, "kind": "cell.end", "node": 2, "cell": 2, "code": "print('counting')", "output": "counting", "status": "done"}
-{"seq": 9, "t": 1794475283.1749113, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1955, "tokens_out": 8, "cost": 0.001963}
-{"seq": 10, "t": 1794475283.1750398, "kind": "cell.start", "node": 2, "cell": 3, "code": "raise ValueError('2 problems:\\ntools: bad\\nspawn: bad')"}
-{"seq": 11, "t": 1794475283.1760602, "kind": "cell.end", "node": 2, "cell": 3, "code": "raise ValueError('2 problems:\\ntools: bad\\nspawn: bad')", "output": "Traceback (most recent call last):\n  File \"SITE/deep_reasoner/repls/backends.py\", line 537, in run_code\n    exec(code, self.env)  # noqa: S102\n    ^^^^^^^^^^^^^^^^^^^^\n  File \"<string>\", line 1, in <module>\nValueError: 2 problems:\ntools: bad\nspawn: bad", "status": "failed"}
-{"seq": 12, "t": 1794475283.1828895, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1994, "tokens_out": 7, "cost": 0.0020009999999999997}
-{"seq": 13, "t": 1794475283.1830034, "kind": "cell.start", "node": 2, "cell": 4, "code": "raise ExceptionGroup('x', [ValueError(1), KeyError(2)])"}
-{"seq": 14, "t": 1794475283.1837995, "kind": "cell.end", "node": 2, "cell": 4, "code": "raise ExceptionGroup('x', [ValueError(1), KeyError(2)])", "output": "  + Exception Group Traceback (most recent call last):\n  |   File \"SITE/deep_reasoner/repls/backends.py\", line 537, in run_code\n  |     exec(code, self.env)  # noqa: S102\n  |     ^^^^^^^^^^^^^^^^^^^^\n  |   File \"<string>\", line 1, in <module>\n  | ExceptionGroup: x (2 sub-exceptions)\n  +-+---------------- 1 ----------------\n    | ValueError: 1\n    +---------------- 2 ----------------\n    | KeyError: 2\n    +------------------------------------", "status": "failed"}
-{"seq": 15, "t": 1794475283.1909413, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 2050, "tokens_out": 6, "cost": 0.002056}
-{"seq": 16, "t": 1794475283.1910906, "kind": "cell.start", "node": 2, "cell": 5, "code": "FinalAnswer('x')\nraise ValueError('after')"}
-{"seq": 17, "t": 1794475283.1916685, "kind": "cell.end", "node": 2, "cell": 5, "code": "FinalAnswer('x')\nraise ValueError('after')", "output": "Traceback (most recent call last):\n  File \"SITE/deep_reasoner/repls/backends.py\", line 537, in run_code\n    exec(code, self.env)  # noqa: S102\n    ^^^^^^^^^^^^^^^^^^^^\n  File \"<string>\", line 2, in <module>\nValueError: after\nFinalAnswer: 'x'", "status": "failed"}
-{"seq": 18, "t": 1794475283.1917686, "kind": "agent.end", "node": 2, "status": "done", "result": "x", "detail": null}
-{"seq": 19, "t": 1794475283.1928258, "kind": "cell.end", "node": 1, "cell": 1, "code": "print(subagent('Raise them.'))", "output": "x", "status": "done"}
-{"seq": 20, "t": 1794475283.1993196, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1957, "tokens_out": 4, "cost": 0.001961}
-{"seq": 21, "t": 1794475283.1994634, "kind": "cell.start", "node": 1, "cell": 6, "code": "FinalAnswer('raised')"}
-{"seq": 22, "t": 1794475283.1998355, "kind": "cell.end", "node": 1, "cell": 6, "code": "FinalAnswer('raised')", "output": "FinalAnswer: 'raised'", "status": "done"}
-{"seq": 23, "t": 1794475283.1999285, "kind": "agent.end", "node": 1, "status": "done", "result": "raised", "detail": null}
-{"seq": 24, "t": 1794475283.199987, "kind": "turn.end", "outcome": "answered", "answer": "raised", "detail": null, "unfinished_calls": 0, "cost": 0.011889, "seconds": 1.2911021709442139}
+{"seq": 1, "t": 1794476369.6082046, "kind": "turn.start", "run": "20261112-093929-595228", "chat": "recorded", "prompt": "Raise three ways.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261112-093929-595228"}
+{"seq": 2, "t": 1794476370.7277148, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Raise three ways.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794476370.8177671, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1967, "tokens_out": 5, "cost": 0.001972}
+{"seq": 4, "t": 1794476370.8179824, "kind": "cell.start", "node": 1, "cell": 1, "code": "print(subagent('Raise them.'))"}
+{"seq": 5, "t": 1794476370.8207426, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Raise them.", "namespace": "root", "drive": 1}
+{"seq": 6, "t": 1794476370.8697937, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1966, "tokens_out": 4, "cost": 0.00197}
+{"seq": 7, "t": 1794476370.869945, "kind": "cell.start", "node": 2, "cell": 2, "code": "print('counting')"}
+{"seq": 8, "t": 1794476370.8708181, "kind": "cell.end", "node": 2, "cell": 2, "code": "print('counting')", "output": "counting", "status": "done"}
+{"seq": 9, "t": 1794476370.8774738, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1999, "tokens_out": 8, "cost": 0.002007}
+{"seq": 10, "t": 1794476370.8776097, "kind": "cell.start", "node": 2, "cell": 3, "code": "raise ValueError('2 problems:\\ntools: bad\\nspawn: bad')"}
+{"seq": 11, "t": 1794476370.878634, "kind": "cell.end", "node": 2, "cell": 3, "code": "raise ValueError('2 problems:\\ntools: bad\\nspawn: bad')", "output": "Traceback (most recent call last):\n  File \"SITE/deep_reasoner/repls/backends.py\", line 537, in run_code\n    exec(code, self.env)  # noqa: S102\n    ^^^^^^^^^^^^^^^^^^^^\n  File \"<string>\", line 1, in <module>\nValueError: 2 problems:\ntools: bad\nspawn: bad", "status": "failed"}
+{"seq": 12, "t": 1794476370.8851826, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 2065, "tokens_out": 7, "cost": 0.002072}
+{"seq": 13, "t": 1794476370.8852985, "kind": "cell.start", "node": 2, "cell": 4, "code": "raise ExceptionGroup('x', [ValueError(1), KeyError(2)])"}
+{"seq": 14, "t": 1794476370.8859472, "kind": "cell.end", "node": 2, "cell": 4, "code": "raise ExceptionGroup('x', [ValueError(1), KeyError(2)])", "output": "  + Exception Group Traceback (most recent call last):\n  |   File \"SITE/deep_reasoner/repls/backends.py\", line 537, in run_code\n  |     exec(code, self.env)  # noqa: S102\n  |     ^^^^^^^^^^^^^^^^^^^^\n  |   File \"<string>\", line 1, in <module>\n  | ExceptionGroup: x (2 sub-exceptions)\n  +-+---------------- 1 ----------------\n    | ValueError: 1\n    +---------------- 2 ----------------\n    | KeyError: 2\n    +------------------------------------", "status": "failed"}
+{"seq": 15, "t": 1794476370.8929048, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 2179, "tokens_out": 6, "cost": 0.002185}
+{"seq": 16, "t": 1794476370.8930311, "kind": "cell.start", "node": 2, "cell": 5, "code": "FinalAnswer('x')\nraise ValueError('after')"}
+{"seq": 17, "t": 1794476370.8936267, "kind": "cell.end", "node": 2, "cell": 5, "code": "FinalAnswer('x')\nraise ValueError('after')", "output": "Traceback (most recent call last):\n  File \"SITE/deep_reasoner/repls/backends.py\", line 537, in run_code\n    exec(code, self.env)  # noqa: S102\n    ^^^^^^^^^^^^^^^^^^^^\n  File \"<string>\", line 2, in <module>\nValueError: after\nFinalAnswer: 'x'", "status": "failed"}
+{"seq": 18, "t": 1794476370.8937168, "kind": "agent.end", "node": 2, "status": "done", "result": "x", "detail": null}
+{"seq": 19, "t": 1794476370.8948953, "kind": "cell.end", "node": 1, "cell": 1, "code": "print(subagent('Raise them.'))", "output": "x", "status": "done"}
+{"seq": 20, "t": 1794476370.9011328, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 2001, "tokens_out": 4, "cost": 0.002005}
+{"seq": 21, "t": 1794476370.9012408, "kind": "cell.start", "node": 1, "cell": 6, "code": "FinalAnswer('raised')"}
+{"seq": 22, "t": 1794476370.9016302, "kind": "cell.end", "node": 1, "cell": 6, "code": "FinalAnswer('raised')", "output": "FinalAnswer: 'raised'", "status": "done"}
+{"seq": 23, "t": 1794476370.9017162, "kind": "agent.end", "node": 1, "status": "done", "result": "raised", "detail": null}
+{"seq": 24, "t": 1794476370.9017916, "kind": "turn.end", "outcome": "answered", "answer": "raised", "detail": null, "unfinished_calls": 0, "cost": 0.012211, "seconds": 1.2935869693756104}

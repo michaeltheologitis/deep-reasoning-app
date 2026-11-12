@@ -107,7 +107,11 @@ chat's folder imports too.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,
   `2*3*4`). Raw HTML shows as text, an image as a link (never loaded), and links open in a new tab; a link to a file
   in the chat's folder, which the app doesn't serve, shows as text with its address. A long prompt or answer shows its
-  first lines with **show all**; a run that ran out of turns says so.
+  first lines with **show all**; a run that ran out of turns says so in plain words: the agent used all its turns
+  without answering, the Library changes the run made are kept, and to ask again in smaller steps.
+- The app tells an agent, in what its model is sent only, that what a cell printed is its own, which you never see;
+  that a cell printed what an earlier one already had, so it answers from that instead of reading it again; and,
+  with 3 turns left, to finish, saying what it did and what is left.
 - Follow-ups see the chat's earlier messages and answers, and can ask how one was worked out, whether it was
   computed, what its sub-agents did or what went wrong: root hands those to the `historian`.
 - The agent can show you a page of its own (Markdown, tables, and steps or sub-agents of earlier messages, drawn as

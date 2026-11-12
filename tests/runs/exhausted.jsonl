@@ -1,24 +1,24 @@
-{"seq": 1, "t": 1794475283.7122881, "kind": "turn.start", "run": "20261112-092123-702642", "chat": "recorded", "prompt": "Never finish.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261112-092123-702642"}
-{"seq": 2, "t": 1794475284.7957752, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Never finish.", "namespace": "root", "drive": 1}
-{"seq": 3, "t": 1794475284.8868399, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1949, "tokens_out": 8, "cost": 0.001957}
-{"seq": 4, "t": 1794475284.8871086, "kind": "cell.start", "node": 1, "cell": 1, "code": "r = run_all([anext(subagent().send('Loop forever.'))])\nprint(r)"}
-{"seq": 5, "t": 1794475284.890589, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Loop forever.", "namespace": "root", "drive": 1}
-{"seq": 6, "t": 1794475284.9380527, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1949, "tokens_out": 4, "cost": 0.0019529999999999999}
-{"seq": 7, "t": 1794475284.93819, "kind": "cell.start", "node": 2, "cell": 2, "code": "print('looping')"}
-{"seq": 8, "t": 1794475284.939457, "kind": "cell.end", "node": 2, "cell": 2, "code": "print('looping')", "output": "looping", "status": "done"}
-{"seq": 9, "t": 1794475284.9460213, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1955, "tokens_out": 4, "cost": 0.001959}
-{"seq": 10, "t": 1794475284.9461293, "kind": "cell.start", "node": 2, "cell": 3, "code": "print('looping')"}
-{"seq": 11, "t": 1794475284.9465218, "kind": "cell.end", "node": 2, "cell": 3, "code": "print('looping')", "output": "looping", "status": "done"}
-{"seq": 12, "t": 1794475284.9530156, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1961, "tokens_out": 4, "cost": 0.0019649999999999997}
-{"seq": 13, "t": 1794475284.9531274, "kind": "cell.start", "node": 2, "cell": 4, "code": "print('looping')"}
-{"seq": 14, "t": 1794475284.9535294, "kind": "cell.end", "node": 2, "cell": 4, "code": "print('looping')", "output": "looping", "status": "done"}
-{"seq": 15, "t": 1794475284.9536262, "kind": "agent.end", "node": 2, "status": "exhausted", "result": null, "detail": null}
-{"seq": 16, "t": 1794475284.9546945, "kind": "cell.end", "node": 1, "cell": 1, "code": "r = run_all([anext(subagent().send('Loop forever.'))])\nprint(r)", "output": "['Agent failed to produce a final answer within 3 iterations.']", "status": "done"}
-{"seq": 17, "t": 1794475284.961251, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1968, "tokens_out": 5, "cost": 0.001973}
-{"seq": 18, "t": 1794475284.9613788, "kind": "cell.start", "node": 1, "cell": 5, "code": "print('still thinking')"}
-{"seq": 19, "t": 1794475284.9617443, "kind": "cell.end", "node": 1, "cell": 5, "code": "print('still thinking')", "output": "still thinking", "status": "done"}
-{"seq": 20, "t": 1794475284.9701505, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1976, "tokens_out": 5, "cost": 0.001981}
-{"seq": 21, "t": 1794475284.9702606, "kind": "cell.start", "node": 1, "cell": 6, "code": "print('still thinking')"}
-{"seq": 22, "t": 1794475284.970686, "kind": "cell.end", "node": 1, "cell": 6, "code": "print('still thinking')", "output": "still thinking", "status": "done"}
-{"seq": 23, "t": 1794475284.9707766, "kind": "agent.end", "node": 1, "status": "exhausted", "result": null, "detail": null}
-{"seq": 24, "t": 1794475284.970823, "kind": "turn.end", "outcome": "exhausted", "answer": "Agent failed to produce a final answer within 3 iterations.", "detail": null, "unfinished_calls": 0, "cost": 0.011788, "seconds": 1.2585349082946777}
+{"seq": 1, "t": 1794477747.3327024, "kind": "turn.start", "run": "20261112-100227-326137", "chat": "recorded", "prompt": "Never finish.", "namespace": "root", "model": "gpt-6-luna", "provider": null, "folder": "HOME/runs/20261112-100227-326137"}
+{"seq": 2, "t": 1794477748.4892924, "kind": "agent.start", "node": 1, "parent": null, "cell": null, "task": "Never finish.", "namespace": "root", "drive": 1}
+{"seq": 3, "t": 1794477748.5839944, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 1966, "tokens_out": 8, "cost": 0.001974}
+{"seq": 4, "t": 1794477748.5842018, "kind": "cell.start", "node": 1, "cell": 1, "code": "r = run_all([anext(subagent().send('Loop forever.'))])\nprint(r)"}
+{"seq": 5, "t": 1794477748.5869997, "kind": "agent.start", "node": 2, "parent": 1, "cell": 1, "task": "Loop forever.", "namespace": "root", "drive": 1}
+{"seq": 6, "t": 1794477748.634202, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1966, "tokens_out": 4, "cost": 0.00197}
+{"seq": 7, "t": 1794477748.6343722, "kind": "cell.start", "node": 2, "cell": 2, "code": "print('looping')"}
+{"seq": 8, "t": 1794477748.6352985, "kind": "cell.end", "node": 2, "cell": 2, "code": "print('looping')", "output": "looping", "status": "done"}
+{"seq": 9, "t": 1794477748.642129, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 1999, "tokens_out": 4, "cost": 0.002003}
+{"seq": 10, "t": 1794477748.642259, "kind": "cell.start", "node": 2, "cell": 3, "code": "print('looping')"}
+{"seq": 11, "t": 1794477748.642667, "kind": "cell.end", "node": 2, "cell": 3, "code": "print('looping')", "output": "looping", "status": "done"}
+{"seq": 12, "t": 1794477748.6494744, "kind": "usage", "node": 2, "model": "gpt-6-luna", "own": true, "tokens_in": 2032, "tokens_out": 4, "cost": 0.002036}
+{"seq": 13, "t": 1794477748.6495864, "kind": "cell.start", "node": 2, "cell": 4, "code": "print('looping')"}
+{"seq": 14, "t": 1794477748.6499846, "kind": "cell.end", "node": 2, "cell": 4, "code": "print('looping')", "output": "looping", "status": "done"}
+{"seq": 15, "t": 1794477748.650074, "kind": "agent.end", "node": 2, "status": "exhausted", "result": null, "detail": null}
+{"seq": 16, "t": 1794477748.6512449, "kind": "cell.end", "node": 1, "cell": 1, "code": "r = run_all([anext(subagent().send('Loop forever.'))])\nprint(r)", "output": "['Agent failed to produce a final answer within 3 iterations.']", "status": "done"}
+{"seq": 17, "t": 1794477748.657908, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 2012, "tokens_out": 5, "cost": 0.0020169999999999997}
+{"seq": 18, "t": 1794477748.658021, "kind": "cell.start", "node": 1, "cell": 5, "code": "print('still thinking')"}
+{"seq": 19, "t": 1794477748.6584706, "kind": "cell.end", "node": 1, "cell": 5, "code": "print('still thinking')", "output": "still thinking", "status": "done"}
+{"seq": 20, "t": 1794477748.6654546, "kind": "usage", "node": 1, "model": "gpt-6-luna", "own": true, "tokens_in": 2047, "tokens_out": 5, "cost": 0.002052}
+{"seq": 21, "t": 1794477748.6655722, "kind": "cell.start", "node": 1, "cell": 6, "code": "print('still thinking')"}
+{"seq": 22, "t": 1794477748.6659238, "kind": "cell.end", "node": 1, "cell": 6, "code": "print('still thinking')", "output": "still thinking", "status": "done"}
+{"seq": 23, "t": 1794477748.666015, "kind": "agent.end", "node": 1, "status": "exhausted", "result": null, "detail": null}
+{"seq": 24, "t": 1794477748.6660662, "kind": "turn.end", "outcome": "exhausted", "answer": "Agent failed to produce a final answer within 3 iterations.", "detail": "The agent used all its turns without answering. Ask again in smaller steps.\nAgent failed to produce a final answer within 3 iterations.", "unfinished_calls": 0, "cost": 0.012052, "seconds": 1.3333637714385986}
