@@ -54,7 +54,6 @@ const UNREACHABLE = /^(?:openai\.)?APIConnectionError: /;
 const SERVER_FAILED = /^(?:openai\.)?InternalServerError: /;
 // how the worker's own first line begins (worker.py's PROVIDER_LEAD and OUT_OF_TURNS)
 const APPS_LEADS = ["The model provider ", "The agent used all "];
-const ledByWorker = (text) => APPS_LEADS.some((lead) => text.startsWith(lead));
 const TIMED_OUT = /^(?:openai\.)?APITimeoutError: /;
 // the model a provider's 404 names: "The model `x` does not exist", 'model "x" not found'
 const NAMED_MODEL = /\bmodel\s*[`'"]([^`'"\n]+)[`'"]/i;
@@ -259,12 +258,14 @@ function missing(text, model) {
   return `The provider has no model ${model ?? text.match(NAMED_MODEL)?.[1] ?? "by that name"}`;
 }
 
-// A failure led by what a provider's error means, then its own words: on a line of their own, or after on one cut short. The worker
-// leads a run a provider ended, or that ran out of turns, with what it means itself, on its first line.
-function failureView(text, { model = null, after = "\n" } = {}) {
-  const cut = ledByWorker(text) ? text.indexOf("\n") : -1;
+// A failure led by what a provider's error means, then its own words: on a line of their own, or, short, their first line after it
+// on one. The worker leads a run or sub-agent a provider ended, or a run that ran out of turns, with what it means itself, on its
+// first line.
+function failureView(text, { model = null, short = false } = {}) {
+  const cut = APPS_LEADS.some((lead) => text.startsWith(lead)) ? text.indexOf("\n") : -1;
   const [lead, own] = cut > 0 ? [text.slice(0, cut), text.slice(cut + 1)] : [plainFailure(text, model), text];
-  return lead ? [lead, after, element("span", { class: "raw" }, own)] : text;
+  const words = short ? own.split("\n")[0] : own;
+  return lead ? [lead, short ? CUT_SEPARATOR : "\n", element("span", { class: "raw" }, words)] : words;
 }
 
 // A failed cell's error: its last traceback's exception line, plain or an exception group's, its name first; else its last
@@ -272,7 +273,7 @@ function failureView(text, { model = null, after = "\n" } = {}) {
 function errorLine(lines) {
   const head = lines.findLastIndex((line) => TRACEBACK.test(line));
   const exception = head < 0 ? null : lines.slice(head + 1).find((line) => EXCEPTION.test(line));
-  if (exception) return failureView(exception.replace(GROUP_FRAME, "").replace(EXCEPTION_MODULE, ""), { after: CUT_SEPARATOR });
+  if (exception) return failureView(exception.replace(GROUP_FRAME, "").replace(EXCEPTION_MODULE, ""), { short: true });
   return lines.length > 1 && lines.at(-1).startsWith(FINAL_ANSWER) ? lines.at(-2) : lines.at(-1);
 }
 
@@ -441,11 +442,8 @@ function renderUnder(agent) {
     return last ? out(stepLabel(last)) : null;
   }
   if (!tone || !agent.result) return null;
-  return out(failureView(reasonLine(agent.result), { model: agent.model, after: CUT_SEPARATOR }), { tone });
+  return out(failureView(agent.result, { model: agent.model, short: true }), { tone });
 }
-
-// A failed agent's reason, cut to its first line, after the worker's own leading it when it gives one.
-const reasonLine = (text) => text.split("\n").slice(0, ledByWorker(text) ? 2 : 1).join("\n");
 
 const waiting = (word = WAITING) => element("div", { class: "waiting" }, word);
 

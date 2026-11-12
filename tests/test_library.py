@@ -181,6 +181,8 @@ TURN_CASES = json.loads(
 SLIP_CASES = json.loads(
     (Path(__file__).parent / "slip_cases.json").read_text(encoding="utf-8")
 )
+# A pasted 32 KB line took the regex this replaced 4 s.
+SLIP_S = 1.0
 NO_THINK = """name: no think
 messages:
 - {role: user, content: "How many?"}
@@ -1964,7 +1966,7 @@ def test_a_namespace_whose_parent_is_missing_is_refused(library):
         (
             "research",
             RESEARCH + "And date it.\n",
-            'Line 4, "And date it.", isn\'t indented like the lines of system_suffix',
+            'Line 4, "And date it.", is less indented than the system_suffix text',
         ),
         ("research", "- llm\n", "The YAML should be a mapping of fields"),
         (
@@ -2145,16 +2147,24 @@ def test_a_decompositions_turns_are_checked_as_a_worked_example(messages, proble
     assert turn_problems(messages) == problems
 
 
+def text_of(case):
+    """A slip case's YAML: its text, then any line repeated to its length."""
+    repeated = case.get("repeat", "") * case.get("times", 0)
+    return case["text"] + repeated + case.get("after", "")
+
+
 @pytest.mark.parametrize(
     ("text", "words"),
-    [(case["text"], case["words"]) for case in SLIP_CASES],
+    [(text_of(case), case["words"]) for case in SLIP_CASES],
     ids=[case["case"] for case in SLIP_CASES],
 )
-def test_a_line_ending_a_block_text_by_its_indent_is_told_so_in_plain_words(
+def test_lines_that_end_a_block_text_by_their_indent_are_told_so_in_plain_words(
     text, words
 ):
+    started = time.monotonic()
     with pytest.raises(LibraryError) as refused:
         loaded(text)
+    assert time.monotonic() - started < SLIP_S
     said = str(refused.value)
     assert said == words if words else said.startswith("The YAML doesn't parse (")
 

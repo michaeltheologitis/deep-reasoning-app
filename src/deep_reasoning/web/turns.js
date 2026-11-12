@@ -67,33 +67,85 @@ export function turnProblems(messages) {
   return problems;
 }
 
-// a block text's head, "key: |" or "- |", or > for folded text, with any indicators; and a line of its own, as may end one
-const BLOCK_HEAD = /^ *(?:- +)*(?:(\S[^#]*?):[ \t]+)?[|>][-+1-9]*[ \t]*(?:#.*)?$/;
-const OWN_LINE = /^ *(?:#|-(?: |$)|[^\s#].*?:(?: |$))/;
+// how far above a YAML error a line less indented than the one before it is tried as its slip; the most lines of a slipped
+// paragraph indented with its first; and enough of a line to find it by, as the editor numbers no lines (in characters as
+// Python counts them)
+const SLIP_LINES_BACK = 5;
+const SLIP_PARAGRAPH_LINES = 20;
+const SLIP_SHOWN_CHARS = 40;
 const indentOf = (line) => line.match(/^ */)[0].length;
 const isBlank = (line) => /^[ \t]*$/.test(line);
-// enough of a line to find it by, as the editor numbers no lines; in characters as Python counts them
-const SLIP_SHOWN_CHARS = 40;
+const stripped = (line) => line.replace(/^[ \t]+|[ \t]+$/g, "");
+const isMapping = (value) => Object.prototype.toString.call(value) === "[object Object]";
 
-// A line at or before errorLine that ends a block text above it, being less indented than that text's lines, and is no key,
-// item or comment of its own, in plain words; null for none.
+// the parsed YAML, or undefined when it doesn't parse; js-yaml is the page's global, as the vendored copy sets it
+function parsed(text) {
+  try {
+    return { value: globalThis.jsyaml.load(text) };
+  } catch {
+    return undefined;
+  }
+}
+
+// whether a line, alone, is YAML text or a comment, never a key or an item
+function readsAsText(line) {
+  if (isBlank(line)) return false;
+  const read = parsed(line);
+  return read !== undefined && !(Array.isArray(read.value) || isMapping(read.value));
+}
+
+function lineBefore(lines, at) {
+  for (let each = at - 1; each >= 0; each -= 1) if (!isBlank(lines[each])) return each;
+  return null;
+}
+
+// the end of the paragraph of text line at begins: the lines after it, blank ones between, at its indent that read as text
+function paragraphEnd(lines, at) {
+  let end = at + 1;
+  for (let each = at + 1; each < Math.min(at + SLIP_PARAGRAPH_LINES, lines.length); each += 1) {
+    if (isBlank(lines[each])) continue;
+    if (indentOf(lines[each]) !== indentOf(lines[at]) || !readsAsText(lines[each])) break;
+    end = each + 1;
+  }
+  return end;
+}
+
+// the key, in document order, whose text holds line as a line of its own; null for none
+function fieldHolding(data, line) {
+  const items = Array.isArray(data) ? data.map((item) => [null, item]) : isMapping(data) ? Object.entries(data) : [];
+  for (const [key, value] of items) {
+    if (key !== null && typeof value === "string" && value.split("\n").map(stripped).includes(line)) return key;
+    const found = fieldHolding(value, line);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+function slipSaid(number, end, first, field, width) {
+  const chars = [...first];
+  const shown = chars.length > SLIP_SHOWN_CHARS ? `${chars.slice(0, SLIP_SHOWN_CHARS).join("")}…` : first;
+  const text = field === null ? "the text" : `the ${field} text`;
+  const spaces = `${width} space${width === 1 ? "" : "s"}`;
+  if (end === number) return `Line ${number}, "${shown}", is less indented than ${text} above it, so it isn't part of that text: start it with the same ${spaces}.`;
+  return `Lines ${number} to ${end}, from "${shown}", are less indented than ${text} above them, so they aren't part of that text: start each with the same ${spaces}.`;
+}
+
+// The commonest slip behind a YAML error at errorLine, in plain words, as library.py's slip_words finds it: each line at most
+// SLIP_LINES_BACK above the error, less indented than the line before it and text alone, is indented like that line, with
+// the lines of text right after it at its indent; the first that makes the YAML parse is the slip. null when none does.
 export function slipWords(text, errorLine) {
-  const lines = text.split("\n").slice(0, errorLine);
-  let at = 0;
-  while (at < lines.length) {
-    const head = lines[at].match(BLOCK_HEAD);
-    at += 1;
-    if (!head) continue;
-    while (at < lines.length && isBlank(lines[at])) at += 1;
-    if (at === lines.length || indentOf(lines[at]) <= indentOf(head[0])) continue;
-    const body = indentOf(lines[at]);
-    while (at < lines.length && (isBlank(lines[at]) || indentOf(lines[at]) >= body)) at += 1;
-    if (at < lines.length && !OWN_LINE.test(lines[at])) {
-      const textOf = head[1] ? `the lines of ${head[1]}` : "the text's lines";
-      const chars = [...lines[at].replace(/^[ \t]+|[ \t]+$/g, "")];
-      const shown = chars.length > SLIP_SHOWN_CHARS ? `${chars.slice(0, SLIP_SHOWN_CHARS).join("")}…` : chars.join("");
-      return `Line ${at + 1}, "${shown}", isn't indented like ${textOf} above it, so it ends that text: start it with ${body} space${body === 1 ? "" : "s"}, as they do.`;
-    }
+  const lines = text.split("\n");
+  const last = Math.min(errorLine, lines.length) - 1;
+  for (let at = last; at >= Math.max(last - SLIP_LINES_BACK, 0); at -= 1) {
+    const before = lineBefore(lines, at);
+    if (before === null || indentOf(lines[at]) >= indentOf(lines[before]) || !readsAsText(lines[at])) continue;
+    const end = paragraphEnd(lines, at);
+    const width = indentOf(lines[before]);
+    const moved = [...lines.slice(0, at), ...lines.slice(at, end).map((line) => " ".repeat(width) + line.replace(/^ +/, "")), ...lines.slice(end)];
+    const read = parsed(moved.join("\n"));
+    if (read === undefined) continue;
+    const first = stripped(lines[at]);
+    return slipSaid(at + 1, end, first, fieldHolding(read.value, first), width);
   }
   return null;
 }

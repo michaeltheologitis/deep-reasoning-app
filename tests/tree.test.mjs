@@ -269,6 +269,11 @@ test("a sub-agent that failed on a provider's error leads with plain words, a sh
   assert.equal(under.textContent, `⎿The provider has no model fake-small (404) · ${raw}`);
 });
 
+test("a sub-agent's failure over lines shows its first under its row", () => {
+  const [, under] = renderAgent(drive({ status: "failed", result: "KeyError: 'rows'\nValueError: no rows" })).children;
+  assert.equal(under.textContent, "⎿KeyError: 'rows'");
+});
+
 test("a sub-agent the worker says a provider ended leads with its words, the provider's own after", () => {
   const lead = "The model provider failed (502) after 196 s of waiting.";
   const raw = "InternalServerError: upstream request failed";
