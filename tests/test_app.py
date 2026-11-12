@@ -2390,7 +2390,7 @@ LIBRARIANS_EARLIER = {
             repl("FinalAnswer('granted')"),
         ],
     },
-    "what a change did": {
+    "what changed": {
         "Add a namespace for astronomy.": [
             library_cell(
                 "add_namespace", "astronomy", "system_suffix: Answer in one sentence.\n"
@@ -2401,7 +2401,7 @@ LIBRARIANS_EARLIER = {
 }
 # What the user then edits in the panel, before the example's question: namespace, YAML.
 LIBRARIANS_PANEL_EDITS = {
-    "what a change did": (
+    "what changed": (
         "astronomy",
         "system_suffix: Answer in one sentence. Give distances in light-years.\n",
     ),
