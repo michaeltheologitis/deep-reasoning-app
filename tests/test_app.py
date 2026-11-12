@@ -466,6 +466,17 @@ def test_a_namespace_is_added_edited_and_deleted_through_the_api(client):
     }
 
 
+def test_the_panels_adds_and_deletes_are_listed_newest_first_as_the_panels(client):
+    client.post("/api/namespaces", json={"name": "trips", "yaml": "spawn: []\n"})
+    deleted = client.delete("/api/namespaces/trips?decompositions=0")
+    keys = ("what", "name", "by", "before", "after")
+    newest = [tuple(each[key] for key in keys) for each in deleted.json()["changes"]]
+    assert newest[:2] == [
+        ("namespace", "trips", "panel", "spawn: []\n", None),
+        ("namespace", "trips", "panel", None, "spawn: []\n"),
+    ]
+
+
 def test_deleting_a_namespace_says_how_many_chats_are_on_it(client):
     client.post("/api/namespaces", json={"name": "trips", "yaml": ""})
     client.post("/api/namespaces", json={"name": "solo", "yaml": ""})

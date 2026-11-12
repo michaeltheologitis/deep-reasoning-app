@@ -903,7 +903,7 @@ def test_reset_leaves_side_files_with_no_library_beside_them(tmp_path, capsys):
     assert all(side.read_text() == "mine\n" for side in sides)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3])
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
 def test_a_declined_reset_leaves_an_older_library_as_it_was(
     app_home, monkeypatch, version
 ):

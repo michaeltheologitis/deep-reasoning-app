@@ -35,6 +35,7 @@ from deep_reasoning.library import (
     UPSERT_TOOL,
     LibraryError,
     accepted,
+    by_import,
     check_decomposition_name,
     check_name,
     check_size,
@@ -55,6 +56,7 @@ from deep_reasoning.library import (
     parsed_python,
     problem,
     read_library,
+    recorded,
     run_config_and_registry,
     running_code,
     shown,
@@ -562,8 +564,9 @@ def changes_of(before, imported):
     }
 
 
-def store_changes(connection, changes):
-    """Write *changes*, leaving the rest of the Library, comments and all, as it is."""
+def store_changes(connection, changes, by):
+    """Write *changes*, leaving the rest of the Library, comments and all, as it is, and
+    record each as made *by*."""
     rows = {
         UPSERT_SETTING: [
             (key, dump(value)) for key, value in changes["settings"].items()
@@ -580,8 +583,15 @@ def store_changes(connection, changes):
             for name, (block, source) in changes["tools"].items()
         ],
     }
-    for statement, values in rows.items():
-        connection.executemany(statement, values)
+    changed = [
+        *[("setting", None, key) for key in changes["settings"]],
+        *[("namespace", name, name) for name in changes["namespaces"]],
+        *[("decomposition", *key) for key in changes["decompositions"]],
+        *[("tool", None, name) for name in changes["tools"]],
+    ]
+    with recorded(connection, by, *changed):
+        for statement, values in rows.items():
+            connection.executemany(statement, values)
 
 
 def to_build(before, imported, changes):
@@ -643,7 +653,7 @@ def import_config(connection, path, secrets=(), environment=None, within=None):
         namespace_names = [ROOT, *registry.names, *before["namespaces"]]
         check_entry(settings.get(ENTRY_NAMESPACE), namespace_names)
         check_new_names(before, changes)
-        store_changes(connection, changes)
+        store_changes(connection, changes, by_import(path))
         later = accepted(connection)
         check_namespaces(connection, before, changes)
         names = template_names(later[0].prompt_template_variables)

@@ -53,6 +53,8 @@
 .lib-name { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* an open row shows its whole name, which its closed row may cut, whole in its tooltip */
 .row[aria-expanded="true"] > .lib-name { white-space: normal; overflow-wrap: anywhere; }
+/* a change's line says what changed and who changed it, so it wraps rather than cut either */
+.lib-changes .lib-name { white-space: normal; overflow-wrap: anywhere; }
 .row[aria-expanded="true"] > .ns-name { display: block; }
 .row[aria-expanded="true"] > .ns-name > span { white-space: normal; overflow-wrap: anywhere; }
 .lib-detail { color: var(--dim); }
