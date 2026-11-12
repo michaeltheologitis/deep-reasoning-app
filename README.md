@@ -162,8 +162,8 @@ chat's folder imports too.
   told it does and a custom tool's Python, and deletes one of yours no namespace grants; **Data** shows each
   namespace's `vars` that are tables (a list of records) as tables, to read (edit them in Namespaces); **Changes**
   lists the newest changes to the Library, whoever made them (the panel, an import, or the librarian in which chat),
-  each opening onto what it was before and after. In its editors Tab indents, Esc leaves, and Ctrl+Enter or Cmd+Enter
-  saves.
+  each opening onto what it was before and after; the file keeps the last 1,000 so, a deleted item's text included,
+  and a copy of it carries them. In its editors Tab indents, Esc leaves, and Ctrl+Enter or Cmd+Enter saves.
 - Each worked example is marked ✓ or ✗ by whether its turns are shaped like `deep_reasoner`'s own (the task; each
   assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last), and a ✗
   says why; it still saves, as a draft agents are shown from the next message. A new one starts in the namespace of
@@ -269,7 +269,8 @@ chat's folder imports too.
   applies from your next message; the panel and namespace menu show it at once. Ask it what changed (today, say) and
   it answers from the app's record of every change, made in the panel, by an import or in any chat (the newest 1,000
   kept). Ask it to undo one, wherever it was made, and it writes the before back from the record, a deleted item
-  included.
+  included, if it is one it may write (below); the rest, such as root or a run setting, you undo in the panel from
+  the before its Changes tab shows.
 - A tool it writes, or a tool of yours it grants afresh, is built first as another chat would build it, and refused
   if it doesn't build, naming a package the app lacks and how to add it; that works only in a chat whose namespace
   runs the local REPL. It then tries a tool it wrote on your own inputs (the files it reads in the chat's folder, a

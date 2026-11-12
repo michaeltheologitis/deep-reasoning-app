@@ -581,7 +581,9 @@ for a namespace, each field it changed, change_namespace(name, {field: value["be
 for field, value in change["changed"].items()}), which keeps what later changes set in \
 other fields, or add_namespace(name, change["before"]) for one deleted; \
 write_decomposition(namespace, change["before"]); write_tool(name, \
-**change["before"]). A change whose before is None added something, \
+**change["before"]). What this tool may not write (root, a repl or reasoner, a run \
+setting) the user undoes in the Library panel, from the before its Changes tab shows. \
+A change whose before is None added something, \
 and undoing it is deleting it, which this tool never does: the user can, in the Library \
 panel (a namespace in its Namespaces tab, a decomposition in its Decompositions tab, a \
 tool no namespace grants in its Tools tab). The panel deletes no namespace another's \
