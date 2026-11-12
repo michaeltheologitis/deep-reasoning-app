@@ -110,6 +110,7 @@ from deep_reasoning.library import (
     handed_to,
     has_namespace,
     library_tools,
+    loaded,
     menu_of,
     namespace_read,
     namespace_yaml,
@@ -175,6 +176,13 @@ CONFIGS = Path(__file__).parent / "configs"
 TURN_CASES = json.loads(
     (Path(__file__).parent / "turn_cases.json").read_text(encoding="utf-8")
 )
+# Each case's YAML and the words its slip is told in (None: the parser's), shared with
+# tests/turns.test.mjs.
+SLIP_CASES = json.loads(
+    (Path(__file__).parent / "slip_cases.json").read_text(encoding="utf-8")
+)
+# A pasted 32 KB line took the regex this replaced 4 s.
+SLIP_S = 1.0
 NO_THINK = """name: no think
 messages:
 - {role: user, content: "How many?"}
@@ -1955,6 +1963,11 @@ def test_a_namespace_whose_parent_is_missing_is_refused(library):
         ("research.", RESEARCH, "A namespace name is words of letters"),
         ("router", RESEARCH, 'There is already a namespace "router"'),
         ("research", "tools: [llm\n", "The YAML doesn't parse (line 2:"),
+        (
+            "research",
+            RESEARCH + "And date it.\n",
+            'Line 4, "And date it.", is less indented than the system_suffix text',
+        ),
         ("research", "- llm\n", "The YAML should be a mapping of fields"),
         (
             "research",
@@ -2132,6 +2145,28 @@ def test_a_decomposition_added_while_its_namespace_is_deleted_is_refused(importe
 )
 def test_a_decompositions_turns_are_checked_as_a_worked_example(messages, problems):
     assert turn_problems(messages) == problems
+
+
+def text_of(case):
+    """A slip case's YAML: its text, then any line repeated to its length."""
+    repeated = case.get("repeat", "") * case.get("times", 0)
+    return case["text"] + repeated + case.get("after", "")
+
+
+@pytest.mark.parametrize(
+    ("text", "words"),
+    [(text_of(case), case["words"]) for case in SLIP_CASES],
+    ids=[case["case"] for case in SLIP_CASES],
+)
+def test_lines_that_end_a_block_text_by_their_indent_are_told_so_in_plain_words(
+    text, words
+):
+    started = time.monotonic()
+    with pytest.raises(LibraryError) as refused:
+        loaded(text)
+    assert time.monotonic() - started < SLIP_S
+    said = str(refused.value)
+    assert said == words if words else said.startswith("The YAML doesn't parse (")
 
 
 def test_the_seeded_examples_and_the_engines_own_namespace_examples_pass(library):

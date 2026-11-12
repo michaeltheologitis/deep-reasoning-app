@@ -3,7 +3,7 @@
 import { LIBRARY_CHANGED, PANEL_CLOSE, TOUCH, caret, chatNamespace, closeOtherPanels, element, libraryChanged, nameParts, request, showPanel } from "./app.js";
 import { shownName } from "./models.js";
 import { MS_PER_SECOND } from "./tree.js";
-import { turnProblems } from "./turns.js";
+import { slipWords, turnProblems } from "./turns.js";
 
 const LIBRARY_URL = "api/library";
 const ADD_URL = "api/decompositions";
@@ -633,7 +633,8 @@ function readYaml(text) {
     return { value: jsyaml.load(text) };
   } catch (error) {
     const where = error.mark ? `line ${error.mark.line + 1}: ` : "";
-    return { problem: `The YAML doesn't parse (${where}${error.reason ?? error.message}). Check the indentation and quoting on that line.` };
+    const slip = error.mark && slipWords(text, error.mark.line + 1);
+    return { problem: slip || `The YAML doesn't parse (${where}${error.reason ?? error.message}). Check the indentation and quoting on that line.` };
   }
 }
 

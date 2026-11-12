@@ -303,6 +303,11 @@ ALREADY_HELD = (
     " as it was)"
 )
 NOTHING_CHANGED = f"nothing changed: it {ALREADY_HELD}"
+# How a change record names each field's values, and how a write's result does: read as
+# a record's before and after, an undo's result had the value it replaced reported as the
+# one it wrote back.
+BEFORE_AND_AFTER = ("before", "after")
+WAS_AND_NOW = ("was", "now")
 # Librarians left the historian out of helpers' spawn lists, against their instructions.
 HISTORIAN_KEPT = jinja2.Template(
     "kept historian in {{ name }}'s spawn list, so its chats can still be asked how it"
@@ -1663,13 +1668,17 @@ def logged(done: str, before: str | None, after: str, **change: str) -> Event:
     return {"done": done, **change}
 
 
-def field_changes(before: str, after: str) -> tuple[dict[str, Any], list[str]]:
+def field_changes(
+    before: str, after: str, labels: tuple[str, str] = BEFORE_AND_AFTER
+) -> tuple[dict[str, Any], list[str]]:
     """Each field a namespace's own YAML *after* sets otherwise than *before* does, with
-    its value in each (None when unset), and the names of those it leaves as they were."""
+    its value in each (None when unset) under *labels*, and the names of those it leaves
+    as they were."""
     old, new = fields_of(before), fields_of(after)
     keys = dict.fromkeys([*old, *new])
+    was, now = labels
     changed = {
-        key: {"before": old.get(key), "after": new.get(key)}
+        key: {was: old.get(key), now: new.get(key)}
         for key in keys
         if old.get(key) != new.get(key)
     }
@@ -2218,7 +2227,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         before, stored, done = stop_proof(write)
         if done is None:
             return note | {"done": NOTHING_CHANGED, **at}
-        changed, kept = field_changes(before, stored)
+        changed, kept = field_changes(before, stored, WAS_AND_NOW)
         # A text given, yet as it was: a .replace(...) that matched nothing, say.
         given = fields_of(text).items() if merge else ()
         same = [

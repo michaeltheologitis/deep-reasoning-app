@@ -3,6 +3,7 @@ import asyncio
 import errno
 import hashlib
 import os
+import re
 import select
 import shlex
 import shutil
@@ -20,7 +21,14 @@ from pathlib import Path
 import pytest
 import structlog
 import yaml
-from fake_model import FakeOpenAI, folded_answer, repl, scripted, task_and_turn
+from fake_model import (
+    FakeOpenAI,
+    ProviderFailure,
+    folded_answer,
+    repl,
+    scripted,
+    task_and_turn,
+)
 from structlog.testing import capture_logs
 
 from deep_reasoning import runs as runs_module
@@ -193,6 +201,28 @@ async def test_a_fan_out_streams_one_tree_in_order(home, library, fake_config):
     assert events[-1]["outcome"] == "answered"
     assert events[-1]["answer"] == FAN_OUT_ANSWER
     assert saved(library, run) == events
+
+
+async def test_a_sub_agent_a_provider_failed_says_so_first_and_so_does_its_parents_cell(
+    home, library, fake_config
+):
+    plan = {
+        "Check the plates.": [repl("print(subagent('Fit the curve.'))")],
+        "Fit the curve.": [ProviderFailure(502, "upstream request failed")],
+    }
+    with FakeOpenAI(scripted(plan)) as fake:
+        _, events = await run_to_the_end(
+            Runs(library, home), "Check the plates.", fake_config(fake, max_iter=1)
+        )
+    [sub_agent] = [e for e in of_kind(events, "agent.end") if e["node"] != 1]
+    lead, words = sub_agent["detail"].split("\n")
+    assert re.fullmatch(
+        r"The model provider failed \(502\) after \d+ s of waiting\.", lead
+    )
+    assert words == "InternalServerError: upstream request failed"
+    # The parent's agent reads it too, under the error its cell raised.
+    parents_cell = of_kind(events, "cell.end")[0]
+    assert parents_cell["output"].endswith(f"openai.{words}\n{lead}")
 
 
 async def test_a_cell_failed_only_when_it_raised(home, library, fake_config):

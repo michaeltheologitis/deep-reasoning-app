@@ -215,23 +215,37 @@ def detail_of(error: BaseException) -> str:
     return f"{type(error).__name__}: {error}"
 
 
-def failure_detail(error: BaseException, changes: int) -> str:
-    """Why a run ended by *error*: a provider's failure (5xx), after how long the call
-    waited, its retries included, or refusal of the prompt (a 400 of REFUSED_CODES) led
-    by what it means, then the *changes* to the Library the run made, which stay, and
-    what to do, then the provider's own words; any other error in the engine's words
-    (detail_of())."""
-    words = detail_of(error)
+def provider_lead(error: BaseException) -> str | None:
+    """What a provider's *error* means, in a sentence: its failure (5xx), after how long
+    the call waited, its retries included, or its refusal of the prompt (a 400 of
+    REFUSED_CODES); None for any other error."""
     status = error.status_code if isinstance(error, APIStatusError) else None
     if status is not None and status >= SERVER_ERROR:
         waited = getattr(error, "seconds_waited", None)
         after = "" if waited is None else f" after {math.ceil(waited)} s of waiting"
-        lead = f"{PROVIDER_LEAD} failed ({status}){after}."
-    elif status == BAD_REQUEST and getattr(error, "code", None) in REFUSED_CODES:
-        lead = f"{PROVIDER_LEAD} refused this prompt."
-    else:
-        return words
-    return led(lead, changes, AGAIN, words)
+        return f"{PROVIDER_LEAD} failed ({status}){after}."
+    if status == BAD_REQUEST and getattr(error, "code", None) in REFUSED_CODES:
+        return f"{PROVIDER_LEAD} refused this prompt."
+    return None
+
+
+def failure_detail(error: BaseException, changes: int) -> str:
+    """Why a run ended by *error*: a provider's, led by what it means (provider_lead()),
+    then the *changes* to the Library the run made, which stay, and what to do, then the
+    provider's own words; any other error in the engine's words (detail_of())."""
+    words = detail_of(error)
+    lead = provider_lead(error)
+    return words if lead is None else led(lead, changes, AGAIN, words)
+
+
+def provider_led(detail: str | None) -> str | None:
+    """An agent's end *detail*, on a line after what the provider's error that ended it
+    means, as a run's: the engine logs a failed drive's end while handling its error."""
+    error = sys.exc_info()[1]
+    lead = provider_lead(error) if error is not None else None
+    if lead is None or detail != detail_of(error):
+        return detail
+    return f"{lead}\n{detail}"
 
 
 def exhausted_detail(changes: int, sentence: str) -> str:
@@ -604,7 +618,7 @@ class Recorder:
             node=node,
             status=status,
             result=result,
-            detail=event.get("detail"),
+            detail=provider_led(event.get("detail")),
         )
 
     def _tool_event(
@@ -780,7 +794,8 @@ def counting_calls(recorder: Recorder, max_iter: int) -> None:
     finish. Each call's messages go with any half of a character escaped: a cell's output
     may hold one, which the call couldn't send; and with the app's notes for agents of
     *max_iter* turns (with_apps_notes()), in what is sent only. A call the provider fails
-    carries how long it waited (seconds_waited), for failure_detail()."""
+    carries how long it waited (seconds_waited), for failure_detail(), and what that
+    means as a note, which a parent's cell shows under a sub-agent's error."""
     create = AsyncCompletions.create
 
     async def counted(self: AsyncCompletions, *args: Any, **kwargs: Any) -> Any:
@@ -793,6 +808,8 @@ def counting_calls(recorder: Recorder, max_iter: int) -> None:
             return await create(self, *args, **kwargs)
         except APIStatusError as error:
             error.seconds_waited = time.monotonic() - started
+            if lead := provider_lead(error):
+                error.add_note(lead)
             raise
 
     AsyncCompletions.create = counted
