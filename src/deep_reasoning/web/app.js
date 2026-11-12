@@ -200,7 +200,8 @@ function renderPrompt(turn) {
 function renderTurnAnswer(turn) {
   if (turn.answer == null) return null;
   if (turn.outcome === "exhausted") return out(turn.detail ? failureView(turn.detail) : turn.answer, { tone: "warn", full: true });
-  return clamped(turn, "answer", turn.answer, () => renderAnswer(turn.answer));
+  const text = turn.shown ?? turn.answer;
+  return clamped(turn, "answer", text, () => renderAnswer(text));
 }
 
 // A turn names its namespace when it differs from the turn before's, so a chat that switched reads clearly.

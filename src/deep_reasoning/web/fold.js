@@ -20,7 +20,7 @@ export function changeText({ what, namespace, name, before }) {
 
 export function newFold() {
   return {
-    turn: { prompt: "", steps: [], changes: [], pages: [], answer: null, outcome: null, detail: null, cost: null, unpriced: false, unfinished: false, seconds: null, started: null, model: null, provider: null, namespace: null, run: null },
+    turn: { prompt: "", steps: [], changes: [], pages: [], answer: null, shown: null, outcome: null, detail: null, cost: null, unpriced: false, unfinished: false, seconds: null, started: null, model: null, provider: null, namespace: null, run: null },
     seq: 0,
     // node → its holder (the turn for the root, else its row) and its parent's node
     nodes: new Map(),
@@ -134,11 +134,12 @@ function endAgent(fold, event) {
 }
 
 // The run's own total counts only calls that finished: one whose only calls were cut off or failed totals 0 but cost what no one knows.
+// A dict or list answer is shown as the worker wrote it to be read (shown), its repr kept as the answer.
 function endTurn(fold, event) {
-  const { outcome, answer, detail, cost, seconds } = event;
+  const { outcome, answer, shown, detail, cost, seconds } = event;
   const unfinished = cost === 0 && event.unfinished_calls > 0;
   const priced = isCost(cost) && !unfinished;
-  Object.assign(fold.turn, { outcome, answer, detail, cost: priced ? cost : null, unpriced: !priced && !unfinished, unfinished, seconds });
+  Object.assign(fold.turn, { outcome, answer, shown: typeof shown === "string" ? shown : null, detail, cost: priced ? cost : null, unpriced: !priced && !unfinished, unfinished, seconds });
   markLeftGoing(fold.turn, event.t, outcome === STOPPED ? STOPPED : CUT_OFF);
 }
 

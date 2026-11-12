@@ -567,53 +567,49 @@ LETTER = "Dear Tom,\n\nYour rent is due on Friday.\nThanks,\nAnna"
 @pytest.mark.parametrize(
     ("answer", "shown"),
     [
-        ("Rent is due.", "Rent is due."),
         (
             {"letter": LETTER, "ring_first": "the plumber"},
             (
-                "**Letter**\n\nDear Tom,\n\nYour rent is due on Friday.\nThanks,\nAnna"
-                "\n\n**Ring first:** the plumber"
+                "**letter**\n\nDear Tom,\n\nYour rent is due on Friday.\nThanks,\nAnna"
+                "\n\n**ring\\_first:** the plumber"
             ),
         ),
+        (
+            {"rent": 1200, "late fee": Decimal("42.50"), "note": None},
+            "**rent:** 1200\n\n**late fee:** 42.50\n\n**note:** None",
+        ),
+        ({"2*3": 6, "a**b": "c"}, "**2\\*3:** 6\n\n**a\\*\\*b:** c"),
         (["boiler", "smoke alarm\nin 3B", 2], "- boiler\n- smoke alarm\n  in 3B\n- 2"),
         (
-            {"rent": 1200, "late_fee": Decimal("42.50"), "paid": 0.5, "note": None},
-            "**Rent:** 1200\n\n**Late fee:** 42.50\n\n**Paid:** 0.5\n\n**Note:** None",
-        ),
-        (
-            {"overdue": ["boiler", "smoke alarm"], "tom": {"unit": "3B", "owes": 1200}},
-            (
-                "**Overdue**\n\n- boiler\n- smoke alarm"
-                "\n\n**Tom**\n\n- **Unit:** 3B\n- **Owes:** 1200"
-            ),
-        ),
-        ({"VAT": 190, "eBay_fees": 12}, "**VAT:** 190\n\n**eBay fees:** 12"),
-        (
-            [{"unit": "3B", "days_overdue": 12}, ("4A", "boiler")],
-            "- **Unit:** 3B; **Days overdue:** 12\n- 4A; boiler",
+            ["- a dash", "1. a step", "-5 degrees"],
+            "- \\- a dash\n- 1\\. a step\n- -5 degrees",
         ),
     ],
 )
-def test_a_dict_or_list_answer_shows_as_sections_and_bullets(answer, shown):
+def test_a_dict_or_list_answer_shows_each_key_in_bold_or_each_item_a_bullet(
+    answer, shown
+):
     assert readable(answer) == shown
 
 
 @pytest.mark.parametrize(
     "answer",
     [
+        "text",
+        42,
         object(),
         {"a", "b"},
+        ("a", "b"),
         {"letter": object()},
-        {"deep": {"deeper": {"deepest": 1}}},
-        [[["three levels"]]],
+        {"rows": ["boiler"]},
+        [["boiler"]],
         list(range(MOST_ENTRIES + 1)),
-        {"rows": list(range(MOST_ENTRIES))},
         {},
         [],
     ],
 )
-def test_any_other_answer_shows_as_its_repr(answer):
-    assert readable(answer) == repr(answer)
+def test_any_other_answer_shows_only_as_its_repr(answer):
+    assert readable(answer) is None
 
 
 def test_cached_input_is_billed_at_its_own_rate():

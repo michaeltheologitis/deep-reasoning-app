@@ -86,13 +86,14 @@ LEFT_OUT_NOW: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
     "left_out_now", default=()
 )
 WHY_CHARS = 300
-# What a run's answer that isn't text holds to show as sections and bullets (`readable`).
-LEAVES = (str, numbers.Number, type(None))
-SEQUENCES = (list, tuple)  # not a namedtuple, whose items would lose their names
-NESTED_LEVELS = 2
+# A dict or list answer of these, MOST_ENTRIES at most, shows as Markdown (`readable`).
+SIMPLE_VALUES = (str, numbers.Number, type(None))
 MOST_ENTRIES = 100
+# ASCII punctuation, which Markdown reads escaped as itself, so a key can't break its label.
+MARKDOWN_SPECIAL = re.compile(r"([!-/:-@\[-`{-~])")
+# A list item starting as a list marker would ("- x", "1. x"), its last character escaped.
+LIST_MARKER = re.compile(r"^(\s*\d*)([-+*.)])(?=\s|$)")
 BULLET_INDENT = "  "
-ENTRY_SEPARATOR = "; "
 # The engine's message when a reply has no <repl> block, word for word, and the same
 # sent as the app's: read as the user's, it had the model apologise to the user for it.
 NO_REPL_NOTE = (
@@ -189,87 +190,27 @@ def unquote(answer_repr: str) -> str:
     return value if isinstance(value, str) else answer_repr
 
 
-def readable(answer: Any) -> str:
-    """A run's final answer as the user reads it: text as it is; a dict as a section per
-    key and a list as bullets, of text, numbers and None nested one level at most, text
-    as written; anything else, or empty, or past MOST_ENTRIES entries in all, as its
-    repr."""
-    if isinstance(answer, str):
-        return answer
-    is_container = isinstance(answer, dict) or type(answer) in SEQUENCES
-    if not (
-        is_container
-        and answer
-        and is_simple(answer, NESTED_LEVELS)
-        and entries(answer) <= MOST_ENTRIES
-    ):
-        return repr(answer)
-    if isinstance(answer, dict):
-        return "\n\n".join(section(key, value) for key, value in answer.items())
-    return bullets(answer)
-
-
-def is_simple(value: Any, levels: int) -> bool:
-    """Whether *value* is text, a number or None, or, within *levels* of nesting, a dict
-    keyed by those or a list of them."""
-    if isinstance(value, LEAVES):
-        return True
-    if levels == 0:
-        return False
-    if isinstance(value, dict):
-        return all(
-            isinstance(key, LEAVES) and is_simple(item, levels - 1)
-            for key, item in value.items()
+def readable(answer: Any) -> str | None:
+    """A dict or list answer of text, numbers and None, MOST_ENTRIES at most, as the page
+    shows it: each key in bold over its value, or each item a bullet, values as written;
+    None for any other answer, which shows as its repr."""
+    if type(answer) not in (dict, list) or not 0 < len(answer) <= MOST_ENTRIES:
+        return None
+    values = answer.values() if type(answer) is dict else answer
+    if not all(isinstance(value, SIMPLE_VALUES) for value in values):
+        return None
+    if type(answer) is list:
+        items = (LIST_MARKER.sub(r"\1\\\2", str(item)) for item in answer)
+        return "\n".join(
+            f"- {item}".replace("\n", "\n" + BULLET_INDENT) for item in items
         )
-    return type(value) in SEQUENCES and all(
-        is_simple(item, levels - 1) for item in value
-    )
-
-
-def entries(value: Any) -> int:
-    """How many keys and items *value* holds, all the way down."""
-    if isinstance(value, dict):
-        value = list(value.values())
-    elif type(value) not in SEQUENCES:
-        return 0
-    return len(value) + sum(map(entries, value))
-
-
-def section(key: Any, value: Any) -> str:
-    """A dict answer's *key* as a bold label, then its *value*: on the same line when
-    that is one line of text, else below it."""
-    name = label(key)
-    if isinstance(value, LEAVES) or not value:
-        text = str(value)
-        return f"**{name}**\n\n{text}" if "\n" in text else f"**{name}:** {text}"
-    return f"**{name}**\n\n{bullets(value)}"
-
-
-def bullets(value: dict | list | tuple) -> str:
-    """A dict or list as Markdown bullets, a dict's each labelled."""
-    if isinstance(value, dict):
-        lines = [f"**{label(key)}:** {in_a_line(item)}" for key, item in value.items()]
-    else:
-        lines = [in_a_line(item) for item in value]
-    return "\n".join(f"- {line}".replace("\n", "\n" + BULLET_INDENT) for line in lines)
-
-
-def in_a_line(value: Any) -> str:
-    """A list's item: text or a number as it is; a dict's or list's entries side by side."""
-    if isinstance(value, dict) and value:
-        return ENTRY_SEPARATOR.join(
-            f"**{label(key)}:** {item}" for key, item in value.items()
+    sections = []
+    for key, value in answer.items():
+        name, text = MARKDOWN_SPECIAL.sub(r"\\\1", str(key)), str(value)
+        sections.append(
+            f"**{name}**\n\n{text}" if "\n" in text else f"**{name}:** {text}"
         )
-    if type(value) in SEQUENCES and value:
-        return ENTRY_SEPARATOR.join(map(str, value))
-    return str(value)
-
-
-def label(key: Any) -> str:
-    """A dict's key as a label: its words, an underscore as a space, the first a capital
-    when all are lowercase, so a name such as eBay or VAT stays as written."""
-    words = " ".join(str(key).replace("_", " ").split())
-    return words[:1].upper() + words[1:] if words.islower() else words
+    return "\n\n".join(sections)
 
 
 def cost_of(model: str, usage: dict[str, Any], base_url: str) -> float | None:
@@ -589,9 +530,15 @@ class Recorder:
         with self._lock:
             self._calls_going += 1
 
-    def end_turn(self, outcome: str, answer: str | None, detail: str | None) -> None:
+    def end_turn(
+        self,
+        outcome: str,
+        answer: str | None,
+        detail: str | None,
+        shown: str | None = None,
+    ) -> None:
         """The turn.end, with how many chat calls never finished, whose cost no one
-        knows."""
+        knows, and the answer as the page shows it, when that isn't *answer*."""
         with self._lock:
             unfinished = self._calls_going
         self.emit(
@@ -600,6 +547,7 @@ class Recorder:
             answer=answer,
             detail=detail,
             unfinished_calls=unfinished,
+            **({} if shown is None else {"shown": shown}),
         )
 
     def emit(self, kind: str, **fields: Any) -> None:
@@ -977,12 +925,12 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
     if reasoner.stopped:
         recorder.end_turn("stopped", None, None)
         finish(reasoner)
-    text = readable(answer)
+    text = answer if isinstance(answer, str) else repr(answer)
     if reasoner.exhausted:
         detail = exhausted_detail(recorder.changes_made, text)
         recorder.end_turn("exhausted", text, detail)
     else:
-        recorder.end_turn("answered", text, None)
+        recorder.end_turn("answered", text, None, readable(answer))
     finish(reasoner)
 
 
