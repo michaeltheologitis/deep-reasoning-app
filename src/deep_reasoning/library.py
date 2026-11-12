@@ -477,6 +477,35 @@ BETWEEN = {
     "assistant": "the user turn with the <observation> goes between them",
 }
 NO_TASK = "There is no task: add a user turn holding it."
+# A backslash and n typed where a line break was meant ("Dear Tom,\n\nI hope"), which shows
+# as those two characters; but one standing alone, as a text naming it ("no typed \n").
+TYPED_BREAK = re.compile(r"(?<![\s\"'`(])\\n|\\n(?![\s\"'`.,;:)]|$)")
+# How Python source writes a backslash and n in a string literal.
+TYPED_IN_SOURCE = re.compile(r"\\\\n")
+# A text literal written raw, as a regular expression is: its \n is a line break there.
+RAW_PREFIX = re.compile(r"[A-Za-z]*[rR][A-Za-z]*['\"]")
+# The methods and functions that look for the text they are given first, as
+# text.replace("\\n", "\n"), or read it as a regular expression, as re.split does.
+SEARCHES = frozenset(
+    {"replace", "split", "count", "find", "index", "startswith", "endswith"}
+    | {"compile", "search", "match", "fullmatch", "findall", "finditer", "sub"}
+)
+# A run hands a tool's factory every key of its block but these.
+OWN_KEYS = ("factory", "factory_from")
+# How much of a line holding a typed line break a problem quotes.
+LINE_SHOWN = 80
+QUOTED_AROUND = 24
+TYPED_IN_CODE = jinja2.Template(
+    "{{ what }} types \\n as a backslash and n on its line {{ number }} ({{ line }}),"
+    " which shows as those two characters, not a line break: the code should have \\n"
+    " there, with one backslash.",
+    undefined=jinja2.StrictUndefined,
+)
+TYPED_IN_TEXT = jinja2.Template(
+    "{{ what }} has \\n typed as a backslash and n ({{ quote }}), which shows as those"
+    " two characters, not a line break: put a real line break there.",
+    undefined=jinja2.StrictUndefined,
+)
 # make_tool builds `factory: llm` with v2's own builder, the rest from TOOL_BUILDERS.
 BUILDERS = {**TOOL_BUILDERS, "llm": build_llm_tool}
 # What a custom tool's source is read for: what it defines, and the Func(...) it returns.
@@ -563,7 +592,8 @@ description and source (a custom tool's Python, else None), each text cut after 
 characters. tools(name) gives tool `name` whole.
   library.changes(): every change to the Library, whoever made it (in the Library \
 panel, by an import, in this chat or in another), newest first, each in a line: id, \
-when (today, yesterday or its date), by (the Library panel; an import of its file; \
+when (today, yesterday or its date, then the time in the user's time zone, as \
+"today 14:02"), by (the Library panel; an import of its file; \
 this chat, with turn, the number of its message that made it; or another chat, by its \
 title), done (added, changed or deleted), what (namespace, decomposition, tool or \
 setting, a run setting), namespace (a decomposition's, or the namespace itself), name, \
@@ -608,8 +638,9 @@ yaml in your cell, never with text holding a tag. \
 It is stored even when it isn't yet a worked example like that: the \
 result's problems lists each way it isn't (empty when none), and until you write it \
 again without them the Library panel marks it ✗. The result's code_problems, when \
-there are any, lists each turn whose code isn't valid Python, or leaves a variable's \
-{name} in a string without f, which agents copying it would copy too: fix them.
+there are any, lists each turn whose code isn't valid Python, leaves a variable's \
+{name} in a string without f, or types \\n as a backslash and n in a string (\\\\n), \
+which agents copying it would copy too: fix them.
   library.add_namespace(name, yaml): adds namespace `name` ("research", or \
 "research.papers" under an existing research) with the fields yaml sets: system_suffix \
 (text added to its agents' system prompt), vars (names and values its agents' Python \
@@ -670,7 +701,10 @@ or the run settings (max_iter, max_depth, ...): only the user changes them, by i
 a config (deep-reasoning import).
 Each write returns what it did, as {done, what, name} (and namespace, but for a tool), \
 done saying "nothing changed: …" when what you gave is what was stored, as when a \
-.replace(...) matched nothing; a refusal raises ValueError saying why. One that holds "…(+N chars)", where a text \
+.replace(...) matched nothing, and problems when a text or a tool's Python it stored \
+has \\n typed as a backslash and n where a line break was meant, which shows as those \
+two characters: write it again with real line breaks. A refusal raises ValueError \
+saying why. One that holds "…(+N chars)", where a text \
 was cut short, or "…(+N more items)", where a long list was, is refused: write the \
 whole text."""
 PAGE_DESCRIPTION = """\
@@ -2741,6 +2775,113 @@ def decomposition_problems(decomposition, names):
     return example_problems(decomposition) + template_problems(decomposition, names)
 
 
+def typed_breaks(source, tree):
+    """Each text literal of the Python *source*, parsed as *tree*, holding a typed line
+    break (TYPED_BREAK), as the node of the literal it is part of: but a raw one, and
+    one looked for, compared or given first to a SEARCHES method."""
+    nodes = list(ast.walk(tree))
+    whole = {
+        id(part): node
+        for node in nodes
+        if isinstance(node, ast.JoinedStr)
+        for part in node.values
+    }
+    skipped = set()
+    for node in nodes:
+        if isinstance(node, ast.Compare):
+            skipped |= {id(each) for each in [node.left, *node.comparators]}
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in SEARCHES
+            and node.args
+        ):
+            skipped.add(id(node.args[0]))
+        elif (
+            isinstance(node, (ast.Constant, ast.JoinedStr))
+            and id(node) not in whole
+            and RAW_PREFIX.match(ast.get_source_segment(source, node) or "")
+        ):
+            skipped.add(id(node))
+    return [
+        node
+        for node in nodes
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(whole.get(id(node), node)) not in skipped
+        and TYPED_BREAK.search(node.value)
+    ]
+
+
+def code_breaks(what, source):
+    """The problem, in a list, of the Python *source*, said of *what*, typing a line
+    break in a string (typed_breaks()), quoting the first line that does; none for none,
+    or for source that doesn't parse, which other checks report."""
+    try:
+        found = typed_breaks(source, parsed_python(source))
+    except LibraryError:
+        return []
+    if not found:
+        return []
+    first = min(found, key=lambda node: (node.lineno, node.col_offset))
+    segment = ast.get_source_segment(source, first) or ""
+    lines = segment.split("\n")
+    offset = next(
+        (at for at, line in enumerate(lines) if TYPED_IN_SOURCE.search(line)), 0
+    )
+    number = first.lineno + offset
+    line = source.split("\n")[number - 1].strip()
+    if len(line) > LINE_SHOWN:
+        line = line[:LINE_SHOWN] + "…"
+    return [TYPED_IN_CODE.render(what=what, number=number, line=line)]
+
+
+def text_breaks(texts):
+    """A problem for each of *texts*, values by what they are, holding a typed line break
+    in a text at any depth, quoting its line around the first."""
+    problems = []
+    for what, value in texts.items():
+        for line in (each for text in texts_in(value) for each in text.splitlines()):
+            if found := TYPED_BREAK.search(line):
+                start = max(found.start() - QUOTED_AROUND, 0)
+                stop = found.end() + QUOTED_AROUND
+                quote = (
+                    f'"{"…" * (start > 0)}{line[start:stop]}{"…" * (stop < len(line))}"'
+                )
+                problems.append(TYPED_IN_TEXT.render(what=what, quote=quote))
+                break
+    return problems
+
+
+def example_breaks(messages):
+    """The problems of *messages*, a decomposition's turns, each assistant turn's code
+    typing a line break (code_breaks())."""
+    return [
+        problem
+        for number, message in enumerate(messages, start=1)
+        if message["role"] == "assistant"
+        for problem in code_breaks(
+            f"Turn {number} (assistant)'s code", running_code(message["content"])
+        )
+    ]
+
+
+def namespace_breaks(fields):
+    """The problems of a namespace's own *fields*: its system_suffix or a var holding a
+    typed line break."""
+    texts = {"The system_suffix": fields.get("system_suffix")}
+    own_vars = fields.get("vars") or {}
+    texts |= {f"The var {key}": value for key, value in own_vars.items()}
+    return text_breaks(texts)
+
+
+def tool_breaks(source, settings):
+    """The problems of a custom tool, its Python *source* and its *settings*, typing a
+    line break."""
+    texts = {f"The setting {key}": value for key, value in settings.items()}
+    return code_breaks("The tool's Python", source) + text_breaks(texts)
+
+
 # Who made a change, as the record of changes keeps it: the panel, unless said otherwise.
 PANEL = {"by": "panel", "chat": None, "run": None, "label": None}
 # Each kind of row the record keeps, and where its text is: a tool's is its block, then
@@ -2763,6 +2904,8 @@ MAX_CHANGE_BYTES = 3 * MAX_ROW_BYTES
 CHANGES_SHOWN = 30
 CHANGE_CHARS_SHOWN = 20_000
 SHOWN_CUT = "…(cut short)"
+# A change a chat made names it by its title, cut to about this many characters.
+CHAT_TITLE_SHOWN = 40
 # The latest time a change can have been made: the year 9999 begins, which a date shows
 # in any time zone.
 LAST_SECOND = 253_370_764_800
@@ -2930,12 +3073,25 @@ def change_texts(cut):
 
 def listed_change(change):
     """A change as the panel lists it, read with each text cut one character past
-    CHANGE_CHARS_SHOWN, and cut there: the chat's id and run are the library tool's."""
+    CHANGE_CHARS_SHOWN, and cut there, and a chat's by a short title (short_title()):
+    the chat's id and run are the library tool's."""
     shown = {key: value for key, value in change.items() if key not in ("chat", "run")}
     for key in ("before", "after"):
         if shown[key] is not None and len(shown[key]) > CHANGE_CHARS_SHOWN:
             shown[key] = shown[key][:CHANGE_CHARS_SHOWN] + SHOWN_CUT
+    if shown["by"] == "chat" and shown["label"] is not None:
+        shown["label"] = short_title(shown["label"])
     return shown
+
+
+def short_title(title):
+    """A chat's *title*, as long as a first message may make it, as a line of the Changes
+    tab names it: whole when it is short, else cut at a word."""
+    if len(title) <= CHAT_TITLE_SHOWN:
+        return title
+    head = title[: CHAT_TITLE_SHOWN + 1]
+    words = head.rpartition(" ")[0] or head[:CHAT_TITLE_SHOWN]
+    return f"{words.rstrip(' ,;:')}…"
 
 
 def cut_text(text, limit):
@@ -4052,6 +4208,7 @@ def listed_tool(name, granting, stored, **shown):
         "refusal": tool_refusal(name, granting, stored),
         "source": None,
         "problems": [],
+        "warnings": [],
     } | shown
 
 
@@ -4071,6 +4228,10 @@ def tool_rows(config, registry, names, sources):
             config=dump({name: block}).rstrip() if block else None,
             source=sources.get(name),
         )
+        # A stored tool the engine builds from its block alone has no Python.
+        if sources.get(name) is not None:
+            settings = {k: v for k, v in block.items() if k not in OWN_KEYS}
+            row["warnings"] = tool_breaks(sources[name], settings)
         rows.append(row)
     return rows
 
@@ -4187,9 +4348,11 @@ def namespace_rows(read, config, registry, chats=None):
 
 
 def warnings_of(read, name):
-    """What the panel warns of namespace *name* of the Library *read*, as a shared file
-    may hold it: each grant runs ignore (ignored_grants())."""
-    return ignored_grants(read, read["namespaces"].get(name, {}).get("tools", []))
+    """What the panel warns of namespace *name* of the Library *read*: each grant runs
+    ignore (ignored_grants()), as a shared file may hold, and each text of its own typing
+    a line break (namespace_breaks())."""
+    own = read["namespaces"].get(name, {})
+    return ignored_grants(read, own.get("tools", [])) + namespace_breaks(own)
 
 
 def hand_offs_made(registry, calls):
@@ -4301,7 +4464,8 @@ def problems_of(row):
     decomposition = row["decomposition"]
     if decomposition is None:
         return row["why"].splitlines()
-    return example_problems(decomposition)
+    messages = decomposition.model_dump()["messages"]
+    return example_problems(decomposition) + example_breaks(messages)
 
 
 def listed_tools(read, config, registry, names):

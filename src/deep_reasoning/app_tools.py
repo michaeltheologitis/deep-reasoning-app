@@ -69,6 +69,7 @@ from deep_reasoning.library import (
     LIBRARY_TOOL,
     LOCAL_REPL,
     MAX_YAML_CHARS,
+    OWN_KEYS,
     PAGE_DESCRIPTION,
     TAKEN_NAMES,
     LibraryError,
@@ -85,6 +86,7 @@ from deep_reasoning.library import (
     cut_text,
     distrust,
     dump,
+    example_breaks,
     expanded_shape,
     fields_of,
     in_chain_order,
@@ -92,6 +94,7 @@ from deep_reasoning.library import (
     left_out_note,
     literals,
     loaded,
+    namespace_breaks,
     namespace_rows,
     parsed_python,
     read_changes,
@@ -105,6 +108,7 @@ from deep_reasoning.library import (
     store_tool,
     taken,
     texts_in,
+    tool_breaks,
     tool_file,
     tool_name_problem,
     tool_rows,
@@ -289,8 +293,6 @@ NOT_A_TOOL = (
 PLAIN = (str, int, float, bool, type(None))
 # Deeper settings are refused, as YAML writes them by recursion.
 MAX_NESTING = 20
-# A run hands the factory every key of the tool's block but these.
-OWN_KEYS = ("factory", "factory_from")
 SETS_OWN_KEYS = "settings may not hold factory or factory_from: write_tool sets them."
 CHECKS = "checks"
 # What a write that leaves a text as it was says, so the model never reports it done.
@@ -1333,7 +1335,8 @@ def check_writable(namespace: str, text: str, key_names: list[str]) -> Any:
 def code_problems(decomposition: dict[str, Any]) -> list[str]:
     """Each assistant turn of *decomposition*, as data the store took, whose code, the
     <repl> block the engine runs, isn't valid Python, or leaves the {name} of a variable
-    its code or an earlier turn's sets in a string without f."""
+    its code or an earlier turn's sets in a string without f; then each typing a line
+    break as a backslash and n (example_breaks())."""
     problems, names = [], set()
     for number, turn in enumerate(decomposition["messages"], start=1):
         if turn["role"] != "assistant":
@@ -1351,7 +1354,7 @@ def code_problems(decomposition: dict[str, Any]) -> list[str]:
             for name in dict.fromkeys(fields_without_f(source, tree))
             if name in names
         ]
-    return problems
+    return problems + example_breaks(decomposition["messages"])
 
 
 def set_names(tree: ast.AST) -> set[str]:
@@ -1882,7 +1885,7 @@ def turns_of(
 def change_head(change: Event, chat: str, turns: dict[str, int]) -> Event:
     """A recorded *change*'s id, when it was made, by whom (this chat's, *chat*, with
     the turn, by *turns*, of the run that made it), and what it did."""
-    head = {"id": change["id"], "when": day_of(change["made"])}
+    head = {"id": change["id"], "when": made_at(change["made"])}
     head["by"] = made_by(change, chat)
     if change["chat"] == chat and change["run"] in turns:
         head["turn"] = turns[change["run"]]
@@ -1895,11 +1898,18 @@ def done_of(change: Event) -> str:
     return "deleted" if change["after"] is None else "changed"
 
 
-def day_of(made: float) -> str:
-    """The day a change was *made*: today, yesterday, else its date."""
-    day, today = datetime.fromtimestamp(made).date(), date.today()
+def made_at(made: float) -> str:
+    """When a change was *made*, in the app's local time: its day (today, yesterday,
+    else its date), then its time, as "today 14:02"."""
+    when = datetime.fromtimestamp(made)
+    today = date.today()
     named = {today: "today", today - timedelta(days=1): "yesterday"}
-    return named.get(day, day.isoformat())
+    return f"{named.get(when.date(), when.date().isoformat())} {when:%H:%M}"
+
+
+def with_problems(problems: list[str]) -> dict[str, Any]:
+    """What a write adds to its result for *problems* in what it stored: none for none."""
+    return {"problems": problems} if problems else {}
 
 
 def made_by(change: Event, chat: str) -> str:
@@ -2136,13 +2146,13 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         check_writable(name, text, key_names)
         allowed = grants_built(name, text, adding=True)
 
-        def write() -> Event:
+        def write() -> tuple[str, Event]:
             stored = written(library, add_namespace, name, text, allowed=allowed, by=by)
-            return logged(
-                "added", None, stored, what="namespace", namespace=name, name=name
-            )
+            at = {"what": "namespace", "namespace": name, "name": name}
+            return stored, logged("added", None, stored, **at)
 
-        return stop_proof(write)
+        stored, done = stop_proof(write)
+        return done | with_problems(namespace_breaks(fields_of(stored)))
 
     def change(name: str, yaml: Any, replace: bool = False) -> dict[str, Any]:
         """Give namespace *name* the fields *yaml* sets, keeping the others, or with
@@ -2178,7 +2188,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         done |= {"changed": cut(changed), "kept": [k for k in kept if k not in same]}
         if same:
             done["nothing changed"] = f"{', '.join(same)} {ALREADY_HELD}"
-        return done
+        return done | with_problems(namespace_breaks(fields_of(stored)))
 
     def write_tool(
         name: str, source: str, factory: str, settings: dict[str, Any] | None = None
@@ -2211,7 +2221,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             done = "added" if before is None else "replaced"
             return logged(done, before, after, what="tool", name=name)
 
-        return stop_proof(write)
+        return stop_proof(write) | with_problems(tool_breaks(source, settings or {}))
 
     tool = SimpleNamespace(
         show=giving_marks(show),

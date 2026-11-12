@@ -8,12 +8,15 @@ import threading
 import time
 import types
 from contextlib import closing
+from datetime import date, datetime, timedelta
+from datetime import time as clock_time
 from itertools import count
 from pathlib import Path
 
 import pytest
 import structlog
 import yaml
+from conftest import REMINDER_BREAK, REMINDER_VAR, TABLE_BREAK, TYPED_BREAKS
 from deep_reasoner.core import capture_debug_logs
 from deep_reasoner.stopping import DriveTable, StopRequested
 from fake_model import RESEARCH_CHANGED, SPLIT_COUNT, WORD_COUNT, WORD_COUNT_DOC
@@ -56,6 +59,7 @@ from deep_reasoning.app_tools import (
     build_library,
     build_page,
     cut,
+    made_at,
     open_existing,
     secret_refusal,
 )
@@ -2119,6 +2123,36 @@ def test_a_worked_example_leaving_a_variable_in_braces_without_f_says_so(
     assert done.get("code_problems", []) == [UNFILLED] * problems
 
 
+def test_a_worked_example_whose_code_types_a_line_break_says_so(fresh):
+    tool = library_tool(fresh)
+    table = (TYPED_BREAKS / "table_example.yaml").read_text()
+    done = tool.write_decomposition("drafts", table)
+    assert done["code_problems"] == [TABLE_BREAK]
+    fixed = tool.write_decomposition("drafts", table.replace("\\\\n", "\\n"))
+    assert "code_problems" not in fixed
+    # One whose code looks for a typed \n, to say there is none, types none.
+    checking = (TYPED_BREAKS / "reminders_example.yaml").read_text()
+    assert "code_problems" not in tool.write_decomposition("drafts", checking)
+
+
+def test_a_tool_whose_python_types_a_line_break_says_so(fresh):
+    tool = library_tool(fresh)
+    reminders = (TYPED_BREAKS / "reminders_tool.py.txt").read_text()
+    name, factory = "draft_late_payment_emails", "build_draft_late_payment_emails"
+    assert tool.write_tool(name, reminders, factory)["problems"] == [REMINDER_BREAK]
+    fixed = tool.write_tool(name, reminders.replace("\\\\n", "\\n"), factory)
+    assert "problems" not in fixed
+
+
+def test_a_namespace_whose_text_types_a_line_break_says_so(fresh):
+    tool = library_tool(fresh)
+    typed = {"vars": {"reminder": "Dear Tom,\\n\\nI hope you are well."}}
+    assert tool.add_namespace("chasing", typed)["problems"] == [REMINDER_VAR]
+    assert tool.change_namespace("drafts", typed)["problems"] == [REMINDER_VAR]
+    fixed = {"vars": {"reminder": "Dear Tom,\n\nI hope you are well."}}
+    assert "problems" not in tool.change_namespace("drafts", fixed)
+
+
 @pytest.mark.parametrize(
     ("root", "name", "level"),
     [
@@ -2927,27 +2961,35 @@ def test_changes_list_every_change_whoever_made_it_newest_first(fresh, tmp_path)
     budget = {"what": "namespace", "namespace": "budget", "name": "budget"}
     drafts = {"what": "namespace", "namespace": "drafts", "name": "drafts"}
     max_iter = {"what": "setting", "name": "max_iter"}
-    deleted = {"id": 4, "when": "today", "by": "the Library panel", "done": "deleted"}
-    deleted |= budget
-    assert tool.changes() == [
-        {"id": 5, "when": "today", "by": "this chat", "turn": 2, "done": "changed"}
+    deleted = {"id": 4, "by": "the Library panel", "done": "deleted"} | budget
+    lines = tool.changes()
+    assert {line.pop("when")[:6] for line in lines} == {"today "}
+    assert lines == [
+        {"id": 5, "by": "this chat", "turn": 2, "done": "changed"}
         | drafts
         | {"fields": ["system_suffix"]},
         deleted | {"fields": ["spawn"]},
-        {"id": 3, "when": "today", "by": "an import of team.yaml", "done": "added"}
-        | max_iter,
-        {"id": 2, "when": "today", "by": 'the chat "Budget helpers"', "done": "added"}
+        {"id": 3, "by": "an import of team.yaml", "done": "added"} | max_iter,
+        {"id": 2, "by": 'the chat "Budget helpers"', "done": "added"}
         | budget
         | {"fields": ["spawn"]},
-        {"id": 1, "when": "today", "by": "the Library panel", "done": "added"}
-        | drafts
-        | {"fields": []},
+        {"id": 1, "by": "the Library panel", "done": "added"} | drafts | {"fields": []},
     ]
-    assert tool.changes(id=4) == deleted | {
+    whole = tool.changes(id=4)
+    assert whole.pop("when")[:6] == "today "
+    assert whole == deleted | {
         "before": "spawn: []\n",
         "after": None,
         "changed": {"spawn": {"before": [], "after": None}},
     }
+
+
+@pytest.mark.parametrize(
+    ("days_ago", "day"), [(0, "today"), (1, "yesterday"), (10, None)]
+)
+def test_a_change_is_dated_by_its_day_and_its_local_time(days_ago, day):
+    made = datetime.combine(date.today() - timedelta(days=days_ago), clock_time(14, 2))
+    assert made_at(made.timestamp()) == f"{day or made.date().isoformat()} 14:02"
 
 
 def test_another_chats_change_shows_its_title_now_and_never_outlives_it(fresh):

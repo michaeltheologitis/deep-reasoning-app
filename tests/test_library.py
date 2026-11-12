@@ -14,6 +14,7 @@ from pathlib import Path
 import deep_reasoner.llm
 import pytest
 import yaml
+from conftest import REMINDER_BREAK, REMINDER_VAR, TABLE_BREAK, TYPED_BREAKS
 from deep_reasoner.config import resolve_api_key
 from deep_reasoner.namespaces import ROOT, build_registry
 from deep_reasoner.tools import load_tool_factory
@@ -89,7 +90,9 @@ from deep_reasoning.library import (
     LibraryError,
     add_decomposition,
     add_namespace,
+    by_chat,
     change_namespace,
+    code_breaks,
     decomposition_read,
     default_namespace,
     delete_decomposition,
@@ -3559,3 +3562,95 @@ def test_the_panel_lists_the_newest_changes_each_text_cut_short(library):
         "by",
         "label",
     }
+
+
+@pytest.mark.parametrize(
+    ("code", "typed"),
+    [
+        (r'FinalAnswer("Dear Tom,\\n\\nI hope you are well.")', True),
+        (r'FinalAnswer(f"Dear {name},\\n\\nI hope you are well.")', True),
+        (r'table = "\\n".join(rows)', True),
+        (r'table = "\n".join(rows)', False),
+        (r'parts = re.split(r"\n+", text)', False),
+        (r'text = text.replace("\\n", "\n")', False),
+        (r'typed = "\\n" in body', False),
+        (r'print("Type \\n for a line break.")', False),
+    ],
+    ids=[
+        "typed",
+        "in-an-f-string",
+        "joined",
+        "a-line-break",
+        "raw",
+        "replaced",
+        "looked-for",
+        "named",
+    ],
+)
+def test_code_typing_a_line_break_as_a_backslash_and_n_has_a_problem(code, typed):
+    assert bool(code_breaks("The code", code)) is typed
+
+
+def test_the_panel_marks_what_a_librarian_stored_with_line_breaks_typed(library):
+    reminders = (TYPED_BREAKS / "reminders_tool.py.txt").read_text()
+    block = {
+        "factory": "build_draft_late_payment_emails",
+        "factory_from": "draft_late_payment_emails.py",
+    }
+    with closing(open_library(library)) as connection:
+        add_namespace(
+            connection,
+            "bookkeeping",
+            dump({"vars": {"reminder": "Dear Tom,\\n\\nI hope you are well."}}),
+        )
+        add_decomposition(
+            connection, "bookkeeping", (TYPED_BREAKS / "table_example.yaml").read_text()
+        )
+        add_decomposition(
+            connection,
+            "bookkeeping",
+            (TYPED_BREAKS / "reminders_example.yaml").read_text(),
+        )
+        store_tool(connection, "draft_late_payment_emails", block, reminders)
+        shown = panel(connection)
+    namespaces = {row["name"]: row for row in shown["namespaces"]}
+    tools = {each["name"]: each for each in shown["tools"]}
+    tool = tools["draft_late_payment_emails"]
+    assert namespaces["bookkeeping"]["warnings"] == [REMINDER_VAR]
+    assert [
+        (each["name"], each["problems"])
+        for each in namespaces["bookkeeping"]["decompositions"]
+    ] == [
+        ("categorize and total bank transactions", [TABLE_BREAK]),
+        ("draft late-payment reminders", []),
+    ]
+    assert (tool["problems"], tool["warnings"]) == ([], [REMINDER_BREAK])
+    # The librarian's own suffix names a typed \n, as a mention, so has none.
+    assert [
+        row["warnings"] for row in shown["namespaces"] if row["name"] != "bookkeeping"
+    ] == [[]] * 3
+
+
+def test_the_changes_tab_names_a_chat_by_a_short_title_cut_at_a_word(library):
+    long = (
+        "hey can u make the essay planner always use my notes in the folder (the hist_"
+        " files) for evidence first? it said it couldnt see them the first time. and also"
+        " make it put a little 'key words to use' li"
+    )
+    with closing(open_library(library)) as connection:
+        with writing(connection):
+            for chat, title in [("planner", long), ("helpers", "Budget helpers")]:
+                connection.execute(
+                    "INSERT INTO chats (id, title, created) VALUES (?, ?, 0)",
+                    (chat, title),
+                )
+                record(
+                    connection,
+                    by_chat(chat, RUN),
+                    [("setting", None, chat, None, "1\n")],
+                )
+        shown = panel(connection)["changes"]
+    assert [each["label"] for each in shown] == [
+        "Budget helpers",
+        "hey can u make the essay planner always…",
+    ]

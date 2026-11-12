@@ -44,13 +44,16 @@ from deep_reasoner.v2.cli import (
 from deep_reasoner.v2.decompositions import as_cli_act
 from deep_reasoner.v2.messages import Decomposition, NoCodeBlock, code, func
 from genai_prices import Usage, calc_price
+from openai import APIStatusError
 from openai.resources.chat.completions import AsyncCompletions
 
 from deep_reasoning.app_tools import CLAUDE_CODE
 from deep_reasoning.library import (
     EXAMPLES_STORED_IN,
+    count,
     granted_in,
     in_chain_order,
+    plural,
     sandbox_templates,
 )
 from deep_reasoning.runs import (
@@ -87,11 +90,26 @@ NO_REPL_NOTE = (
     "Your response did not contain a `<repl>...</repl>` block. Please include one."
 )
 NO_REPL_TURN = {"role": "user", "content": NO_REPL_NOTE}
+# Answered as a note, the reply became the user's answer ("Understood."), so it says
+# what to do with the reply the user never saw.
 APPS_NO_REPL_TURN = {
     "role": "user",
     "content": "(An automated note from the app, not the user, who sees none of this: "
-    f"{NO_REPL_NOTE})",
+    f"{NO_REPL_NOTE}) The user saw none of what you just wrote: if it was your answer,"
+    " put that answer, as you wrote it, in FinalAnswer(...) in a <repl> block, and never"
+    " reply to this note itself.",
 }
+# A provider's failure or refusal that ends a run, led by what it means (failure_detail()).
+SERVER_ERROR = 500
+BAD_REQUEST = 400
+REFUSED_PROMPT = re.compile(r"\binvalid_prompt\b|\bflagged\b")
+# A call this long that the provider fails was a long reply it gave up on.
+LONG_CALL_S = 60
+GAVE_UP = "The model provider gave up on a long reply (after {seconds} s)."
+FAILED = "The model provider failed ({status})."
+REFUSED = "The provider refused this prompt."
+KEPT = "The {changes} this run made to the Library {are} kept."
+AGAIN = "Try again, or ask in smaller steps."
 
 
 def source_of(reply: str) -> str | None:
@@ -162,6 +180,29 @@ def for_claude(message: dict[str, str]) -> dict[str, str]:
 def detail_of(error: BaseException) -> str:
     """An exception as deep_reasoner words agent.end's detail."""
     return f"{type(error).__name__}: {error}"
+
+
+def failure_detail(error: BaseException, changes: int) -> str:
+    """Why a run ended by *error*: a provider's failure (5xx) or refusal of the prompt
+    (400, invalid_prompt or flagged) led by what it means, then the *changes* to the
+    Library the run made, which stay, and what to do, then the provider's own words;
+    any other error in the engine's words (detail_of())."""
+    words = detail_of(error)
+    status = error.status_code if isinstance(error, APIStatusError) else None
+    if status is not None and status >= SERVER_ERROR:
+        seconds = getattr(error, "seconds_waited", 0)
+        lead = FAILED.format(status=status)
+        if seconds >= LONG_CALL_S:
+            lead = GAVE_UP.format(seconds=round(seconds))
+    elif status == BAD_REQUEST and REFUSED_PROMPT.search(words):
+        lead = REFUSED
+    else:
+        return words
+    made = count(changes, "change")
+    kept = (
+        [KEPT.format(changes=made, are=plural(changes, "is", "are"))] if changes else []
+    )
+    return f"{' '.join([lead, *kept, AGAIN])}\n{words}"
 
 
 def tool_line(name: str, value: Any, description: str) -> str:
@@ -267,6 +308,7 @@ class Recorder:
         # The worked examples left out of each agent started, until it says so.
         self._left_out: dict[int, tuple[dict[str, Any], ...]] = {}
         self._cells = 0
+        self.changes_made = 0
         self._root: int | None = None
         self._ended = False
         self._handlers = {
@@ -449,6 +491,8 @@ class Recorder:
         agent = self._agents.get(node)
         told = {key: event.get(key) for key in fields}
         cell = agent.cell if agent else None
+        if kind == "library.change":
+            self.changes_made += 1
         self.emit(kind, node=node, cell=cell, **told)
 
     def _own(self, event: dict[str, Any]) -> bool:
@@ -595,7 +639,8 @@ def counting_calls(recorder: Recorder) -> None:
     """Tell *recorder* of each chat call the run starts: the engine logs only those that
     finish. Each call's messages go with any half of a character escaped: a cell's output
     may hold one, which the call couldn't send; and with the engine's note that a reply
-    had no <repl> block labeled as the app's, in what is sent only."""
+    had no <repl> block labeled as the app's, in what is sent only. A call the provider
+    fails carries how long it waited (seconds_waited), for failure_detail()."""
     create = AsyncCompletions.create
 
     async def counted(self: AsyncCompletions, *args: Any, **kwargs: Any) -> Any:
@@ -606,7 +651,12 @@ def counting_calls(recorder: Recorder) -> None:
                 for message in escaped(kwargs["messages"])
             ]
         recorder.call_started()
-        return await create(self, *args, **kwargs)
+        started = time.monotonic()
+        try:
+            return await create(self, *args, **kwargs)
+        except APIStatusError as error:
+            error.seconds_waited = time.monotonic() - started
+            raise
 
     AsyncCompletions.create = counted
 
@@ -658,7 +708,11 @@ async def run(spec: dict[str, Any], folder: Path, out: TextIO) -> NoReturn:
         log.exception("worker.run_failed")
         outcome = "stopped" if stop_asked.is_set() else "failed"
         tools_failed = starting and isinstance(error, ToolBuildError)
-        detail = build_failure(error, config) if tools_failed else detail_of(error)
+        detail = (
+            build_failure(error, config)
+            if tools_failed
+            else failure_detail(error, recorder.changes_made)
+        )
         recorder.end_turn(outcome, None, detail)
         finish(reasoner)
     if reasoner.stopped:

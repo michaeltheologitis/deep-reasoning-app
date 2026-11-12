@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { CLAMPS, COST_NA, SANITIZE, UNFINISHED, WAITING, clamped, costView, element, formatCost, formatTotal, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
+import { CLAMPS, COST_NA, SANITIZE, UNFINISHED, WAITING, clamped, costView, element, failureView, formatCost, formatTotal, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
 
 globalThis.marked = createRequire(import.meta.url)("../src/deep_reasoning/web/vendor/marked.min.js");
 
@@ -236,6 +236,18 @@ test("any other failure, a provider's own reason included, has no plain words of
     "worker gone",
   ];
   for (const raw of reasons) assert.equal(plainFailure(raw), null);
+});
+
+test("a run the worker says a provider ended leads with its words, the provider's own after, dim", () => {
+  const lead = "The model provider gave up on a long reply (after 196 s). Try again, or ask in smaller steps.";
+  const [said, between, own] = failureView(`${lead}\nInternalServerError: upstream request failed`);
+  assert.deepEqual([said, between, own.className, own.textContent], [lead, "\n", "raw", "InternalServerError: upstream request failed"]);
+  // a tool that doesn't build says where to take it out on its second line, which is no error's own words
+  const unbuilt = "Tool broken doesn't build: build raised RuntimeError: no index\nIt is granted in units.";
+  assert.equal(failureView(unbuilt), unbuilt);
+  // nor is one exception's after another's
+  const chained = "KeyError: 'rows'\nValueError: no rows";
+  assert.equal(failureView(chained), chained);
 });
 
 test("a sub-agent that failed on a provider's error leads with plain words, a short reason after", () => {

@@ -1,0 +1,47 @@
+name: draft late-payment reminders
+messages:
+- role: user
+  content: Draft professional reminders for unpaid overdue invoices in willow_lane_invoices_2026.csv
+    using vat_rates.txt, as of 2026-11-12.
+- role: assistant
+  content: |-
+    <think>Use the invoice-chasing tool to calculate VAT-inclusive amounts and identify overdue unpaid invoices. It groups invoices by contact email; present each grouped draft with actual line breaks, and report review items. Confirm nothing was sent.</think>
+    <repl>
+    result = draft_late_payment_emails(
+        "willow_lane_invoices_2026.csv",
+        "vat_rates.txt",
+        as_of="2026-11-12",
+    )
+    print({
+        "as_of": result["as_of"],
+        "sent": result["sent"],
+        "review": result["review"],
+        "drafts": [
+            {
+                "to": item["to"],
+                "invoices": [invoice["invoice"] for invoice in item["invoices"]],
+                "has_real_newlines": "\n" in item["body"],
+                "has_literal_backslash_n": "\\n" in item["body"],
+            }
+            for item in result["drafts"]
+        ],
+    })
+    </repl>
+- role: user
+  content: |-
+    <observation>
+    {'as_of': '2026-11-12', 'sent': False, 'review': [], 'drafts': [{'to': 'tom@bloomandvow.example', 'invoices': ['WL-1016'], 'has_real_newlines': True, 'has_literal_backslash_n': False}, {'to': 'dev@oldmill.example', 'invoices': ['WL-1020', 'WL-1026'], 'has_real_newlines': True, 'has_literal_backslash_n': False}, {'to': 'accounts@grangehotel.example', 'invoices': ['WL-1021', 'WL-1025'], 'has_real_newlines': True, 'has_literal_backslash_n': False}]}
+    </observation>
+- role: assistant
+  content: |-
+    <think>Render one email per contact, preserving the tool's actual newline characters in each message.</think>
+    <repl>
+    drafts_text = "\n\n".join(
+        f"To: {item['to']}\nSubject: {item['subject']}\n\n{item['body']}"
+        for item in result["drafts"]
+    )
+    FinalAnswer(
+        f"As of {result['as_of']}, here are the overdue, unpaid invoice email drafts "
+        f"(not sent):\n\n{drafts_text}\n\nRows needing review: {len(result['review'])}."
+    )
+    </repl>

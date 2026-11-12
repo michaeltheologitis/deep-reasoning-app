@@ -2331,6 +2331,8 @@ async def test_a_tool_handed_the_agents_llm_gets_the_chats_model(
     assert {call.model for call in fake.calls} == {"gpt-6-luna"}
 
 
+# The time in a change's line of changes(), as in 'when': 'today 14:02'.
+MADE_AT = re.compile(r"(?<='when': 'today) \d\d:\d\d(?=')")
 # The chat's messages before each of the librarian's examples is asked, each with the
 # fake's cells: what its observations print comes from them.
 LIBRARIANS_EARLIER = {
@@ -2387,7 +2389,10 @@ async def test_the_librarians_examples_show_what_the_library_tool_really_prints(
         f"<observation>\n{cell['output']}\n</observation>\n"
         for cell in kinds(events, "cell.end")[: len(shown)]
     ]
-    assert printed == shown
+    # A change's time is when the test made it.
+    assert [MADE_AT.sub("", each) for each in printed] == [
+        MADE_AT.sub("", each) for each in shown
+    ]
     assert events[-1]["outcome"] == "answered", events[-1]
 
 
