@@ -15,6 +15,7 @@ from deep_reasoning.settings import (
     ENV_FILE,
     GEMINI_MODELS,
     LAST_MODEL,
+    LIBRARIAN_MODEL,
     NO_KEY,
     NOT_A_KEY,
     OPENAI_MODELS,
@@ -383,6 +384,11 @@ def test_the_default_folder_is_kept_beside_the_other_settings(
 @pytest.mark.parametrize("vendor", VENDORS, ids=lambda vendor: vendor.name)
 def test_each_vendor_features_the_model_new_chats_start_on(vendor):
     assert vendor.first_model is None or vendor.first_model in vendor.featured
+
+
+def test_librarian_chats_start_on_a_model_their_vendor_features():
+    vendor = next(each for each in VENDORS if each.name == LIBRARIAN_MODEL["provider"])
+    assert LIBRARIAN_MODEL["name"] in vendor.featured
 
 
 def test_openrouter_features_the_vendors_models_under_its_own_ids():

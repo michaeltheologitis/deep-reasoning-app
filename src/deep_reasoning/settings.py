@@ -89,9 +89,10 @@ class Provider:
     featured: tuple[str, ...] = ()
 
 
-# Each vendor's current tiers, strongest first, from its own models page on 2026-10-27:
-# refresh them when a vendor ships a new tier. OpenRouter serves the same under its own ids.
-OPENAI_MODELS = ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna")
+# Each vendor's current tiers, strongest first, from its own models page (OpenAI's on
+# 2026-11-12, the others' on 2026-10-27): refresh them when a vendor ships a new tier.
+# OpenRouter serves the same under its own ids.
+OPENAI_MODELS = ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna")
 ANTHROPIC_MODELS = (
     "claude-fable-5-1",
     "claude-opus-5-5",
@@ -102,6 +103,7 @@ GEMINI_MODELS = ("gemini-4-argon", "gemini-3.8-flash", "gemini-3.5-flash-lite")
 OPENROUTER_MODELS = (
     "openai/gpt-6-astra",
     "openai/gpt-6.1-sol",
+    "openai/gpt-6.1-terra",
     "openai/gpt-6-luna",
     "anthropic/claude-fable-5.1",
     "anthropic/claude-opus-5.5",
@@ -543,6 +545,21 @@ def starting_model(
     if first is None:
         return None
     return {"provider": first.name, "name": first.first_model}
+
+
+# A librarian chat runs on this until it picks a model, while OpenAI can answer: on the
+# librarian's eval it got 89% right against gpt-6-luna's 62%, at about $0.05 a run.
+LIBRARIAN_MODEL = {"provider": "OpenAI", "name": "gpt-6.1-terra"}
+
+
+def librarian_model(home: Path, every: list[Provider]) -> dict[str, str] | None:
+    """What a librarian chat that picked no model runs on: LIBRARIAN_MODEL while its
+    provider, of *every* there is, can answer; else None, so it runs where new chats
+    start."""
+    can_answer = usable(every, saved_keys(home))
+    if any(each.name == LIBRARIAN_MODEL["provider"] for each in can_answer):
+        return LIBRARIAN_MODEL
+    return None
 
 
 def default_folder(library: Path) -> str | None:

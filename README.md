@@ -20,8 +20,9 @@ The first run takes a minute. It opens http://127.0.0.1:8000 in a tab (`--port 8
 
 **Add a key** in **settings** (bottom left): OpenAI `OPENAI_API_KEY`, OpenRouter `OPENROUTER_API_KEY`, Anthropic
 `DEEP_REASONING_ANTHROPIC_KEY` or Google Gemini `GEMINI_API_KEY`, or add a custom server (any OpenAI-compatible URL:
-vLLM, Ollama, …). A key already set in your shell works too. A new chat starts on the model you picked last, or else
-on a current model of the first provider with a key; pick another under the message box.
+vLLM, Ollama, …). A key already set in your shell works too. A new chat starts on the model you picked last (a pick in
+a `librarian` chat stays that chat's), or else on a current model of the first provider with a key; a `librarian` chat
+starts on gpt-6.1-terra while OpenAI has a key (see **The librarian**). Pick another under the message box.
 
 ## Concepts in five lines
 
@@ -261,6 +262,10 @@ chat's folder imports too.
 - In a chat in `librarian`, the agent adds or edits worked examples, adds namespaces and changes their
   `system_suffix`, `vars`, `tools` and `spawn`, and writes Python tools of its own and grants them, with the app's
   `library` tool. A chat in another namespace can't, even through a sub-agent.
+- While OpenAI has a key, a `librarian` chat runs on OpenAI's gpt-6.1-terra, which built helpers more reliably than
+  gpt-6-luna (89% of a 36-request test against 62%), at about $0.05 a change against under a cent. Pick another model
+  under the message box and the chat keeps it, for that chat only. Moved to another namespace, a chat that didn't pick
+  gpt-6.1-terra goes back to the model new chats start on.
 - It reads first and answers from what it printed: all a change touches (the helper's suffix, its worked examples,
   the source of the tools it uses), from the Library itself, and what any change did, the panel's included, from
   the app's record, never from memory or the historian; your files by their names in the chat's folder, never a

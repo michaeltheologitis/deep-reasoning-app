@@ -4065,6 +4065,85 @@ def test_a_new_chat_starts_on_the_model_picked_last_in_any_chat(
     assert models[first["id"]] == qwen and models[later["id"]] == gpt
 
 
+TERRA = {"provider": "OpenAI", "name": "gpt-6.1-terra"}
+LUNA = {"provider": "OpenAI", "name": "gpt-6-luna"}
+QWEN = {"provider": "vllm", "name": "qwen3"}
+LLAMA = {"provider": "vllm", "name": "llama4"}
+
+
+def moved_to(client, chat, namespace):
+    """The chat as the API gives it, moved to *namespace*."""
+    response = client.patch(f"/api/chats/{chat}", json={"namespace": namespace})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+@pytest.mark.parametrize(
+    ("openai_key", "picked_runs_on", "fresh_runs_on"),
+    [(SHELL_KEY, TERRA, TERRA), (None, QWEN, LLAMA)],
+)
+def test_a_chat_moved_to_the_librarian_runs_on_terra_while_openai_can_answer(
+    client, home, library, monkeypatch, openai_key, picked_runs_on, fresh_runs_on
+):
+    if openai_key:
+        monkeypatch.setenv("OPENAI_API_KEY", openai_key)
+    add_server(home, library, "vllm", VLLM, None)
+    picked, fresh, other = (client.post("/api/chats").json()["id"] for _ in range(3))
+    client.patch(f"/api/chats/{picked}", json={"model": QWEN})
+    client.patch(f"/api/chats/{other}", json={"model": LLAMA})
+    moved = [moved_to(client, chat, LIBRARIAN)["model"] for chat in (picked, fresh)]
+    assert moved == [picked_runs_on, fresh_runs_on]
+    assert client.post("/api/chats").json()["model"] == LLAMA
+
+
+def test_a_model_picked_in_a_librarian_chat_sticks_to_that_chat_alone(
+    client, home, library, monkeypatch
+):
+    monkeypatch.setenv("OPENAI_API_KEY", SHELL_KEY)
+    add_server(home, library, "vllm", VLLM, None)
+    chat = client.post("/api/chats").json()["id"]
+    moved_to(client, chat, LIBRARIAN)
+    client.patch(f"/api/chats/{chat}", json={"model": QWEN})
+    assert client.get(f"/api/chats/{chat}").json()["model"] == QWEN
+    assert moved_to(client, chat, "router")["model"] == QWEN
+    assert client.post("/api/chats").json()["model"] == LUNA
+
+
+def test_a_chat_moved_off_the_librarian_leaves_terra_unless_it_was_picked(
+    client, monkeypatch
+):
+    monkeypatch.setenv("OPENAI_API_KEY", SHELL_KEY)
+    defaulted, picked = (client.post("/api/chats").json()["id"] for _ in range(2))
+    for chat in (defaulted, picked):
+        moved_to(client, chat, LIBRARIAN)
+    client.patch(f"/api/chats/{picked}", json={"model": TERRA})
+    assert moved_to(client, defaulted, "router")["model"] == LUNA
+    assert moved_to(client, picked, "router")["model"] == TERRA
+
+
+@pytest.mark.anyio
+async def test_a_librarian_chats_run_is_on_terra_and_leaves_it_no_model_of_its_own(
+    imported, connect, monkeypatch
+):
+    monkeypatch.setenv("OPENAI_API_KEY", SHELL_KEY)
+    with FakeOpenAI(scripted({"Hi.": [repl("FinalAnswer('hello')")]})) as fake:
+        # OpenAI's own address, faked, so the run stays on this computer.
+        vendors = [
+            replace(each, base_url=fake.base_url) if each.name == "OpenAI" else each
+            for each in VENDORS
+        ]
+        monkeypatch.setattr(settings_module, "VENDORS", tuple(vendors))
+        async with connect(imported) as api:
+            chat = await chat_in(api, LIBRARIAN)
+            events = await run_events(api, await send(api, chat, "Hi."))
+            moved = await api.patch(f"/api/chats/{chat}", json={"namespace": "router"})
+    assert {(call.model, call.key) for call in fake.calls} == {
+        ("gpt-6.1-terra", SHELL_KEY)
+    }
+    assert events[-1]["outcome"] == "answered"
+    assert moved.json()["model"] == LUNA
+
+
 def test_a_message_is_refused_until_the_chat_has_a_model_that_can_run(client):
     chat = client.post("/api/chats").json()["id"]
     unpicked = client.post(f"/api/chats/{chat}/runs", json={"prompt": "Hi."})
