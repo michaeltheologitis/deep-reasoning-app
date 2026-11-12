@@ -45,6 +45,7 @@ from deep_reasoning.app_tools import (
     NOT_TEXT,
     NOT_TURNS,
     NOT_VALUES,
+    NOTHING_CHANGED,
     SETS_OWN_KEYS,
     SHOWN_CHARS,
     TITLE,
@@ -1739,12 +1740,44 @@ def test_a_change_that_changes_nothing_says_so_and_keeps_the_yaml_as_typed(fresh
     tool.add_namespace("research", commented)
     done = tool.change_namespace("research", {"system_suffix": "Cite a source."})
     assert done == {
-        "done": "unchanged",
+        "done": NOTHING_CHANGED,
         "what": "namespace",
         "namespace": "research",
         "name": "research",
     }
     assert ("research", commented) in stored_namespaces(fresh)
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        lambda tool: tool.change_namespace("drafts", "system_suffix: Be brief.\n"),
+        lambda tool: tool.write_decomposition("drafts", EXAMPLE),
+        lambda tool: tool.write_tool("counter", WORD_COUNT, "build"),
+    ],
+    ids=["change_namespace", "write_decomposition", "write_tool"],
+)
+def test_a_write_leaving_its_text_as_it_was_says_nothing_changed_and_logs_nothing(
+    fresh, info_logs, write
+):
+    tool = library_tool(fresh)
+    write(tool)
+    with capture_logs() as logs:
+        done = write(tool)
+    assert done["done"] == NOTHING_CHANGED
+    assert [log for log in logs if log["event"] == "library.change"] == []
+
+
+def test_a_text_a_replace_left_as_it_was_says_nothing_changed_there(fresh):
+    tool = library_tool(fresh)
+    tool.add_namespace("research", RESEARCHING)
+    own = yaml.safe_load(tool.show("research")["yaml"])
+    # Indented as the YAML text shows it, so it matches nothing in the text itself.
+    unmatched = own["system_suffix"].replace("  Cite a source.", "")
+    done = tool.change_namespace("research", {"system_suffix": unmatched, "tools": []})
+    assert list(done["changed"]) == ["tools"]
+    assert done["kept"] == ["vars"]
+    assert done["nothing changed"].startswith("system_suffix already held")
 
 
 @pytest.mark.parametrize(
@@ -3032,7 +3065,7 @@ def test_the_seeded_worked_example_written_back_stays_as_it_was(fresh):
     [text] = [each for each in LIBRARIANS_EXAMPLES if "turns = [" in each]
     tool = library_tool(fresh)
     done = tool.write_decomposition(LIBRARIAN, text)
-    assert (done["done"], done["problems"]) == ("replaced", [])
+    assert (done["done"], done["problems"]) == (NOTHING_CHANGED, [])
     assert stored_yaml(fresh, LIBRARIAN, done["name"]) == text
 
 

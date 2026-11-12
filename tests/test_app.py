@@ -1908,7 +1908,7 @@ async def test_a_namespace_change_event_holds_the_yaml_as_stored_and_none_is_log
             events = await run_events(api, await send(api, chat, "Add a blank one."))
     added, changed = changes(events)
     assert (added["before"], added["after"]) == (None, "")
-    assert "'done': 'unchanged'" in kinds(events, "cell.end")[1]["output"]
+    assert "'done': 'nothing changed: " in kinds(events, "cell.end")[1]["output"]
     assert (changed["before"], changed["after"]) == ("", "system_suffix: Hi.\n")
 
 
