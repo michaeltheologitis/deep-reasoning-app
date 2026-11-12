@@ -89,9 +89,10 @@ class Provider:
     featured: tuple[str, ...] = ()
 
 
-# Each vendor's current tiers, strongest first, from its own models page on 2026-10-27:
-# refresh them when a vendor ships a new tier. OpenRouter serves the same under its own ids.
-OPENAI_MODELS = ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna")
+# Each vendor's current tiers, strongest first, from its own models page (OpenAI's on
+# 2026-11-12, the others' on 2026-10-27): refresh them when a vendor ships a new tier.
+# OpenRouter serves the same under its own ids.
+OPENAI_MODELS = ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna")
 ANTHROPIC_MODELS = (
     "claude-fable-5-1",
     "claude-opus-5-5",
@@ -102,6 +103,7 @@ GEMINI_MODELS = ("gemini-4-argon", "gemini-3.8-flash", "gemini-3.5-flash-lite")
 OPENROUTER_MODELS = (
     "openai/gpt-6-astra",
     "openai/gpt-6.1-sol",
+    "openai/gpt-6.1-terra",
     "openai/gpt-6-luna",
     "anthropic/claude-fable-5.1",
     "anthropic/claude-opus-5.5",
@@ -113,14 +115,15 @@ OPENROUTER_MODELS = (
 )
 
 # The app knows these vendors' addresses, each from the vendor's own docs: they take only a key.
+OPENAI = Provider(
+    "OpenAI",
+    "https://api.openai.com/v1",
+    "OPENAI_API_KEY",
+    first_model="gpt-6-luna",
+    featured=OPENAI_MODELS,
+)
 VENDORS = (
-    Provider(
-        "OpenAI",
-        "https://api.openai.com/v1",
-        "OPENAI_API_KEY",
-        first_model="gpt-6-luna",
-        featured=OPENAI_MODELS,
-    ),
+    OPENAI,
     Provider(
         "OpenRouter",
         "https://openrouter.ai/api/v1",
@@ -529,13 +532,10 @@ def remember_pick(library: Path, provider: str, model: str) -> None:
     write_setting(library, LAST_MODEL, {"provider": provider, "name": model})
 
 
-def starting_model(
-    home: Path, library: Path, every: list[Provider]
-) -> dict[str, str] | None:
-    """What a new chat runs on: the model picked last, while its provider, of *every*
-    there is, can still answer; else the first model of the first vendor with a key that
-    the app knows one for."""
-    can_answer = usable(every, saved_keys(home))
+def starting_model(library: Path, can_answer: list[Provider]) -> dict[str, str] | None:
+    """What a new chat runs on: the model picked last, while its provider is one that
+    *can_answer* (usable()); else the first model of the first vendor with a key that the
+    app knows one for."""
     last = read_settings(library).get(LAST_MODEL)
     if last and any(each.name == last["provider"] for each in can_answer):
         return last
@@ -543,6 +543,20 @@ def starting_model(
     if first is None:
         return None
     return {"provider": first.name, "name": first.first_model}
+
+
+# OpenAI's model a librarian chat runs on until it picks one: on the librarian's eval it
+# got 89% right against gpt-6-luna's 62%, at about $0.05 a run.
+LIBRARIAN_MODEL = "gpt-6.1-terra"
+
+
+def librarian_model(can_answer: list[Provider]) -> dict[str, str] | None:
+    """What a librarian chat that picked no model runs on: OpenAI's LIBRARIAN_MODEL while
+    OpenAI is one that *can_answer* (usable()); else None, so it runs where new chats
+    start."""
+    if any(each.name == OPENAI.name for each in can_answer):
+        return {"provider": OPENAI.name, "name": LIBRARIAN_MODEL}
+    return None
 
 
 def default_folder(library: Path) -> str | None:

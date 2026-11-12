@@ -23,6 +23,7 @@ from deep_reasoning.chats import (
     CHAT_ID,
     choose,
     choose_folder,
+    clear_model,
     create_chat,
     delete_chat,
     find_chat,
@@ -45,6 +46,7 @@ from deep_reasoning.folders import (
     working_folder,
 )
 from deep_reasoning.library import (
+    LIBRARIAN,
     NOT_OPENED,
     ROOT,
     ChangedMeanwhile,
@@ -90,6 +92,7 @@ from deep_reasoning.settings import (
     forget_key,
     key_names,
     keyless_environment,
+    librarian_model,
     model_lists,
     provider_list,
     providers,
@@ -98,8 +101,10 @@ from deep_reasoning.settings import (
     run_key,
     save_default_folder,
     save_key,
+    saved_keys,
     starting_model,
     update_server,
+    usable,
 )
 from deep_reasoning.tool_check import NOT_GRANTED, refuse_unbuilt_keyless
 
@@ -427,27 +432,33 @@ def create_app(library, home):
         return await read_default_folder()
 
     def starting_points():
-        """Where a chat that hasn't picked starts: the Library's default namespace, and the
-        model new chats start on; and the names of the providers there are."""
+        """Where a chat that hasn't picked starts: the Library's default namespace, the
+        model new chats start on and the one a librarian chat does; and the names of the
+        providers there are."""
         every = providers(library)
+        can_answer = usable(every, saved_keys(home))
         names = {each.name for each in every}
-        return default_namespace(library), starting_model(home, library, every), names
+        model = starting_model(library, can_answer)
+        return default_namespace(library), model, librarian_model(can_answer), names
 
     def shown(chat, starts):
         """A chat as the API gives it: with the id of its run that is going, if one is, its
         latest run's, the namespace and model its next message runs on, and whether the
         folder it chose, or the provider of the model it picked, is missing, as its next
         message would be refused."""
-        namespace, model, names = starts
+        namespace, model, librarians, names = starts
+        namespace = chat["namespace"] or namespace
         if chat["model"] is not None:
             model = {"provider": chat["provider"], "name": chat["model"]}
+        elif namespace == LIBRARIAN and librarians:
+            model = librarians
         return {
             "id": chat["id"],
             "title": chat["title"],
             "created": chat["created"],
             "live": runs.live(chat["id"]),
             "last_run": chat["last_run"],
-            "namespace": chat["namespace"] or namespace,
+            "namespace": namespace,
             "model": model,
             "provider_missing": model is not None and model["provider"] not in names,
             "folder": shown_folder(chat["folder"]),
@@ -505,13 +516,21 @@ def create_app(library, home):
             raise SettingsError(gone_provider(model.provider))
         moved = "folder" in change.model_fields_set
         folder = chosen_folder(change.folder) if moved else None
+        default, _, librarians, _ = starting_points()
+        was = chat["namespace"] or default
+        namespace = change.namespace or was
         if change.title is not None:
             rename_chat(library, chat["id"], change.title)
         provider, name = (model.provider, model.name) if model else (None, None)
         choose(library, chat["id"], change.namespace, provider, name)
+        joins = namespace == LIBRARIAN and was != LIBRARIAN and model is None
+        if joins and librarians:
+            # With no model of its own, it runs on the librarian's.
+            clear_model(library, chat["id"])
         if moved:
             choose_folder(library, chat["id"], folder)
-        if model is not None:
+        # So no new chat starts on the librarian's model by accident.
+        if model is not None and namespace != LIBRARIAN:
             remember_pick(library, provider, name)
         return shown(find_chat(library, chat["id"]), starting_points())
 
@@ -536,7 +555,8 @@ def create_app(library, home):
         # Before the chat's turns are read: a run that is going has no turn.end yet.
         if runs.live(chat["id"]) is not None:
             raise RunInProgress(chat["id"])
-        chosen = shown(chat, starting_points())
+        starts = starting_points()
+        chosen = shown(chat, starts)
         namespace, model = chosen["namespace"], chosen["model"]
         with closing(open_library(library)) as connection:
             if why := unrunnable(connection, namespace):
@@ -579,7 +599,12 @@ def create_app(library, home):
             folder,
             names,
         )
-        choose(library, chat["id"], namespace, provider.name, model["name"])
+        _, _, librarians, _ = starts
+        # Left unpinned, so a move off the librarian goes back to the default.
+        if chat["model"] is None and namespace == LIBRARIAN and model == librarians:
+            choose(library, chat["id"], namespace)
+        else:
+            choose(library, chat["id"], namespace, provider.name, model["name"])
         titled = None if earlier else title_new_chat(library, chat["id"], prompt)
         return {"run": run, "title": titled or chat["title"]}
 

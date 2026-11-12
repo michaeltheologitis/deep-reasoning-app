@@ -25,6 +25,7 @@ from openai.resources.chat.completions import AsyncCompletions
 
 from deep_reasoning import worker
 from deep_reasoning.runs import LEFT_OUT
+from deep_reasoning.settings import VENDORS
 from deep_reasoning.worker import (
     MOST_ENTRIES,
     REPEATED_NOTE,
@@ -628,18 +629,20 @@ def test_cached_input_is_billed_at_its_own_rate():
 
 @pytest.mark.parametrize(
     ("model", "base_url"),
-    [
-        ("gpt-6-luna", "https://api.openai.com/v1"),
-        ("openai/gpt-6-luna", "https://openrouter.ai/api/v1"),
-        ("claude-sonnet-5-5", "https://api.anthropic.com/v1/"),
-        (
-            "gemini-3.8-flash",
-            "https://generativelanguage.googleapis.com/v1beta/openai/",
-        ),
-    ],
+    [(model, vendor.base_url) for vendor in VENDORS for model in vendor.featured],
 )
-def test_a_call_to_a_vendor_is_priced_from_that_vendors_prices(model, base_url):
+def test_a_call_to_a_featured_model_is_priced_from_its_vendors_prices(model, base_url):
     assert cost_of(model, {"prompt_tokens": 10, "completion_tokens": 2}, base_url) > 0
+
+
+def test_a_gpt_6_1_terra_call_is_priced_with_cached_input_at_its_rate():
+    usage = {
+        "prompt_tokens": 10_000,
+        "prompt_tokens_details": {"cached_tokens": 8_000},
+        "completion_tokens": 2_000,
+    }
+    # 2,000 input at $1, 8,000 cached at $0.05 and 2,000 output at $5 per million
+    assert cost_of("gpt-6.1-terra", usage, OPENAI_URL) == pytest.approx(0.0124)
 
 
 def test_a_vendors_model_on_a_server_of_your_own_is_unpriced():

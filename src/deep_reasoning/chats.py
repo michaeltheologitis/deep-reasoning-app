@@ -180,6 +180,14 @@ def choose(
         )
 
 
+def clear_model(path: Path, chat: str) -> None:
+    """Clear the chat's model, so its next message runs on the one its namespace starts on."""
+    with connect(path) as connection:
+        connection.execute(
+            "UPDATE chats SET provider = NULL, model = NULL WHERE id = ?", (chat,)
+        )
+
+
 def choose_folder(path: Path, chat: str, folder: str | None) -> None:
     """Set the folder the chat's next message works in; None for its scratch folder."""
     with connect(path) as connection:
