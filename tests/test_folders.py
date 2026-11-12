@@ -200,6 +200,21 @@ def test_the_folder_lines_name_the_folder_what_it_holds_but_hidden_ones_and_its_
     assert folder_lines(code, scratch=False) == (where, how_to_pick("code"))
 
 
+@pytest.mark.parametrize(
+    ("name", "button"),
+    [
+        ("", "~"),
+        ("x" * 24, "x" * 24),
+        ("x" * 30, "x" * 23 + "…"),
+    ],
+    ids=["home", "24 characters", "30 characters"],
+)
+def test_the_button_is_named_as_the_page_shows_it(home, name, button):
+    folder = home / name
+    folder.mkdir(exist_ok=True)
+    assert folder_lines(folder, scratch=False)[1] == how_to_pick(button)
+
+
 def test_the_folder_lines_say_a_scratch_folder_is_the_chats_own_and_empty(app_home):
     scratch = working_folder(app_home, {"id": CHAT, "folder": None})
     where = (

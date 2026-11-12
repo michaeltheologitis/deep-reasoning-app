@@ -1803,7 +1803,8 @@ def engine_config(
     """The Library as one plain dict that V2Config accepts, for run *run* of *chat*, which
     enters *namespace*; the run's model and client are the chat's to put in. Of
     *folder_lines*, on the chat's folder (folder_lines()), every agent of the run is told
-    the first, after root's own suffix, and the agents of *namespace* the second, last.
+    the first, after root's own suffix, and the agents of *namespace* and of those under
+    it the second, after *namespace*'s.
 
     Only the tools some namespace grants are in it, the app's own included: a run builds
     each tool it declares, whichever namespace it enters, so a tool any namespace grants
@@ -1865,8 +1866,8 @@ def with_run_lines(config, registry, entry, folder_lines):
     """*config* with each of run_lines() after its namespace's own system_suffix, a
     blank line between, for its run only: the Library holds none. Of *folder_lines*, the
     first goes first after root's suffix, which every namespace inherits, and the second
-    last after the *entry* namespace's, as its agents answer the user. A bare root, as
-    one left out runs, is given its own."""
+    last after the *entry* namespace's, which those under it inherit. A bare root, as one
+    left out runs, is given its own."""
     lines = run_lines(registry)
     if folder_lines:
         where, how = folder_lines
