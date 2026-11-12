@@ -239,15 +239,19 @@ test("any other failure, a provider's own reason included, has no plain words of
 });
 
 test("a run the worker says a provider ended leads with its words, the provider's own after, dim", () => {
-  const lead = "The model provider gave up on a long reply (after 196 s). Try again, or ask in smaller steps.";
+  const lead = "The model provider failed (502) after 197 s of waiting. Try again, or ask in smaller steps.";
   const [said, between, own] = failureView(`${lead}\nInternalServerError: upstream request failed`);
   assert.deepEqual([said, between, own.className, own.textContent], [lead, "\n", "raw", "InternalServerError: upstream request failed"]);
-  // a tool that doesn't build says where to take it out on its second line, which is no error's own words
-  const unbuilt = "Tool broken doesn't build: build raised RuntimeError: no index\nIt is granted in units.";
-  assert.equal(failureView(unbuilt), unbuilt);
-  // nor is one exception's after another's
-  const chained = "KeyError: 'rows'\nValueError: no rows";
-  assert.equal(failureView(chained), chained);
+});
+
+test("any other run's failure over lines is shown as it is, read as no words of the worker's", () => {
+  const details = [
+    "Tool broken doesn't build: build raised RuntimeError: no index\nIt is granted in units.",
+    "KeyError: 'rows'\nValueError: no rows",
+    "ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)\nValueError: room D",
+    "NoCodeBlock: The reply holds no block\nInternalServerError: Error code: 500",
+  ];
+  for (const detail of details) assert.equal(failureView(detail), detail);
 });
 
 test("a sub-agent that failed on a provider's error leads with plain words, a short reason after", () => {

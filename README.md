@@ -101,9 +101,9 @@ chat's folder imports too.
   under a dollar ($0.0123; one less than $0.0001 as <$0.0001) and to the cent from a dollar ($1,234.56), so a
   chat's runs add up to its total as near as rounding allows. A server's figure below zero is no price: N/A.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
-  its own words after. A run it ends says so too: "The model provider gave up on a long reply (after 196 s)" for a
-  5xx after a long call, "The provider refused this prompt" for one flagged, then that the Library changes the run
-  made are kept, and to try again or ask in smaller steps.
+  its own words after. A run it ends says so too: "The model provider failed (502) after 196 s of waiting" (its
+  retries included), or "The model provider refused this prompt" for a prompt it refuses for what it holds, then
+  that the Library changes the run made are kept, and to try again or ask in smaller steps.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,
   `2*3*4`). Raw HTML shows as text, an image as a link (never loaded), and links open in a new tab; a link to a file
   in the chat's folder, which the app doesn't serve, shows as text with its address. A long prompt or answer shows its
@@ -171,10 +171,11 @@ chat's folder imports too.
   assistant turn's `<think>` and one `<repl>`, then the `<observation>` it printed; `FinalAnswer` last), and a ✗
   says why; it still saves, as a draft agents are shown from the next message. A new one starts in the namespace of
   the chat on screen. Its code isn't run.
-- A line break typed as a backslash and `n` where one was meant, which shows as those two characters (emails
-  reading "Dear Tom,\n\nI hope", tables as raw pipes), marks a worked example's code ✗, and a namespace's suffix
-  or var, or a tool's Python or setting, ◆, saying where; the librarian is told the same when it writes one. A
-  string a regular expression reads (`r"\n"`), or one only looked for (`text.replace("\\n", "\n")`), is fine.
+- A line break typed as a backslash and `n` in code, which shows as those two characters (emails reading "Dear
+  Tom,\n\nI hope", tables as raw pipes), marks a worked example ✗ and a tool of yours ◆, saying where; the
+  librarian is told of one it typed when it writes. Only sure signs count: two in a row in a string, or
+  `"\\n".join(...)`; one alone (`C:\Users\nina`, `\nabla`), a raw string, JSON, and a string compared, searched
+  for, put in by `.replace` or used as a regular expression are fine, and your namespaces' texts are never checked.
 - What worked examples teach (measured on gpt-6-luna): who to hand work to and the steps to take, which agents
   copy closely; the answer's format sticks only when the namespace's `system_suffix` says it, so put it there too.
   As the example isn't run, give each cell the imports it uses: a cell using `re` imported in an earlier one made

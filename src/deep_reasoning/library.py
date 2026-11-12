@@ -477,33 +477,27 @@ BETWEEN = {
     "assistant": "the user turn with the <observation> goes between them",
 }
 NO_TASK = "There is no task: add a user turn holding it."
-# A backslash and n typed where a line break was meant ("Dear Tom,\n\nI hope"), which shows
-# as those two characters; but one standing alone, as a text naming it ("no typed \n").
-TYPED_BREAK = re.compile(r"(?<![\s\"'`(])\\n|\\n(?![\s\"'`.,;:)]|$)")
+# A line break typed as a backslash and n, which shows as those two characters: in a text
+# literal twice in a row ("Dear Tom,\\n\\nI hope"), or alone as what .join puts between
+# items ("\\n".join(rows)). One alone elsewhere is too often meant (C:\Users\nina, \nabla).
+TYPED_TWICE = "\\n\\n"
+TYPED_ONCE = "\\n"
 # How Python source writes a backslash and n in a string literal.
 TYPED_IN_SOURCE = re.compile(r"\\\\n")
 # A text literal written raw, as a regular expression is: its \n is a line break there.
 RAW_PREFIX = re.compile(r"[A-Za-z]*[rR][A-Za-z]*['\"]")
-# The methods and functions that look for the text they are given first, as
-# text.replace("\\n", "\n"), or read it as a regular expression, as re.split does.
+# What takes texts to look for, put in or read as a regular expression, each meant as
+# typed: text.replace("\n\n", "\\n\\n"), re.split(BREAKS, text).
 SEARCHES = frozenset(
     {"replace", "split", "count", "find", "index", "startswith", "endswith"}
     | {"compile", "search", "match", "fullmatch", "findall", "finditer", "sub"}
 )
-# A run hands a tool's factory every key of its block but these.
-OWN_KEYS = ("factory", "factory_from")
 # How much of a line holding a typed line break a problem quotes.
 LINE_SHOWN = 80
-QUOTED_AROUND = 24
 TYPED_IN_CODE = jinja2.Template(
     "{{ what }} types \\n as a backslash and n on its line {{ number }} ({{ line }}),"
     " which shows as those two characters, not a line break: the code should have \\n"
     " there, with one backslash.",
-    undefined=jinja2.StrictUndefined,
-)
-TYPED_IN_TEXT = jinja2.Template(
-    "{{ what }} has \\n typed as a backslash and n ({{ quote }}), which shows as those"
-    " two characters, not a line break: put a real line break there.",
     undefined=jinja2.StrictUndefined,
 )
 # make_tool builds `factory: llm` with v2's own builder, the rest from TOOL_BUILDERS.
@@ -639,8 +633,8 @@ It is stored even when it isn't yet a worked example like that: the \
 result's problems lists each way it isn't (empty when none), and until you write it \
 again without them the Library panel marks it ✗. The result's code_problems, when \
 there are any, lists each turn whose code isn't valid Python, leaves a variable's \
-{name} in a string without f, or types \\n as a backslash and n in a string (\\\\n), \
-which agents copying it would copy too: fix them.
+{name} in a string without f, or types a line break as a backslash and n (\\\\n\\\\n in \
+a string, or "\\\\n".join), which agents copying it would copy too: fix them.
   library.add_namespace(name, yaml): adds namespace `name` ("research", or \
 "research.papers" under an existing research) with the fields yaml sets: system_suffix \
 (text added to its agents' system prompt), vars (names and values its agents' Python \
@@ -701,10 +695,9 @@ or the run settings (max_iter, max_depth, ...): only the user changes them, by i
 a config (deep-reasoning import).
 Each write returns what it did, as {done, what, name} (and namespace, but for a tool), \
 done saying "nothing changed: …" when what you gave is what was stored, as when a \
-.replace(...) matched nothing, and problems when a text or a tool's Python it stored \
-has \\n typed as a backslash and n where a line break was meant, which shows as those \
-two characters: write it again with real line breaks. A refusal raises ValueError \
-saying why. One that holds "…(+N chars)", where a text \
+.replace(...) matched nothing, and, for a tool, problems when its Python types a line \
+break as a backslash and n, which shows as those two characters: write it again with \
+\\n. A refusal raises ValueError saying why. One that holds "…(+N chars)", where a text \
 was cut short, or "…(+N more items)", where a long list was, is refused: write the \
 whole text."""
 PAGE_DESCRIPTION = """\
@@ -2776,9 +2769,10 @@ def decomposition_problems(decomposition, names):
 
 
 def typed_breaks(source, tree):
-    """Each text literal of the Python *source*, parsed as *tree*, holding a typed line
-    break (TYPED_BREAK), as the node of the literal it is part of: but a raw one, and
-    one looked for, compared or given first to a SEARCHES method."""
+    """Each text literal of the Python *source*, parsed as *tree*, typing a line break
+    (TYPED_TWICE, or TYPED_ONCE as a .join's separator), as the node of the part of it
+    that does, but those meant as typed: a raw one, JSON text, one compared, one given
+    to a SEARCHES call, and one bound to a name such a call is given first."""
     nodes = list(ast.walk(tree))
     whole = {
         id(part): node
@@ -2786,17 +2780,32 @@ def typed_breaks(source, tree):
         if isinstance(node, ast.JoinedStr)
         for part in node.values
     }
-    skipped = set()
+    searches = [node for node in nodes if searching(node)]
+    patterns = {
+        call.args[0].id
+        for call in searches
+        if call.args and isinstance(call.args[0], ast.Name)
+    }
+    skipped = {
+        id(each)
+        for call in searches
+        for each in [*call.args, *(keyword.value for keyword in call.keywords)]
+    }
+    separators = set()
     for node in nodes:
         if isinstance(node, ast.Compare):
             skipped |= {id(each) for each in [node.left, *node.comparators]}
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in patterns
+            for target in node.targets
+        ):
+            skipped.add(id(node.value))
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr in SEARCHES
-            and node.args
+            and node.func.attr == "join"
         ):
-            skipped.add(id(node.args[0]))
+            separators.add(id(node.func.value))
         elif (
             isinstance(node, (ast.Constant, ast.JoinedStr))
             and id(node) not in whole
@@ -2808,78 +2817,75 @@ def typed_breaks(source, tree):
         for node in nodes
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
-        and id(whole.get(id(node), node)) not in skipped
-        and TYPED_BREAK.search(node.value)
+        and (
+            (id(node) in separators and node.value == TYPED_ONCE)
+            or (
+                TYPED_TWICE in node.value
+                and id(whole.get(id(node), node)) not in skipped
+                and not json_text(node.value)
+            )
+        )
     ]
 
 
-def code_breaks(what, source):
+def searching(node):
+    """Whether *node* calls one of SEARCHES as a method or a module's function."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in SEARCHES
+    )
+
+
+def json_text(text):
+    """Whether *text* is a JSON object or list, whose \\n is an escape for a line break."""
+    if text.lstrip()[:1] not in ("{", "["):
+        return False
+    try:
+        json.loads(text)
+    except ValueError:
+        return False
+    return True
+
+
+def code_breaks(what, source, before=""):
     """The problem, in a list, of the Python *source*, said of *what*, typing a line
-    break in a string (typed_breaks()), quoting the first line that does; none for none,
-    or for source that doesn't parse, which other checks report."""
+    break in a string (typed_breaks()), quoting the first line that does that the text
+    *before* this write didn't hold; none for none, or for source that doesn't parse,
+    which other checks report."""
     try:
         found = typed_breaks(source, parsed_python(source))
     except LibraryError:
         return []
-    if not found:
-        return []
-    first = min(found, key=lambda node: (node.lineno, node.col_offset))
-    segment = ast.get_source_segment(source, first) or ""
-    lines = segment.split("\n")
-    offset = next(
-        (at for at, line in enumerate(lines) if TYPED_IN_SOURCE.search(line)), 0
-    )
-    number = first.lineno + offset
-    line = source.split("\n")[number - 1].strip()
-    if len(line) > LINE_SHOWN:
-        line = line[:LINE_SHOWN] + "…"
-    return [TYPED_IN_CODE.render(what=what, number=number, line=line)]
+    held = {line.strip() for line in before.split("\n")}
+    lines = source.split("\n")
+    for node in sorted(found, key=lambda node: (node.lineno, node.col_offset)):
+        segment = (ast.get_source_segment(source, node) or "").split("\n")
+        typed = (at for at, line in enumerate(segment) if TYPED_IN_SOURCE.search(line))
+        number = node.lineno + next(typed, 0)
+        line = lines[number - 1].strip()
+        if line in held:
+            continue
+        if len(line) > LINE_SHOWN:
+            line = line[:LINE_SHOWN] + "…"
+        return [TYPED_IN_CODE.render(what=what, number=number, line=line)]
+    return []
 
 
-def text_breaks(texts):
-    """A problem for each of *texts*, values by what they are, holding a typed line break
-    in a text at any depth, quoting its line around the first."""
-    problems = []
-    for what, value in texts.items():
-        for line in (each for text in texts_in(value) for each in text.splitlines()):
-            if found := TYPED_BREAK.search(line):
-                start = max(found.start() - QUOTED_AROUND, 0)
-                stop = found.end() + QUOTED_AROUND
-                quote = (
-                    f'"{"…" * (start > 0)}{line[start:stop]}{"…" * (stop < len(line))}"'
-                )
-                problems.append(TYPED_IN_TEXT.render(what=what, quote=quote))
-                break
-    return problems
-
-
-def example_breaks(messages):
+def example_breaks(messages, before=""):
     """The problems of *messages*, a decomposition's turns, each assistant turn's code
-    typing a line break (code_breaks())."""
+    typing a line break (code_breaks()) on a line the text *before* this write didn't
+    hold."""
     return [
         problem
         for number, message in enumerate(messages, start=1)
         if message["role"] == "assistant"
         for problem in code_breaks(
-            f"Turn {number} (assistant)'s code", running_code(message["content"])
+            f"Turn {number} (assistant)'s code",
+            running_code(message["content"]),
+            before,
         )
     ]
-
-
-def namespace_breaks(fields):
-    """The problems of a namespace's own *fields*: its system_suffix or a var holding a
-    typed line break."""
-    texts = {"The system_suffix": fields.get("system_suffix")}
-    own_vars = fields.get("vars") or {}
-    texts |= {f"The var {key}": value for key, value in own_vars.items()}
-    return text_breaks(texts)
-
-
-def tool_breaks(source, settings):
-    """The problems of a custom tool, its Python *source* and its *settings*, typing a
-    line break."""
-    texts = {f"The setting {key}": value for key, value in settings.items()}
-    return code_breaks("The tool's Python", source) + text_breaks(texts)
 
 
 # Who made a change, as the record of changes keeps it: the panel, unless said otherwise.
@@ -2904,8 +2910,10 @@ MAX_CHANGE_BYTES = 3 * MAX_ROW_BYTES
 CHANGES_SHOWN = 30
 CHANGE_CHARS_SHOWN = 20_000
 SHOWN_CUT = "…(cut short)"
-# A change a chat made names it by its title, cut to about this many characters.
+# A change a chat made names it by its title, cut to about this many characters at a
+# word; mid-word where that would keep fewer than CHAT_TITLE_KEPT ("Fix https://…").
 CHAT_TITLE_SHOWN = 40
+CHAT_TITLE_KEPT = 20
 # The latest time a change can have been made: the year 9999 begins, which a date shows
 # in any time zone.
 LAST_SECOND = 253_370_764_800
@@ -3086,12 +3094,15 @@ def listed_change(change):
 
 def short_title(title):
     """A chat's *title*, as long as a first message may make it, as a line of the Changes
-    tab names it: whole when it is short, else cut at a word."""
+    tab names it: whole when it is short, else cut at a word, or mid-word where a long
+    word would leave too little."""
     if len(title) <= CHAT_TITLE_SHOWN:
         return title
     head = title[: CHAT_TITLE_SHOWN + 1]
-    words = head.rpartition(" ")[0] or head[:CHAT_TITLE_SHOWN]
-    return f"{words.rstrip(' ,;:')}…"
+    words = head.rpartition(" ")[0].rstrip(" ,;:")
+    if len(words) < CHAT_TITLE_KEPT:
+        words = head[:CHAT_TITLE_SHOWN]
+    return f"{words}…"
 
 
 def cut_text(text, limit):
@@ -4230,8 +4241,7 @@ def tool_rows(config, registry, names, sources):
         )
         # A stored tool the engine builds from its block alone has no Python.
         if sources.get(name) is not None:
-            settings = {k: v for k, v in block.items() if k not in OWN_KEYS}
-            row["warnings"] = tool_breaks(sources[name], settings)
+            row["warnings"] = code_breaks("The tool's Python", sources[name])
         rows.append(row)
     return rows
 
@@ -4348,11 +4358,9 @@ def namespace_rows(read, config, registry, chats=None):
 
 
 def warnings_of(read, name):
-    """What the panel warns of namespace *name* of the Library *read*: each grant runs
-    ignore (ignored_grants()), as a shared file may hold, and each text of its own typing
-    a line break (namespace_breaks())."""
-    own = read["namespaces"].get(name, {})
-    return ignored_grants(read, own.get("tools", [])) + namespace_breaks(own)
+    """What the panel warns of namespace *name* of the Library *read*, as a shared file
+    may hold it: each grant runs ignore (ignored_grants())."""
+    return ignored_grants(read, read["namespaces"].get(name, {}).get("tools", []))
 
 
 def hand_offs_made(registry, calls):

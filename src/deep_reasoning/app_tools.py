@@ -69,7 +69,6 @@ from deep_reasoning.library import (
     LIBRARY_TOOL,
     LOCAL_REPL,
     MAX_YAML_CHARS,
-    OWN_KEYS,
     PAGE_DESCRIPTION,
     TAKEN_NAMES,
     LibraryError,
@@ -80,6 +79,7 @@ from deep_reasoning.library import (
     change_namespace,
     check_size,
     check_tool_block,
+    code_breaks,
     config_and_registry,
     config_of,
     count,
@@ -94,7 +94,6 @@ from deep_reasoning.library import (
     left_out_note,
     literals,
     loaded,
-    namespace_breaks,
     namespace_rows,
     parsed_python,
     read_changes,
@@ -108,7 +107,6 @@ from deep_reasoning.library import (
     store_tool,
     taken,
     texts_in,
-    tool_breaks,
     tool_file,
     tool_name_problem,
     tool_rows,
@@ -293,6 +291,8 @@ NOT_A_TOOL = (
 PLAIN = (str, int, float, bool, type(None))
 # Deeper settings are refused, as YAML writes them by recursion.
 MAX_NESTING = 20
+# A run hands the factory every key of the tool's block but these.
+OWN_KEYS = ("factory", "factory_from")
 SETS_OWN_KEYS = "settings may not hold factory or factory_from: write_tool sets them."
 CHECKS = "checks"
 # What a write that leaves a text as it was says, so the model never reports it done.
@@ -1332,11 +1332,12 @@ def check_writable(namespace: str, text: str, key_names: list[str]) -> Any:
     return data
 
 
-def code_problems(decomposition: dict[str, Any]) -> list[str]:
+def code_problems(decomposition: dict[str, Any], before: str = "") -> list[str]:
     """Each assistant turn of *decomposition*, as data the store took, whose code, the
     <repl> block the engine runs, isn't valid Python, or leaves the {name} of a variable
     its code or an earlier turn's sets in a string without f; then each typing a line
-    break as a backslash and n (example_breaks())."""
+    break as a backslash and n on a line the text *before* the write didn't hold
+    (example_breaks())."""
     problems, names = [], set()
     for number, turn in enumerate(decomposition["messages"], start=1):
         if turn["role"] != "assistant":
@@ -1354,7 +1355,7 @@ def code_problems(decomposition: dict[str, Any]) -> list[str]:
             for name in dict.fromkeys(fields_without_f(source, tree))
             if name in names
         ]
-    return problems + example_breaks(decomposition["messages"])
+    return problems + example_breaks(decomposition["messages"], before)
 
 
 def set_names(tree: ast.AST) -> set[str]:
@@ -1907,11 +1908,6 @@ def made_at(made: float) -> str:
     return f"{named.get(when.date(), when.date().isoformat())} {when:%H:%M}"
 
 
-def with_problems(problems: list[str]) -> dict[str, Any]:
-    """What a write adds to its result for *problems* in what it stored: none for none."""
-    return {"problems": problems} if problems else {}
-
-
 def made_by(change: Event, chat: str) -> str:
     """Who made a recorded *change*, in words: the panel, an import, this chat
     (*chat*) or another, by its title."""
@@ -2114,7 +2110,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             text = yaml_text(yaml, typed=with_real_tags)
         data = check_writable(namespace, text, key_names)
 
-        def write() -> tuple[dict[str, Any], Event]:
+        def write() -> tuple[dict[str, Any], str | None, Event]:
             stored, before = written(
                 library,
                 add_decomposition,
@@ -2130,12 +2126,12 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
                 "name": stored["name"],
             }
             if before == text:
-                return stored, {"done": NOTHING_CHANGED, **at}
+                return stored, before, {"done": NOTHING_CHANGED, **at}
             done = "added" if before is None else "replaced"
-            return stored, logged(done, before, text, **at)
+            return stored, before, logged(done, before, text, **at)
 
-        stored, change = stop_proof(write)
-        broken = code_problems(data)
+        stored, before, change = stop_proof(write)
+        broken = code_problems(data, before or "")
         return {**change, "problems": stored["problems"]} | (
             {"code_problems": broken} if broken else {}
         )
@@ -2146,13 +2142,13 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         check_writable(name, text, key_names)
         allowed = grants_built(name, text, adding=True)
 
-        def write() -> tuple[str, Event]:
+        def write() -> Event:
             stored = written(library, add_namespace, name, text, allowed=allowed, by=by)
-            at = {"what": "namespace", "namespace": name, "name": name}
-            return stored, logged("added", None, stored, **at)
+            return logged(
+                "added", None, stored, what="namespace", namespace=name, name=name
+            )
 
-        stored, done = stop_proof(write)
-        return done | with_problems(namespace_breaks(fields_of(stored)))
+        return stop_proof(write)
 
     def change(name: str, yaml: Any, replace: bool = False) -> dict[str, Any]:
         """Give namespace *name* the fields *yaml* sets, keeping the others, or with
@@ -2188,7 +2184,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         done |= {"changed": cut(changed), "kept": [k for k in kept if k not in same]}
         if same:
             done["nothing changed"] = f"{', '.join(same)} {ALREADY_HELD}"
-        return done | with_problems(namespace_breaks(fields_of(stored)))
+        return done
 
     def write_tool(
         name: str, source: str, factory: str, settings: dict[str, Any] | None = None
@@ -2210,18 +2206,20 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         }
         check_builds({name: (block, source)}, tools_dir, WRITTEN)
 
-        def write() -> Event:
+        def write() -> tuple[str | None, Event]:
             allowed = partial(may_write_tool, name=name, settings=settings or {})
             before = written(
                 library, store_tool, name, block, source, allowed=allowed, by=by
             )
             after = tool_text(name, dump(block), source)
             if before == after:
-                return {"done": NOTHING_CHANGED, "what": "tool", "name": name}
+                return before, {"done": NOTHING_CHANGED, "what": "tool", "name": name}
             done = "added" if before is None else "replaced"
-            return logged(done, before, after, what="tool", name=name)
+            return before, logged(done, before, after, what="tool", name=name)
 
-        return stop_proof(write) | with_problems(tool_breaks(source, settings or {}))
+        before, done = stop_proof(write)
+        typed = code_breaks("The tool's Python", source, before or "")
+        return done | ({"problems": typed} if typed else {})
 
     tool = SimpleNamespace(
         show=giving_marks(show),

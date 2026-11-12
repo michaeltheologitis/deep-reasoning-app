@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import structlog
 import yaml
-from conftest import REMINDER_BREAK, REMINDER_VAR, TABLE_BREAK, TYPED_BREAKS
+from conftest import REMINDER_BREAK, TABLE_BREAK, TYPED_BREAKS
 from deep_reasoner.core import capture_debug_logs
 from deep_reasoner.stopping import DriveTable, StopRequested
 from fake_model import RESEARCH_CHANGED, SPLIT_COUNT, WORD_COUNT, WORD_COUNT_DOC
@@ -84,6 +84,7 @@ from deep_reasoning.library import (
     UPSERT_TOOL,
     YAML_NOT_TEXT,
     LibraryError,
+    add_decomposition,
     add_namespace,
     by_chat,
     change_namespace,
@@ -96,6 +97,7 @@ from deep_reasoning.library import (
     parsed,
     read_changes,
     record,
+    store_tool,
     writing,
 )
 from deep_reasoning.pages import MAX_PAGE_CHARS, read_page
@@ -2144,13 +2146,28 @@ def test_a_tool_whose_python_types_a_line_break_says_so(fresh):
     assert "problems" not in fixed
 
 
-def test_a_namespace_whose_text_types_a_line_break_says_so(fresh):
+def test_a_namespaces_texts_are_the_users_data_and_never_said_to_type_a_line_break(
+    fresh,
+):
     tool = library_tool(fresh)
     typed = {"vars": {"reminder": "Dear Tom,\\n\\nI hope you are well."}}
-    assert tool.add_namespace("chasing", typed)["problems"] == [REMINDER_VAR]
-    assert tool.change_namespace("drafts", typed)["problems"] == [REMINDER_VAR]
-    fixed = {"vars": {"reminder": "Dear Tom,\n\nI hope you are well."}}
-    assert "problems" not in tool.change_namespace("drafts", fixed)
+    assert "problems" not in tool.add_namespace("chasing", typed)
+    assert "problems" not in tool.change_namespace("drafts", typed)
+
+
+def test_a_write_is_told_only_of_line_breaks_it_typed_not_those_already_stored(fresh):
+    table = (TYPED_BREAKS / "table_example.yaml").read_text()
+    reminders = (TYPED_BREAKS / "reminders_tool.py.txt").read_text()
+    name, factory = "draft_late_payment_emails", "build_draft_late_payment_emails"
+    with closing(open_library(fresh)) as connection:
+        add_decomposition(connection, "drafts", table)
+        block = {"factory": factory, "factory_from": f"{name}.py"}
+        store_tool(connection, name, block, reminders)
+    tool = library_tool(fresh)
+    reworded = table.replace("Run the bank categorizer", "Run the categorizer")
+    assert "code_problems" not in tool.write_decomposition("drafts", reworded)
+    docstring = reminders.replace("courteous reminders", "polite reminders")
+    assert "problems" not in tool.write_tool(name, docstring, factory)
 
 
 @pytest.mark.parametrize(

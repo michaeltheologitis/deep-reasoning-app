@@ -99,15 +99,13 @@ APPS_NO_REPL_TURN = {
     " put that answer, as you wrote it, in FinalAnswer(...) in a <repl> block, and never"
     " reply to this note itself.",
 }
-# A provider's failure or refusal that ends a run, led by what it means (failure_detail()).
+# A provider's failure or refusal that ends a run is led by what it means, on a line of
+# its own beginning PROVIDER_LEAD, which the page reads as the app's words (failure_detail()).
+PROVIDER_LEAD = "The model provider"
 SERVER_ERROR = 500
 BAD_REQUEST = 400
-REFUSED_PROMPT = re.compile(r"\binvalid_prompt\b|\bflagged\b")
-# A call this long that the provider fails was a long reply it gave up on.
-LONG_CALL_S = 60
-GAVE_UP = "The model provider gave up on a long reply (after {seconds} s)."
-FAILED = "The model provider failed ({status})."
-REFUSED = "The provider refused this prompt."
+# The code of a 400 for a prompt the provider refuses for what it holds, as OpenAI's.
+REFUSED_CODES = frozenset({"invalid_prompt"})
 KEPT = "The {changes} this run made to the Library {are} kept."
 AGAIN = "Try again, or ask in smaller steps."
 
@@ -183,19 +181,19 @@ def detail_of(error: BaseException) -> str:
 
 
 def failure_detail(error: BaseException, changes: int) -> str:
-    """Why a run ended by *error*: a provider's failure (5xx) or refusal of the prompt
-    (400, invalid_prompt or flagged) led by what it means, then the *changes* to the
-    Library the run made, which stay, and what to do, then the provider's own words;
-    any other error in the engine's words (detail_of())."""
+    """Why a run ended by *error*: a provider's failure (5xx), after how long the call
+    waited, its retries included, or refusal of the prompt (a 400 of REFUSED_CODES) led
+    by what it means, then the *changes* to the Library the run made, which stay, and
+    what to do, then the provider's own words; any other error in the engine's words
+    (detail_of())."""
     words = detail_of(error)
     status = error.status_code if isinstance(error, APIStatusError) else None
     if status is not None and status >= SERVER_ERROR:
-        seconds = getattr(error, "seconds_waited", 0)
-        lead = FAILED.format(status=status)
-        if seconds >= LONG_CALL_S:
-            lead = GAVE_UP.format(seconds=round(seconds))
-    elif status == BAD_REQUEST and REFUSED_PROMPT.search(words):
-        lead = REFUSED
+        waited = getattr(error, "seconds_waited", None)
+        after = "" if waited is None else f" after {math.ceil(waited)} s of waiting"
+        lead = f"{PROVIDER_LEAD} failed ({status}){after}."
+    elif status == BAD_REQUEST and getattr(error, "code", None) in REFUSED_CODES:
+        lead = f"{PROVIDER_LEAD} refused this prompt."
     else:
         return words
     made = count(changes, "change")

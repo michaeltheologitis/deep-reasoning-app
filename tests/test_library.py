@@ -14,7 +14,7 @@ from pathlib import Path
 import deep_reasoner.llm
 import pytest
 import yaml
-from conftest import REMINDER_BREAK, REMINDER_VAR, TABLE_BREAK, TYPED_BREAKS
+from conftest import REMINDER_BREAK, TABLE_BREAK, TYPED_BREAKS
 from deep_reasoner.config import resolve_api_key
 from deep_reasoner.namespaces import ROOT, build_registry
 from deep_reasoner.tools import load_tool_factory
@@ -3570,25 +3570,45 @@ def test_the_panel_lists_the_newest_changes_each_text_cut_short(library):
         (r'FinalAnswer("Dear Tom,\\n\\nI hope you are well.")', True),
         (r'FinalAnswer(f"Dear {name},\\n\\nI hope you are well.")', True),
         (r'table = "\\n".join(rows)', True),
+        (r'table = r"\n".join(rows)', True),
         (r'table = "\n".join(rows)', False),
-        (r'parts = re.split(r"\n+", text)', False),
-        (r'text = text.replace("\\n", "\n")', False),
-        (r'typed = "\\n" in body', False),
-        (r'print("Type \\n for a line break.")', False),
+        (r'note = "Type \\n for a line break."', False),
+        (r'parts = re.split(r"\n\n+", text)', False),
+        (r'shown = text.replace("\n\n", "\\n\\n")', False),
+        (r'typed = "\\n\\n" in body', False),
+        (r'home = r"C:\Users\nina\notes"', False),
+        (r'home = "C:\\Users\\nina\\notes"', False),
+        (r'maths = "\\nabla f = 0 \\newline \\nu"', False),
+        (r"""reply = '{"text": "Dear Tom,\\n\\nI hope"}'""", False),
+        ('BREAKS = "\\\\n\\\\n+"\nparts = re.split(BREAKS, text)', False),
     ],
     ids=[
-        "typed",
-        "in-an-f-string",
-        "joined",
+        "twice",
+        "twice-in-an-f-string",
+        "a-join",
+        "a-raw-join",
         "a-line-break",
+        "once",
         "raw",
-        "replaced",
-        "looked-for",
-        "named",
+        "a-replacement",
+        "compared",
+        "a-raw-path",
+        "a-path",
+        "latex",
+        "json",
+        "a-named-pattern",
     ],
 )
 def test_code_typing_a_line_break_as_a_backslash_and_n_has_a_problem(code, typed):
     assert bool(code_breaks("The code", code)) is typed
+
+
+def test_code_typing_a_line_break_only_where_it_did_before_has_none():
+    before = 'body = "Dear Tom,\\\\n\\\\nI hope"\n'
+    assert code_breaks("The code", before + "print(body)\n", before) == []
+    added = before + 'sign = "\\\\n\\\\nSam"\n'
+    [problem] = code_breaks("The code", added, before)
+    assert "line 2" in problem
 
 
 def test_the_panel_marks_what_a_librarian_stored_with_line_breaks_typed(library):
@@ -3598,6 +3618,7 @@ def test_the_panel_marks_what_a_librarian_stored_with_line_breaks_typed(library)
         "factory_from": "draft_late_payment_emails.py",
     }
     with closing(open_library(library)) as connection:
+        # A var is the user's own data, as they typed it: never flagged.
         add_namespace(
             connection,
             "bookkeeping",
@@ -3616,7 +3637,6 @@ def test_the_panel_marks_what_a_librarian_stored_with_line_breaks_typed(library)
     namespaces = {row["name"]: row for row in shown["namespaces"]}
     tools = {each["name"]: each for each in shown["tools"]}
     tool = tools["draft_late_payment_emails"]
-    assert namespaces["bookkeeping"]["warnings"] == [REMINDER_VAR]
     assert [
         (each["name"], each["problems"])
         for each in namespaces["bookkeeping"]["decompositions"]
@@ -3625,10 +3645,7 @@ def test_the_panel_marks_what_a_librarian_stored_with_line_breaks_typed(library)
         ("draft late-payment reminders", []),
     ]
     assert (tool["problems"], tool["warnings"]) == ([], [REMINDER_BREAK])
-    # The librarian's own suffix names a typed \n, as a mention, so has none.
-    assert [
-        row["warnings"] for row in shown["namespaces"] if row["name"] != "bookkeeping"
-    ] == [[]] * 3
+    assert [row["warnings"] for row in shown["namespaces"]] == [[]] * 4
 
 
 def test_the_changes_tab_names_a_chat_by_a_short_title_cut_at_a_word(library):
@@ -3639,7 +3656,9 @@ def test_the_changes_tab_names_a_chat_by_a_short_title_cut_at_a_word(library):
     )
     with closing(open_library(library)) as connection:
         with writing(connection):
-            for chat, title in [("planner", long), ("helpers", "Budget helpers")]:
+            link = "Fix https://github.com/acme/billing/issues/4821#issuecomment-99"
+            titles = [("link", link), ("planner", long), ("helpers", "Budget helpers")]
+            for chat, title in titles:
                 connection.execute(
                     "INSERT INTO chats (id, title, created) VALUES (?, ?, 0)",
                     (chat, title),
@@ -3653,4 +3672,6 @@ def test_the_changes_tab_names_a_chat_by_a_short_title_cut_at_a_word(library):
     assert [each["label"] for each in shown] == [
         "Budget helpers",
         "hey can u make the essay planner always…",
+        # Cut at its one space, it would keep only "Fix".
+        "Fix https://github.com/acme/billing/issu…",
     ]

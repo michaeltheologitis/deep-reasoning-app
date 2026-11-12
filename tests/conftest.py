@@ -14,7 +14,7 @@ CONFIGS = Path(__file__).parent / "configs"
 # What a tester's librarian stored, line breaks typed as a backslash and n: a worked
 # example's table and a tool's reminder emails; and an example that checks for them.
 TYPED_BREAKS = Path(__file__).parent / "typed_breaks"
-# What the panel and the library tool say of them, and of a var holding such an email.
+# What the panel and the library tool say of them.
 TABLE_BREAK = (
     "Turn 4 (assistant)'s code types \\n as a backslash and n on its line 14"
     " ('were categorized as Subsistence.\\\\n\\\\n'), which shows as those two"
@@ -24,11 +24,6 @@ REMINDER_BREAK = (
     "The tool's Python types \\n as a backslash and n on its line 101"
     ' (f"Dear {contact},\\\\n\\\\n"), which shows as those two characters, not a line'
     " break: the code should have \\n there, with one backslash."
-)
-REMINDER_VAR = (
-    'The var reminder has \\n typed as a backslash and n ("Dear Tom,\\n\\nI hope you'
-    ' are well."), which shows as those two characters, not a line break: put a real'
-    " line break there."
 )
 
 
