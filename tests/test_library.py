@@ -79,6 +79,7 @@ from deep_reasoning.library import (
     SHAPES,
     SHOWN_CUT,
     SPAWN_LINE,
+    TOLD_LAST,
     TOO_SLOW,
     UNREAD_SETTING,
     UNRENDERED_DECOMPOSITION,
@@ -659,17 +660,19 @@ HOW = "There is no upload: ask the user to click 'notes' under the message box."
 
 
 def told_of_the_folder(library, tmp_path, entry):
-    """Each namespace's system_suffix, as its agents get it, in a run entering *entry*."""
+    """Each namespace's system_suffix, as its agents get it, in a run entering *entry*;
+    and what the worker tells every agent last."""
     tools = tmp_path / "tools"
     config = engine_config(library, entry, tools, CHAT, RUN, folder_lines=(WHERE, HOW))
     registry = build_namespace_registry(V2Config.model_validate(config | CHATS_MODEL))
-    return {name: registry.resolve(name).system_suffix for name in registry.names}
+    suffixes = {name: registry.resolve(name).system_suffix for name in registry.names}
+    return suffixes, config[TOLD_LAST]
 
 
 def test_every_agent_is_told_where_the_chats_folder_is_once_after_roots_suffix(
     team, tmp_path
 ):
-    told = told_of_the_folder(team, tmp_path, "planner")
+    told, _ = told_of_the_folder(team, tmp_path, "planner")
     assert {HISTORIAN, LIBRARIAN, "searcher.deep", "planner.team"} <= told.keys()
     assert {name: suffix.count(WHERE) for name, suffix in told.items()} == (
         dict.fromkeys(told, 1)
@@ -677,17 +680,13 @@ def test_every_agent_is_told_where_the_chats_folder_is_once_after_roots_suffix(
     assert told[ROOT] == f"{ROOT_SUFFIX.rstrip()}\n\n{WHERE}"
 
 
-def test_the_agents_of_the_namespace_a_run_enters_are_told_last_how_to_pick_a_folder(
-    team, tmp_path
+@pytest.mark.parametrize("entry", [ROOT, "planner", "planner.team", "searcher.deep"])
+def test_how_to_pick_a_folder_is_in_no_suffix_but_for_the_worker_to_tell_last(
+    team, tmp_path, entry
 ):
-    from_root = told_of_the_folder(team, tmp_path, ROOT)
-    from_planner = told_of_the_folder(team, tmp_path, "planner")
-    assert from_root[ROOT].endswith(f"\n\n{HOW}")
-    assert from_planner["planner"].endswith(f"\n\n{HOW}")
-    # Root's lines reach every namespace, the planner's those under it.
-    assert {suffix.count(HOW) for suffix in from_root.values()} == {1}
-    told = {name for name, suffix in from_planner.items() if HOW in suffix}
-    assert told == {"planner", "planner.team"}
+    told, last = told_of_the_folder(team, tmp_path, entry)
+    assert last == HOW
+    assert not [name for name, suffix in told.items() if HOW in suffix]
 
 
 def test_each_namespace_but_root_is_told_which_it_is(library, tmp_path):
