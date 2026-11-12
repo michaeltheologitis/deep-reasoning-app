@@ -261,6 +261,8 @@ chat's folder imports too.
   changed", so it isn't reported done. A team it sets up is a planner you talk to, handing each question only to the
   members it needs with your facts and files, with a spawn list of its members, `historian` and `librarian`, and a
   worked example handing each part on; members are siblings rather than children, and other spawn lists stay unset.
+  A spawn list it writes keeps `historian`, so "how did you get that?" still works there; it tells you so, and you take
+  it out in the panel if you want it out.
   Asked to get rid of a helper, it never empties its suffix: it takes it out of the others' spawn lists, suffixes and
   worked examples, then says to delete it in the panel, which deletes no namespace a spawn list names. Asked for
   what no change can promise (quicker, more reliable, stricter), it reads what causes it, says so and offers the

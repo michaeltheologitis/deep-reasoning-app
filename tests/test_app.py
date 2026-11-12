@@ -466,6 +466,14 @@ def test_a_namespace_is_added_edited_and_deleted_through_the_api(client):
     }
 
 
+def test_the_panel_stores_a_spawn_list_leaving_the_historian_out_as_typed(client):
+    client.post("/api/namespaces", json={"name": "trips", "yaml": ""})
+    edited = client.put(
+        "/api/namespaces/trips", json={"yaml": "spawn: []\n", "was": ""}
+    )
+    assert by_name(edited.json()["namespaces"])["trips"]["yaml"] == "spawn: []\n"
+
+
 def test_the_panels_adds_and_deletes_are_listed_newest_first_as_the_panels(client):
     client.post("/api/namespaces", json={"name": "trips", "yaml": "spawn: []\n"})
     deleted = client.delete("/api/namespaces/trips?decompositions=0")
