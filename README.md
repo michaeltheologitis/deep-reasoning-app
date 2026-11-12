@@ -111,7 +111,9 @@ chat's folder imports too.
   without answering, the Library changes the run made are kept, and to ask again in smaller steps.
 - The app tells an agent, in what its model is sent only, that what a cell printed is its own, which you never see;
   that a cell printed what an earlier one already had, so it answers from that instead of reading it again; and,
-  with 3 turns left, to finish, saying what it did and what is left.
+  with 3 turns left, to finish, saying what it did and what is left. A cell's output over 50,000 characters (a whole
+  till export, say) reaches the model as its start and end, with a note of how much was left out and to print only
+  what it needs; the chat's steps keep it whole.
 - Follow-ups see the chat's earlier messages and answers, and can ask how one was worked out, whether it was
   computed, what its sub-agents did or what went wrong: root hands those to the `historian`.
 - The agent can show you a page of its own (Markdown, tables, and steps or sub-agents of earlier messages, drawn as

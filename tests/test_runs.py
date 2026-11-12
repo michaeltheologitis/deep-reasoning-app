@@ -47,7 +47,12 @@ from deep_reasoning.runs import (
     save_event,
 )
 from deep_reasoning.settings import VENDORS
-from deep_reasoning.worker import OWN_OUTPUT_NOTE, REPEATED_NOTE, TURNS_LEFT_NOTE
+from deep_reasoning.worker import (
+    OWN_OUTPUT_NOTE,
+    REPEATED_NOTE,
+    SENT_OUTPUT_CHARS,
+    TURNS_LEFT_NOTE,
+)
 
 log = structlog.get_logger()
 
@@ -672,6 +677,61 @@ async def test_a_short_or_failing_cell_repeated_gets_no_note_to_answer(
     outputs = last_messages(fake)[1:]
     assert all(OWN_OUTPUT_NOTE in output for output in outputs)
     assert not any(REPEATED_NOTE in output for output in outputs)
+
+
+SALES = "\n".join(f"sale {n}: 1 latte" for n in range(20_000))
+PRINT_SALES = repl("for n in range(20_000):", "    print(f'sale {n}: 1 latte')")
+PRINT_MIDDLE = repl(
+    "for n in range(10_000, 10_100):", "    print(f'sale {n}: 1 latte')"
+)
+
+
+async def test_a_huge_cell_output_is_cut_in_what_is_sent_and_kept_whole_in_the_run(
+    home, library, fake_config
+):
+    """A café's till export printed whole, 3.4 million characters, overran the model's
+    context and failed the run."""
+    plan = {"Total the sales.": [PRINT_SALES, PRINT_MIDDLE, repl("FinalAnswer(1)")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        _, events = await run_to_the_end(
+            Runs(library, home), "Total the sales.", fake_config(fake)
+        )
+    assert of_kind(events, "cell.end")[0]["output"] == SALES
+    sent = fake.calls[1].messages[-1]["content"]
+    assert len(sent) < SENT_OUTPUT_CHARS + len(OWN_OUTPUT_NOTE) + 500
+    assert sent.startswith("<observation>\nsale 0: 1 latte\nsale 1: 1 latte\n")
+    assert "\nsale 19999: 1 latte\n</observation>" in sent
+    assert "sale 10000: 1 latte" not in sent
+    assert f"{len(SALES):,} characters" in sent
+    body = sent.removeprefix("<observation>\n").split("\n</observation>")[0]
+    notes = [line for line in body.splitlines() if not line.endswith(": 1 latte")]
+    assert len(notes) == 1 and notes[0].startswith("(An automated note from the app")
+    assert fake.calls[2].messages[-3]["content"] == sent
+    assert each_call_begins_as_the_last_ended(fake)
+    # Rows the model was never sent are news to it, though the cell printed them before.
+    assert REPEATED_NOTE not in fake.calls[2].messages[-1]["content"]
+
+
+async def test_an_output_within_the_limit_and_a_worked_examples_are_sent_whole(
+    home, library, fake_config
+):
+    example = {
+        "name": "count the sales",
+        "messages": [
+            {"role": "user", "content": "How many sales?"},
+            {"role": "assistant", "content": PRINT_SALES},
+            {"role": "user", "content": f"<observation>\n{SALES}\n</observation>"},
+            {"role": "assistant", "content": repl("FinalAnswer(20_000)")},
+        ],
+    }
+    chapter = "x" * SENT_OUTPUT_CHARS
+    plan = {"Read the chapter.": [repl(f"print({chapter!r})"), repl("FinalAnswer(1)")]}
+    with FakeOpenAI(scripted(plan)) as fake:
+        config = fake_config(fake, namespaces={"root": {"decompositions": [example]}})
+        await run_to_the_end(Runs(library, home), "Read the chapter.", config)
+    assert example["messages"][2] in fake.calls[1].messages
+    sent = fake.calls[1].messages[-1]["content"]
+    assert sent.startswith(f"<observation>\n{chapter}\n</observation>\n")
 
 
 async def test_each_call_costs_what_its_server_says_it_cost(home, library, fake_config):

@@ -127,6 +127,16 @@ REPEATED_NOTE = (
     " one already had, and you still have that and its variables: don't read or work it"
     " out again. Answer from it now with FinalAnswer, or go on to the next step from it.)"
 )
+# A café's till export printed whole, 3.4 million characters, was 1.3 million tokens:
+# past its model's context. Cut at this, a cell's output is 20,000 tokens at most, so a
+# handful still leave room in a 200,000-token context, and a long chapter or a few
+# hundred rows go whole.
+SENT_OUTPUT_CHARS = 50_000
+CUT_NOTE = (
+    "(An automated note from the app, not the user: the middle {left:,} of this output's"
+    " {total:,} characters are left out here, too many to send you. Print only what you"
+    " need from it: a summary, a count, or the rows you want.)"
+)
 TURNS_LEFT_WARNED = 3
 TURNS_LEFT_NOTE = (
     f"(An automated note from the app, not the user: you have {TURNS_LEFT_WARNED} turns"
@@ -274,15 +284,25 @@ def repeats(output: str, printed: set[str]) -> bool:
     return len(lines & printed) >= MOSTLY_PRINTED_BEFORE * len(lines)
 
 
+def cut(output: str) -> str:
+    """A cell's *output* past SENT_OUTPUT_CHARS as a call sends it: its first and last
+    whole lines within half that each, around CUT_NOTE."""
+    half = SENT_OUTPUT_CHARS // 2
+    head = output[:half].rpartition("\n")[0] or output[:half]
+    tail = output[-half:].partition("\n")[2] or output[-half:]
+    note = CUT_NOTE.format(left=len(output) - len(head) - len(tail), total=len(output))
+    return f"{head}\n{note}\n{tail}"
+
+
 def with_apps_notes(
     messages: list[dict[str, Any]], max_iter: int
 ) -> list[dict[str, Any]]:
     """*messages* as a chat call sends them: the engine's no-<repl> note as the app's,
-    and, in the agent's drive, OWN_OUTPUT_NOTE after each cell's output, REPEATED_NOTE
-    after one that is mostly what the drive printed before, and TURNS_LEFT_NOTE after the
-    turn that leaves it TURNS_LEFT_WARNED. Each message's notes depend only on those
-    before it, so every call of a drive sends the same beginning as the last, which
-    providers cache."""
+    and, in the agent's drive, each cell's output past SENT_OUTPUT_CHARS cut(), then
+    OWN_OUTPUT_NOTE after it, REPEATED_NOTE after one that is mostly what the drive was
+    sent before, and TURNS_LEFT_NOTE after the turn that leaves it TURNS_LEFT_WARNED.
+    Each message's notes depend only on those before it, so every call of a drive sends
+    the same beginning as the last, which providers cache."""
     start = drive_start(messages)
     sent = [APPS_NO_REPL_TURN if m == NO_REPL_TURN else m for m in messages]
     printed: set[str] = set()
@@ -295,6 +315,11 @@ def with_apps_notes(
         notes = []
         if message != NO_REPL_TURN:
             output = output_of(message["content"])
+            if len(output) > SENT_OUTPUT_CHARS:
+                output = cut(output)
+                observation = f"<observation>\n{output}\n</observation>"
+                sent[at] = message | {"content": observation}
+            # What the model was sent: a cut-out line printed again is news to it.
             repeated = repeats(output, printed)
             notes = [OWN_OUTPUT_NOTE, REPEATED_NOTE] if repeated else [OWN_OUTPUT_NOTE]
             printed |= printed_lines(output)
