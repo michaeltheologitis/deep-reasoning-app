@@ -23,6 +23,7 @@ from structlog.testing import capture_logs
 from deep_reasoning import app_tools
 from deep_reasoning.app_tools import (
     BRIEF_CHARS,
+    CANT_WRITE_BACK,
     CUT_SHORT,
     EMPTY,
     IN_FOLDER_ONLY,
@@ -2502,6 +2503,20 @@ def test_a_change_over_a_row_left_out_logs_why_as_its_before_never_the_row(
     [change] = [entry for entry in logs if entry["event"] == "library.change"]
     assert done["done"] in ("replaced", "changed")
     assert change["before"] == left_out_note(why)
+
+
+def test_a_change_whose_before_was_left_out_says_it_cant_be_written_back(fresh):
+    with closing(open_library(fresh)) as connection, writing(connection):
+        connection.execute(UPSERT_NAMESPACE, ("drafts", LONG_SUFFIX))
+    tool = library_tool(fresh)
+    tool.change_namespace("drafts", RESEARCH_CHANGED)
+    [line, *_] = tool.changes()
+    whole = tool.changes(id=line["id"])
+    assert "fields" not in line
+    assert whole["before"] == left_out_note(TOO_LONG_ROW)
+    # No field changed from it, which an undo would take out: every one.
+    assert "changed" not in whole
+    assert whole["unreadable"] == CANT_WRITE_BACK.format("before")
 
 
 def test_a_tool_root_grants_is_never_replaced(fresh):

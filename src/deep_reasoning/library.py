@@ -572,7 +572,8 @@ these lines, never from a chat's messages, which miss the panel's, imports' and 
 chats' changes. changes(id=id) gives change `id` whole: those fields, before (None when \
 it was added) and after (None when it was deleted); a namespace's with changed (each \
 field it changed, before and after), and a tool's before and after as {source, \
-factory, settings}. changes(turn) gives this chat's changes in its message `turn` \
+factory, settings}; a text the Library couldn't read then is a note saying why, and \
+unreadable says so: never write it back. changes(turn) gives this chat's changes in its message `turn` \
 (numbered from 1, the chat's first) whole, as they were logged. To undo a change, read \
 it whole and write its before back, from the value changes() returned, never retyped: \
 for a namespace, each field it changed, change_namespace(name, {field: value["before"] \
@@ -882,6 +883,7 @@ UNWRITABLE = ("SQLITE_READONLY", "SQLITE_FULL", "SQLITE_IOERR", "SQLITE_CANTOPEN
 
 
 BY_WHOM = "(by the librarian, another tab or an import)"
+LEFT_OUT_NOTE = re.compile(r"# Left out: [^\n]*\n(?:# [^\n]*\n)*")
 # Half of a character, which a YAML escape can make (PyYAML reads an emoji's escaped pair
 # as two halves) but no text written as UTF-8, so no response or run's spec, can hold.
 SURROGATE = re.compile("[\ud800-\udfff]")
@@ -1175,6 +1177,11 @@ def left_out_note(why):
     """What a change logs as the before of a row the engine can't read, in place of its
     text, which may be too long or not text: why, as YAML comments."""
     return "".join(f"# {line}\n" for line in f"Left out: {why}".splitlines())
+
+
+def is_left_out_note(text):
+    """Whether *text* is a change's left_out_note() in place of a row's text."""
+    return type(text) is str and LEFT_OUT_NOTE.fullmatch(text) is not None
 
 
 def unreadable(error):

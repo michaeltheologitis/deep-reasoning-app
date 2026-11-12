@@ -88,6 +88,7 @@ from deep_reasoning.library import (
     expanded_shape,
     fields_of,
     in_chain_order,
+    is_left_out_note,
     left_out_note,
     literals,
     loaded,
@@ -367,6 +368,12 @@ MAX_TOTAL_CHARS = 1_000_000
 MORE = "…(+{:,} more items)"
 # errors and find list at most this many rows, then one saying how many more.
 MAX_FOUND = 50
+# A change whose text was left out, as a row the Library couldn't read then: its text is
+# a note saying why (left_out_note()), which no write takes back.
+CANT_WRITE_BACK = (
+    "Its {} couldn't be read when it was made, so the text is a note saying why: it"
+    " can't be written back as is."
+)
 # The oldest id a page of changes read, whether its row was left out or not, and how many
 # are older than it.
 PAGE_END = """
@@ -1759,15 +1766,24 @@ def tool_fields(name: Any, text: Any) -> Any:
 
 def as_written(event: Event) -> dict[str, Any]:
     """A library.change *event*'s fields: a namespace's with each field it changed, and a
-    tool's before and after as write_tool takes them."""
+    tool's before and after as write_tool takes them. A text left out, a note saying
+    why, is said so, and changes no field."""
     change = {key: event.get(key) for key in CHANGE_FIELDS}
-    if change["what"] == "namespace":
+    if noted := left_out_texts(change):
+        change["unreadable"] = CANT_WRITE_BACK.format(" and ".join(noted))
+    elif change["what"] == "namespace":
         before, after = change["before"], change["after"]
         change["changed"] = field_changes(before or "", after)[0]
     if change["what"] == "tool":
         for key in ("before", "after"):
             change[key] = tool_fields(change["name"], change[key])
     return change
+
+
+def left_out_texts(change: Event) -> list[str]:
+    """Which of a *change*'s texts, before and after, are notes saying why its row was
+    left out."""
+    return [key for key in ("before", "after") if is_left_out_note(change[key])]
 
 
 def change_in_brief(event: Event) -> dict[str, Any]:
@@ -1900,7 +1916,7 @@ def recorded_in_brief(change: Event) -> Event:
     if change["namespace"] is not None:
         brief["namespace"] = change["namespace"]
     brief["name"] = change["name"]
-    if change["what"] == "namespace":
+    if change["what"] == "namespace" and not left_out_texts(change):
         changed = field_changes(change["before"] or "", change["after"] or "")[0]
         brief["fields"] = list(changed)
     return brief
