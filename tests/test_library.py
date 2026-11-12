@@ -2105,8 +2105,8 @@ def test_the_seeded_examples_and_the_engines_own_namespace_examples_pass(library
         for row in namespaces
         for each in row["decompositions"]
     ]
-    # the nineteen seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
-    assert len(rows) == 26
+    # the twenty seeded, advisors.yaml's five, and experience.yaml's two, one with a message after its answer
+    assert len(rows) == 27
     assert rows == [(name, []) for name, _ in rows]
 
 

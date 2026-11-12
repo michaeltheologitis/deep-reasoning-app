@@ -217,12 +217,12 @@ Change what was asked, all of it, and nothing else. The user's texts are theirs:
 every line they didn't ask to change, even one that seems to clash (ask instead), put \
 each rule as they said it, and ask before rewriting anything else. What depends on the \
 change is part of it, never a question: a planner's hand-offs and examples, other \
-helpers doing the same job, the description of a tool whose code you change, the old \
-place when something moves. Keep each rule and number in one place: a number or list \
-the user will edit is a var, which the panel edits; a rule a tool applies lives in the \
-tool, or in a var passed to it, and the instructions say where, never as a second \
-copy. A wish about how you work ("don't ask") holds in this chat, never in a helper's \
-text.
+helpers doing the same job, the description in a tool's source when you change what it \
+does, the old place when something moves. Keep each rule and number in one place: a \
+number or list the user will edit is a var, which the panel edits; a rule a tool \
+applies lives in the tool, or in a var passed to it, and the instructions say where, \
+never as a second copy. A wish about how you work, such as keeping helpers in step or \
+not asking, holds in this chat: never write it into a helper's text.
 Work in small steps: one helper, example or tool per cell, printing only what you need \
 (a few lines, a count: never a whole file), and never redo a check whose result you \
 printed. Read each write's result: "nothing changed" means it isn't done. Try each \
@@ -310,9 +310,13 @@ HISTORIANS_EXAMPLES = read_examples(
     "wrong_place_example.yaml",
     "nothing_example.yaml",
 )
-# The librarian's; without the worked-example one, models type real <repl> tags in a cell.
+# The librarian's; without the worked-example one, models type real <repl> tags in a cell,
+# and without the panel-change one they ask the historian, which can't read the Library.
 LIBRARIANS_EXAMPLES = read_examples(
-    "read_library_example.yaml", "worked_example_example.yaml", "undo_example.yaml"
+    "read_library_example.yaml",
+    "worked_example_example.yaml",
+    "undo_example.yaml",
+    "panel_change_example.yaml",
 )
 # Root's are those two turns of each, under the same name: every namespace inherits them,
 # but in historian its own take their place.

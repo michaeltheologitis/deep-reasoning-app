@@ -2354,6 +2354,21 @@ LIBRARIANS_EARLIER = {
             repl("FinalAnswer('granted')"),
         ],
     },
+    "what a change did": {
+        "Add a namespace for astronomy.": [
+            library_cell(
+                "add_namespace", "astronomy", "system_suffix: Answer in one sentence.\n"
+            ),
+            repl("FinalAnswer('added')"),
+        ],
+    },
+}
+# What the user then edits in the panel, before the example's question: namespace, YAML.
+LIBRARIANS_PANEL_EDITS = {
+    "what a change did": (
+        "astronomy",
+        "system_suffix: Answer in one sentence. Give distances in light-years.\n",
+    ),
 }
 
 
@@ -2369,6 +2384,17 @@ async def ask_as_the_librarians_example(library_on, connect, text):
             chat = await librarian_chat(api)
             for prompt in earlier:
                 await run_events(api, await send(api, chat, prompt))
+            if example.name in LIBRARIANS_PANEL_EDITS:
+                name, text = LIBRARIANS_PANEL_EDITS[example.name]
+                [was] = [
+                    each["yaml"]
+                    for each in (await api.get("/api/library")).json()["namespaces"]
+                    if each["name"] == name
+                ]
+                edited = await api.put(
+                    f"/api/namespaces/{name}", json={"yaml": text, "was": was}
+                )
+                assert edited.status_code == 200, edited.text
             events = await run_events(api, await send(api, chat, question.content))
             namespaces = (await api.get("/api/library")).json()["namespaces"]
     return events, {each["name"]: each for each in namespaces}
