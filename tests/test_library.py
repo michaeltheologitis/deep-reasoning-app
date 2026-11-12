@@ -20,7 +20,7 @@ from deep_reasoner.namespaces import ROOT, build_registry
 from deep_reasoner.tools import load_tool_factory
 from deep_reasoner.tools.base import DEFAULT_CLAUDE_DESCRIPTION
 from deep_reasoner.tools.safe_url import DEFAULT_SAFE_URL_DESCRIPTION
-from deep_reasoner.v2 import DeepReasoner, agent
+from deep_reasoner.v2 import DeepReasoner
 from deep_reasoner.v2.agent import _render_context, _rendered_turns
 from deep_reasoner.v2.cli import (
     V2Config,
@@ -130,7 +130,6 @@ from deep_reasoning.library import (
     vars_read,
     writing,
 )
-from deep_reasoning.worker import telling_last
 
 FAKE_KEY = "sk-test-not-a-real-key"
 CHAT = "a-chat"
@@ -655,17 +654,19 @@ HOW = "There is no upload: ask the user to click 'notes' under the message box."
 
 
 def told_of_the_folder(library, tmp_path, entry):
-    """Each namespace's system_suffix, as its agents get it, in a run entering *entry*."""
+    """Each namespace's system_suffix, as its agents get it, in a run entering *entry*;
+    and what the worker tells every agent last."""
     tools = tmp_path / "tools"
     config = engine_config(library, entry, tools, CHAT, RUN, folder_lines=(WHERE, HOW))
     registry = build_namespace_registry(V2Config.model_validate(config | CHATS_MODEL))
-    return {name: registry.resolve(name).system_suffix for name in registry.names}
+    suffixes = {name: registry.resolve(name).system_suffix for name in registry.names}
+    return suffixes, config[TOLD_LAST]
 
 
 def test_every_agent_is_told_where_the_chats_folder_is_once_after_roots_suffix(
     team, tmp_path
 ):
-    told = told_of_the_folder(team, tmp_path, "planner")
+    told, _ = told_of_the_folder(team, tmp_path, "planner")
     assert {HISTORIAN, LIBRARIAN, "searcher.deep", "planner.team"} <= told.keys()
     assert {name: suffix.count(WHERE) for name, suffix in told.items()} == (
         dict.fromkeys(told, 1)
@@ -674,22 +675,12 @@ def test_every_agent_is_told_where_the_chats_folder_is_once_after_roots_suffix(
 
 
 @pytest.mark.parametrize("entry", [ROOT, "planner", "planner.team", "searcher.deep"])
-def test_every_agent_is_told_last_how_to_pick_a_folder_once_whichever_namespace_a_run_enters(
-    team, tmp_path, monkeypatch, entry
+def test_how_to_pick_a_folder_is_in_no_suffix_but_for_the_worker_to_tell_last(
+    team, tmp_path, entry
 ):
-    # put back after the test, as the worker's wrapping replaces it
-    monkeypatch.setattr(agent, "_rendered_instructions", agent._rendered_instructions)
-    tools = tmp_path / "tools"
-    config = engine_config(team, entry, tools, CHAT, RUN, folder_lines=(WHERE, HOW))
-    telling_last(config[TOLD_LAST])
-    registry = build_namespace_registry(V2Config.model_validate(config | CHATS_MODEL))
-    # Nested (planner.team, searcher.deep) and siblings of the entered one alike.
-    assert {"planner.team", "searcher", "searcher.deep", HISTORIAN} <= {*registry.names}
-    for name in registry.names:
-        suffix = registry.resolve(name).system_suffix
-        *_, told = agent._rendered_instructions("The prompt.", suffix, {})
-        assert told["content"].endswith(f"\n\n{HOW}"), name
-        assert told["content"].count(HOW) == 1, name
+    told, last = told_of_the_folder(team, tmp_path, entry)
+    assert last == HOW
+    assert not [name for name, suffix in told.items() if HOW in suffix]
 
 
 def test_each_namespace_but_root_is_told_which_it_is(library, tmp_path):

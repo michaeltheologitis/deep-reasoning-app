@@ -39,9 +39,7 @@ FOLDER_LINE = jinja2.Template(
     "{% else %}: it is empty.{% endif %}",
     undefined=jinja2.StrictUndefined,
 )
-# Said last to every agent, after its own namespace's suffix: told it only among root's
-# lines, agents still asked the user to paste or upload a file, 4 runs of 4; told it only
-# after the entered namespace's, the helper a planner handed to did.
+# Told last to each agent: told it earlier, or not at all, agents asked for an upload.
 PICK_LINE = jinja2.Template(
     "There is no upload: for files that aren't in this chat's folder, ask the user to"
     " click {{ button }} under the message box and pick the folder holding them.",
@@ -187,7 +185,8 @@ def working_folder(data: Path, chat: dict[str, Any]) -> Path:
 def folder_lines(folder: Path, scratch: bool) -> tuple[str, str]:
     """What a run tells its agents of the chat's working *folder*, its *scratch* folder
     or one the user picked: where it is and the names in it, which every agent is told;
-    and how the user picks another, which every agent is told last."""
+    and how the user picks another, which every agent the engine gives its namespace's
+    instructions is told last."""
     found = listing(folder)
     names, whole = found or ([], True)
     shown = [python_text(name) for name in names[:SHOWN_NAMES]]

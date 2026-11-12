@@ -659,9 +659,9 @@ def leaving_out_unrendered(
 
 
 def telling_last(line: str | None) -> None:
-    """Give every agent of the run *line* last, after its own namespace's suffix, once:
-    after any one namespace's, it would reach those under it among their lines, and
-    twice if it were after theirs too."""
+    """Tell *line* last, once, to every agent the engine gives its namespace's
+    instructions (not one a cell starts with instructions= of its own): no namespace's
+    suffix can, as an agent's is its chain's, root's first."""
     if not line:
         return
     rendered_instructions = agent._rendered_instructions

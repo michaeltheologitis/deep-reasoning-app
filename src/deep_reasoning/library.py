@@ -1797,8 +1797,7 @@ def overrides(own, above, shown, swaps):
 # name, before a run copies some (without_impossible_hand_offs()): the worker names a
 # left-out one by it. A key of the run's config the engine ignores.
 EXAMPLES_STORED_IN = "examples_stored_in"
-# What the worker tells every agent of the run last, after its own namespace's suffix: no
-# suffix can, as each is its chain's, root's first. Another key the engine ignores.
+# What the worker tells each agent last (telling_last()): a key the engine ignores.
 TOLD_LAST = "told_last"
 
 
@@ -1808,7 +1807,7 @@ def engine_config(
     """The Library as one plain dict that V2Config accepts, for run *run* of *chat*, which
     enters *namespace*; the run's model and client are the chat's to put in. Of
     *folder_lines*, on the chat's folder (folder_lines()), every agent of the run is told
-    the first after root's own suffix, and the second last (TOLD_LAST).
+    the first after root's own suffix, and the second last, by the worker (TOLD_LAST).
 
     Only the tools some namespace grants are in it, the app's own included: a run builds
     each tool it declares, whichever namespace it enters, so a tool any namespace grants

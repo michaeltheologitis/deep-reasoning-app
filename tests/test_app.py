@@ -1347,8 +1347,7 @@ async def test_every_agent_of_a_run_is_told_the_chats_folder_and_its_names_as_th
             events = await run_events(api, await send(api, chat, ASKED_HOW))
     namespaces = [each["namespace"] for each in kinds(events, "agent.start")]
     assert namespaces == [ROOT, HISTORIAN]
-    # How to pick another ends each one's suffix, the historian's own lines too, once;
-    # the engine lists the agent's variables and functions after it.
+    # Each one's suffix ends with how to pick another, once, before the engine's listing.
     for call in fake.calls:
         _, suffix, *_ = [
             each["content"] for each in call.messages if each["role"] == "system"
