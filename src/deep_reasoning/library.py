@@ -2760,6 +2760,7 @@ MAX_CHANGE_BYTES = 3 * MAX_ROW_BYTES
 # characters, as a change may be a million long.
 CHANGES_SHOWN = 30
 CHANGE_CHARS_SHOWN = 20_000
+SHOWN_CUT = "…(cut short)"
 # The latest time a change can have been made: the year 9999 begins, which a date shows
 # in any time zone.
 LAST_SECOND = 253_370_764_800
@@ -2777,9 +2778,8 @@ DELETE FROM changes WHERE id IN (
     WHERE place > {CHANGES_KEPT} OR bytes > {CHANGE_BYTES_KEPT}
 )"""
 # A chat's change is labelled with its title as it is now: none once it is deleted.
-READ_CHANGES = f"""
-SELECT change.id, change.made, change.what, change.namespace, change.name,
-    {fitting("change.before", MAX_CHANGE_BYTES)}, {fitting("change.after", MAX_CHANGE_BYTES)},
+READ_CHANGES = """
+SELECT change.id, change.made, change.what, change.namespace, change.name, {texts},
     change.by, change.chat, change.run,
     CASE WHEN change.by = 'chat' THEN chat.title ELSE change.label END
 FROM changes AS change LEFT JOIN chats AS chat ON chat.id = change.chat
@@ -2851,13 +2851,13 @@ def record(connection, by, changes):
         connection.execute(KEEP_NEWEST_CHANGES)
 
 
-def read_changes(connection, newest=CHANGES_KEPT, older_than=None):
+def read_changes(connection, newest=CHANGES_KEPT, older_than=None, cut=None):
     """The record's changes, newest first: at most *newest* of them, and only those
-    before the one of id *older_than* when given. Each is checked as the app could have
-    written it, and one that isn't, as a shared file may hold, is left out with a
-    warning."""
+    before the one of id *older_than* when given; each text, given *cut*, only its first
+    *cut* characters. Each is checked as the app could have written it, and one that
+    isn't, as a shared file may hold, is left out with a warning."""
     rows = connection.execute(
-        READ_CHANGES,
+        READ_CHANGES.format(texts=change_texts(cut)),
         {
             "newest": newest,
             "older_than": sys.maxsize if older_than is None else older_than,
@@ -2913,13 +2913,26 @@ def checked_change(
     }
 
 
+def change_texts(cut):
+    """SQL reading a change's text before and after, each as change_text() takes it: as
+    fitting() reads it, or, given *cut*, its first *cut* characters and 0 for its size
+    (None for none), as no more is read."""
+    keys = ("change.before", "change.after")
+    if cut is None:
+        return ", ".join(fitting(key, MAX_CHANGE_BYTES) for key in keys)
+    return ", ".join(
+        f"substr({key}, 1, {cut}), CASE WHEN {key} IS NOT NULL THEN 0 END"
+        for key in keys
+    )
+
+
 def listed_change(change):
-    """A change as the panel lists it, each text cut past CHANGE_CHARS_SHOWN: the
-    chat's id and run are the library tool's."""
+    """A change as the panel lists it, read with each text cut one character past
+    CHANGE_CHARS_SHOWN, and cut there: the chat's id and run are the library tool's."""
     shown = {key: value for key, value in change.items() if key not in ("chat", "run")}
     for key in ("before", "after"):
         if shown[key] is not None and len(shown[key]) > CHANGE_CHARS_SHOWN:
-            shown[key] = cut_text(shown[key], CHANGE_CHARS_SHOWN)
+            shown[key] = shown[key][:CHANGE_CHARS_SHOWN] + SHOWN_CUT
     return shown
 
 
@@ -4341,7 +4354,10 @@ def panel(connection):
             "namespaces": namespace_rows(read, config, registry, chats),
             "tools": listed_tools(read, config, registry, names),
             "variables": variables(registry, names),
-            "changes": list(
-                map(listed_change, read_changes(connection, CHANGES_SHOWN))
-            ),
+            "changes": [
+                listed_change(change)
+                for change in read_changes(
+                    connection, CHANGES_SHOWN, cut=CHANGE_CHARS_SHOWN + 1
+                )
+            ],
         }

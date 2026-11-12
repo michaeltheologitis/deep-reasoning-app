@@ -76,6 +76,7 @@ from deep_reasoning.library import (
     SANDBOXED,
     SHADOWS_AN_APP_TOOL,
     SHAPES,
+    SHOWN_CUT,
     SPAWN_LINE,
     TOO_SLOW,
     UNREAD_SETTING,
@@ -3545,7 +3546,8 @@ def test_the_panel_lists_the_newest_changes_each_text_cut_short(library):
     assert [each["name"] for each in shown] == [
         f"s{each}" for each in range(CHANGES_SHOWN, 0, -1)
     ]
-    assert shown[0]["after"] == f"{'a' * CHANGE_CHARS_SHOWN}…(+5 chars)"
+    # Cut as the file is read, so the panel never reads a text whole.
+    assert shown[0]["after"] == f"{'a' * CHANGE_CHARS_SHOWN}{SHOWN_CUT}"
     assert set(shown[0]) == {
         "id",
         "made",
