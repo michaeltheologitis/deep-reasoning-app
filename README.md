@@ -56,7 +56,8 @@ on a current model of the first provider with a key; pick another under the mess
 
 **To change every chat**, edit root's `system_suffix`, which every namespace inherits: in the library panel's
 **Namespaces** tab, open `root`, **Edit YAML**, add a line at the end of the text under `system_suffix: |`, indented
-like the lines above it (unindented, it is no longer part of the text and the YAML is refused), and Save:
+like the lines above it (unindented, it is no longer part of the text, and the panel says which line to indent and by
+how many spaces), and Save:
 
 ```yaml
 system_suffix: |
@@ -103,7 +104,8 @@ chat's folder imports too.
 - A provider's error leads with what it means ("The provider has no model x (404)", "Couldn't reach the provider"),
   its own words after. A run it ends says so too: "The model provider failed (502) after 196 s of waiting" (its
   retries included), or "The model provider refused this prompt" for a prompt it refuses for what it holds, then
-  that the Library changes the run made are kept, and to try again or ask in smaller steps.
+  that the Library changes the run made are kept, and to try again or ask in smaller steps. A sub-agent it ends says
+  the same on its row in the tree, and the agent that started it is told so in those words.
 - An answer holding Markdown shows as Markdown; any other shows exactly as written (`List<String>`, `__init__`,
   `2*3*4`). Raw HTML shows as text, an image as a link (never loaded), and links open in a new tab; a link to a file
   in the chat's folder, which the app doesn't serve, shows as text with its address. A long prompt or answer shows its

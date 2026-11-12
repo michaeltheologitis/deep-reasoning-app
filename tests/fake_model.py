@@ -16,10 +16,10 @@ import structlog
 log = structlog.get_logger()
 
 Messages = list[dict[str, Any]]
-Plan = Mapping[str, list[str]]
 MODELS = ("fake-large", "fake-small")
 PRICE_PER_TOKEN = 1e-6
 BEARER = "Bearer "
+PLAIN = "text/plain"
 # What the tests call the fake, and the key they give it, as a custom server in settings.
 SERVER_NAME = "fake"
 SERVER_KEY = "sk-fake-server-key"
@@ -64,6 +64,18 @@ class FakeCall:
     model: str
     messages: Messages
     key: str | None
+
+
+class ProviderFailure(Exception):
+    """A reply a plan gives as its provider's failure: the fake answers *status* with the
+    plain *text* a gateway gives, as testers' 502s read "upstream request failed"."""
+
+    def __init__(self, status: int, text: str) -> None:
+        super().__init__(text)
+        self.status, self.text = status, text
+
+
+Plan = Mapping[str, list[str | ProviderFailure]]
 
 
 def bearer_key(authorization: str | None) -> str | None:
@@ -138,7 +150,10 @@ def scripted(plan: Plan) -> Callable[[Messages], str]:
         task, turn = task_and_turn(messages)
         for key, replies in plan.items():
             if key in task:
-                return replies[min(turn, len(replies) - 1)]
+                reply = replies[min(turn, len(replies) - 1)]
+                if isinstance(reply, ProviderFailure):
+                    raise reply
+                return reply
         raise AssertionError(f"no plan for task {task!r}")
 
     return respond
@@ -178,12 +193,14 @@ class FakeOpenAI:
 
     def answer(
         self, request: dict[str, Any], key: str | None
-    ) -> tuple[int, dict[str, Any]]:
+    ) -> tuple[int, dict[str, Any] | str]:
         messages = request.get("messages", [])
         model = request.get("model", "")
         self.calls.append(FakeCall(time.time(), model, messages, key))
         try:
             reply = self._responder(messages)
+        except ProviderFailure as failure:
+            return failure.status, failure.text
         except Exception as error:
             log.exception("fake_model.answered_500")
             return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": {"message": str(error)}}
@@ -227,10 +244,11 @@ class FakeOpenAI:
             def key(self) -> str | None:
                 return bearer_key(self.headers.get("Authorization"))
 
-            def reply(self, status: int, body: dict[str, Any]) -> None:
-                data = json.dumps(body).encode()
+            def reply(self, status: int, body: dict[str, Any] | str) -> None:
+                text = isinstance(body, str)
+                data = body.encode() if text else json.dumps(body).encode()
                 self.send_response(status)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", PLAIN if text else "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)

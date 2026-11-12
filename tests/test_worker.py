@@ -735,6 +735,27 @@ def test_a_run_ended_by_anything_else_says_it_in_the_engines_words():
     assert failure_detail(ValueError("no rows"), 3) == "ValueError: no rows"
 
 
+@pytest.mark.parametrize(
+    ("error", "lead"),
+    [
+        (provider_error(502, UPSTREAM_FAILED), "The model provider failed (502)."),
+        (provider_error(400, FLAGGED), "The model provider refused this prompt."),
+        (provider_error(400, TOO_LONG), None),
+        (ValueError("no rows"), None),
+    ],
+    ids=["server-error", "refused", "other-400", "not-the-providers"],
+)
+def test_a_sub_agent_a_provider_ended_says_what_it_means_first(error, lead):
+    words = f"{type(error).__name__}: {error}"
+    ended = agent_end(CHILD, "failed") | {"detail": words}
+    # As the engine logs a failed drive's end: while handling the error that ended it.
+    try:
+        raise error
+    except type(error):
+        events = recorded(agent_start(ROOT, None), agent_start(CHILD, ROOT), ended)
+    assert events[-1]["detail"] == (f"{lead}\n{words}" if lead else words)
+
+
 def test_a_failed_model_call_carries_how_long_it_waited(monkeypatch):
     failed = provider_error(502, UPSTREAM_FAILED)
 
@@ -747,3 +768,4 @@ def test_a_failed_model_call_carries_how_long_it_waited(monkeypatch):
     with pytest.raises(openai.InternalServerError):
         asyncio.run(AsyncCompletions.create(None, model="m", messages=[]))
     assert failed.seconds_waited >= 0.05
+    assert failed.__notes__ == ["The model provider failed (502) after 1 s of waiting."]

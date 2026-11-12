@@ -26,7 +26,7 @@ messages:
   - role: user
     content: |
       <observation>
-      {'done': 'changed', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'changed': {'system_suffix': {'before': 'Answer in a haiku.', 'after': 'Answer in one sentence.'}}, 'kept': ['tools']}
+      {'done': 'changed', 'what': 'namespace', 'namespace': 'astronomy', 'name': 'astronomy', 'changed': {'system_suffix': {'was': 'Answer in a haiku.', 'now': 'Answer in one sentence.'}}, 'kept': ['tools']}
       </observation>
   - role: assistant
     content: |

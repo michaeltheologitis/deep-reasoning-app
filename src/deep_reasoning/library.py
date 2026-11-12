@@ -608,7 +608,8 @@ the namespace's own whole, lists and vars too: to grant one more tool, give its 
 tools and the new one. Change part of a text as a value, never as YAML text: own = \
 yaml.safe_load(library.show(name)["yaml"]); change_namespace(name, {"system_suffix": \
 own["system_suffix"].replace(old, new)}). With replace=True, yaml is its whole own \
-YAML. It returns changed (each field's before and after) and kept.
+YAML. It returns changed, each field it changed with what it was and what it is now \
+({field: {was, now}}), and kept.
   library.write_decomposition(namespace, name, turns): adds the worked example `name` \
 to `namespace`, or replaces the one of that name. turns, in order: {"user": the task}; \
 then each step, {"think": its reasoning, "code": its Python}, each but the last \
@@ -855,6 +856,13 @@ LEFT_OUT_NOTE = re.compile(r"# Left out: [^\n]*\n(?:# [^\n]*\n)*")
 # Half of a character, which a YAML escape can make (PyYAML reads an emoji's escaped pair
 # as two halves) but no text written as UTF-8, so no response or run's spec, can hold.
 SURROGATE = re.compile("[\ud800-\udfff]")
+# How far above a YAML error a line less indented than the one before it is tried as its
+# slip: a parser stops a line or two below one, past any blank or comment lines between.
+SLIP_LINES_BACK = 5
+# The most lines of a slipped paragraph indented with its first, each tried alone first.
+SLIP_PARAGRAPH_LINES = 20
+# Enough of a line to find it by, as the panel's editor numbers no lines.
+SLIP_SHOWN_CHARS = 40
 
 
 def unwritable(error):
@@ -2073,6 +2081,111 @@ def problem(error):
     return f"{'.'.join(map(str, error['loc']))}: {error['msg']}."
 
 
+def slip_words(text, error_line):
+    """The commonest slip behind a YAML error at line *error_line*, in plain words: lines
+    of text less indented than the line before them, which end the block text ("key: |")
+    they were meant for. Each line at most SLIP_LINES_BACK above the error that is less
+    indented than the line before it and reads as text alone is indented like that line,
+    with the lines of text right after it at its indent; the first that makes the YAML
+    parse is the slip. None when none does. As web/turns.js's slipWords, held to its
+    words by tests/slip_cases.json."""
+    lines = text.split("\n")
+    last = min(error_line, len(lines)) - 1
+    for at in range(last, max(last - SLIP_LINES_BACK, 0) - 1, -1):
+        before = line_before(lines, at)
+        if before is None or indent_of(lines[at]) >= indent_of(lines[before]):
+            continue
+        if not reads_as_text(lines[at]):
+            continue
+        end = paragraph_end(lines, at)
+        width = indent_of(lines[before])
+        moved = [
+            *lines[:at],
+            *(" " * width + line.lstrip(" ") for line in lines[at:end]),
+            *lines[end:],
+        ]
+        try:
+            data = yaml.safe_load("\n".join(moved))
+        except (yaml.YAMLError, RecursionError):
+            continue
+        first = lines[at].strip(" \t")
+        return slip_said(at + 1, end, first, field_holding(data, first), width)
+    return None
+
+
+def line_before(lines, at):
+    """The index of the last line before *at* that isn't blank; None for none."""
+    return next(
+        (each for each in range(at - 1, -1, -1) if lines[each].strip(" \t")), None
+    )
+
+
+def reads_as_text(line):
+    """Whether *line*, alone, is YAML text or a comment, never a key or an item."""
+    if not line.strip(" \t"):
+        return False
+    try:
+        return not isinstance(yaml.safe_load(line), dict | list)
+    except (yaml.YAMLError, RecursionError):
+        return False
+
+
+def paragraph_end(lines, at):
+    """The end of the paragraph of text line *at* begins: the lines after it, blank ones
+    between, at its indent that read as text, up to SLIP_PARAGRAPH_LINES."""
+    end = at + 1
+    for each in range(at + 1, min(at + SLIP_PARAGRAPH_LINES, len(lines))):
+        if not lines[each].strip(" \t"):
+            continue
+        if indent_of(lines[each]) != indent_of(lines[at]):
+            break
+        if not reads_as_text(lines[each]):
+            break
+        end = each + 1
+    return end
+
+
+def field_holding(data, line):
+    """The key, in document order, whose text in *data* holds *line* as a line of its own;
+    None for none."""
+    if isinstance(data, list):
+        for item in data:
+            if (found := field_holding(item, line)) is not None:
+                return found
+    if not isinstance(data, dict):
+        return None
+    for key, value in data.items():
+        if isinstance(value, str) and line in (
+            each.strip(" \t") for each in value.split("\n")
+        ):
+            return str(key)
+        if (found := field_holding(value, line)) is not None:
+            return found
+    return None
+
+
+def slip_said(number, end, first, field, width):
+    """Lines *number* to *end* (numbered from 1), the first reading *first*, in words: less
+    indented than the text of *field* above them, and how far to indent them."""
+    if len(first) > SLIP_SHOWN_CHARS:
+        first = f"{first[:SLIP_SHOWN_CHARS]}…"
+    text = f"the {field} text" if field else "the text"
+    spaces = count(width, "space")
+    if end == number:
+        return (
+            f'Line {number}, "{first}", is less indented than {text} above it, so it'
+            f" isn't part of that text: start it with the same {spaces}."
+        )
+    return (
+        f'Lines {number} to {end}, from "{first}", are less indented than {text} above'
+        f" them, so they aren't part of that text: start each with the same {spaces}."
+    )
+
+
+def indent_of(line):
+    return len(line) - len(line.lstrip(" "))
+
+
 class RepeatsLoader(yaml.SafeLoader):
     """yaml.safe_load's loader, noting where a mapping first gives a key twice, however
     written (1 and 0x1, true and yes, null and ~), as it keeps only the last. A key given
@@ -2141,8 +2254,10 @@ def loaded(text, repeated=None):
         mark = getattr(error, "problem_mark", None)
         where = f"line {mark.line + 1}: " if mark else ""
         reason = getattr(error, "problem", None) or error
+        slip = slip_words(text, mark.line + 1) if mark else None
         raise LibraryError(
-            f"The YAML doesn't parse ({where}{reason}). Check the indentation and quoting on that line."
+            slip
+            or f"The YAML doesn't parse ({where}{reason}). Check the indentation and quoting on that line."
         ) from error
     except RecursionError as error:
         raise LibraryError("The YAML is nested too deeply to read.") from error

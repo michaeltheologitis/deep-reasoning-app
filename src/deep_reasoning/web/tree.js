@@ -50,6 +50,8 @@ const EXCEPTION_MODULE = /^(?:[A-Za-z_]\w*\.)+(?=[A-Za-z_]\w*(?::|$))/;
 // as the OpenAI client words a provider's errors: "NotFoundError: Error code: 404 - {...}"
 const PROVIDER_STATUS = /^(?:openai\.)?(?:APIStatus|Authentication|PermissionDenied|NotFound|RateLimit|InternalServer)Error: Error code: (\d{3})\b/;
 const UNREACHABLE = /^(?:openai\.)?APIConnectionError: /;
+// a 5xx whose body isn't JSON, as a gateway's "upstream request failed", which the client words without its code
+const SERVER_FAILED = /^(?:openai\.)?InternalServerError: /;
 // how the worker's own first line begins (worker.py's PROVIDER_LEAD and OUT_OF_TURNS)
 const APPS_LEADS = ["The model provider ", "The agent used all "];
 const TIMED_OUT = /^(?:openai\.)?APITimeoutError: /;
@@ -246,7 +248,8 @@ function plainFailure(text, model = null) {
   const status = Number(text.match(PROVIDER_STATUS)?.[1]);
   if (status === NOT_FOUND) return `${missing(text, model)} (${status})`;
   const words = STATUS_WORDS[status] ?? (status >= SERVER_ERROR ? PROVIDER_FAILED : null);
-  return words && `${words} (${status})`;
+  if (words) return `${words} (${status})`;
+  return SERVER_FAILED.test(text) ? PROVIDER_FAILED : null;
 }
 
 // A 404 that speaks of a model is the model's; any other, the address's.
@@ -255,12 +258,14 @@ function missing(text, model) {
   return `The provider has no model ${model ?? text.match(NAMED_MODEL)?.[1] ?? "by that name"}`;
 }
 
-// A failure led by what a provider's error means, then its own words: on a line of their own, or after on one cut short. The worker
-// leads a run a provider ended, or that ran out of turns, with what it means itself, on its first line.
-function failureView(text, { model = null, after = "\n" } = {}) {
+// A failure led by what a provider's error means, then its own words: on a line of their own, or, short, their first line after it
+// on one. The worker leads a run or sub-agent a provider ended, or a run that ran out of turns, with what it means itself, on its
+// first line.
+function failureView(text, { model = null, short = false } = {}) {
   const cut = APPS_LEADS.some((lead) => text.startsWith(lead)) ? text.indexOf("\n") : -1;
   const [lead, own] = cut > 0 ? [text.slice(0, cut), text.slice(cut + 1)] : [plainFailure(text, model), text];
-  return lead ? [lead, after, element("span", { class: "raw" }, own)] : text;
+  const words = short ? own.split("\n")[0] : own;
+  return lead ? [lead, short ? CUT_SEPARATOR : "\n", element("span", { class: "raw" }, words)] : words;
 }
 
 // A failed cell's error: its last traceback's exception line, plain or an exception group's, its name first; else its last
@@ -268,7 +273,7 @@ function failureView(text, { model = null, after = "\n" } = {}) {
 function errorLine(lines) {
   const head = lines.findLastIndex((line) => TRACEBACK.test(line));
   const exception = head < 0 ? null : lines.slice(head + 1).find((line) => EXCEPTION.test(line));
-  if (exception) return failureView(exception.replace(GROUP_FRAME, "").replace(EXCEPTION_MODULE, ""), { after: CUT_SEPARATOR });
+  if (exception) return failureView(exception.replace(GROUP_FRAME, "").replace(EXCEPTION_MODULE, ""), { short: true });
   return lines.length > 1 && lines.at(-1).startsWith(FINAL_ANSWER) ? lines.at(-2) : lines.at(-1);
 }
 
@@ -437,7 +442,7 @@ function renderUnder(agent) {
     return last ? out(stepLabel(last)) : null;
   }
   if (!tone || !agent.result) return null;
-  return out(failureView(agent.result.split("\n")[0], { model: agent.model, after: CUT_SEPARATOR }), { tone });
+  return out(failureView(agent.result, { model: agent.model, short: true }), { tone });
 }
 
 const waiting = (word = WAITING) => element("div", { class: "waiting" }, word);
