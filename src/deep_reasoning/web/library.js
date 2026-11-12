@@ -28,6 +28,8 @@ const EDITOR_KEYS = TOUCH ? null : "tab indents · esc leaves · ctrl/⌘+enter 
 const CHECK_DELAY_MS = 300;
 // What a namespace's save says while it runs, as the engine checks the whole Library, and a tool it grants afresh is built first.
 const SAVING = "Saving…";
+// what a namespace's YAML shows as when it sets nothing
+const BLANK = "(blank: it sets nothing)";
 const BUILDING = "Saving. A custom tool this grants for the first time is built first, to check it, which can take up to a minute.";
 // as the server's limit on a decomposition's YAML; a file of more bytes than 4 a character can't fit
 const MAX_YAML_CHARS = 1_000_000;
@@ -314,7 +316,7 @@ async function showNewer(form) {
     return;
   }
   form.was = now;
-  form.newer.replaceChildren(element("p", { class: "lib-note" }, "Stored now, which Save replaces with yours:"), sideways("What is stored now", now === null ? "(too long to show)" : now || "(blank: it sets nothing)"));
+  form.newer.replaceChildren(element("p", { class: "lib-note" }, "Stored now, which Save replaces with yours:"), sideways("What is stored now", now === null ? "(too long to show)" : now || BLANK));
 }
 
 function say(where, text) {
@@ -938,11 +940,11 @@ function madeAt(made) {
 // Each opens onto its text before and after, as the record holds them, shown as text: a shared file's may hold anything.
 function renderChanges() {
   if (!library.changes.length) return [element("p", { class: "lib-note" }, "No changes yet: each add, edit or delete, made here, by an import or in a chat, is listed here.")];
-  const text = (label, value) => value != null && [element("p", { class: "lib-note" }, `${label}:`), sideways(label, value)];
+  const text = (label, value) => value != null && [element("p", { class: "lib-note" }, `${label}:`), sideways(label, value || BLANK)];
   const rows = library.changes.map((change) =>
     disclosure(`c:${change.id}`, rowHead(changeLine(change), madeBy(change), madeAt(change.made)), () => [text("Before", change.before), text("After", change.after)]),
   );
-  const note = element("p", { class: "lib-note" }, "The newest changes, whoever made them. To undo one, ask the librarian.");
+  const note = element("p", { class: "lib-note" }, "The newest changes, whoever made them. The librarian can undo one it may write; undo the rest here, from its before.");
   return [element("div", { class: "lib-changes" }, group("Recent changes", [note, rows]))];
 }
 
