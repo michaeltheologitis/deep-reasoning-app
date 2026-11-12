@@ -1803,6 +1803,8 @@ def overrides(own, above, shown, swaps):
 # name, before a run copies some (without_impossible_hand_offs()): the worker names a
 # left-out one by it. A key of the run's config the engine ignores.
 EXAMPLES_STORED_IN = "examples_stored_in"
+# What the worker tells each agent last (telling_last()): a key the engine ignores.
+TOLD_LAST = "told_last"
 
 
 def engine_config(
@@ -1811,8 +1813,7 @@ def engine_config(
     """The Library as one plain dict that V2Config accepts, for run *run* of *chat*, which
     enters *namespace*; the run's model and client are the chat's to put in. Of
     *folder_lines*, on the chat's folder (folder_lines()), every agent of the run is told
-    the first, after root's own suffix, and the agents of *namespace* and of those under
-    it the second, after *namespace*'s.
+    the first after root's own suffix, and the second last, by the worker (TOLD_LAST).
 
     Only the tools some namespace grants are in it, the app's own included: a run builds
     each tool it declares, whichever namespace it enters, so a tool any namespace grants
@@ -1826,6 +1827,7 @@ def engine_config(
     """
     tools_dir = Path(tools_dir).resolve()
     tools_dir.mkdir(parents=True, exist_ok=True)
+    where, last = folder_lines or (None, None)
     with closing(open_library(library_path)) as connection:
         read = read_library(connection)
     config = config_of(read)
@@ -1860,28 +1862,28 @@ def engine_config(
             for name in registry.names
         }
         config = without_impossible_hand_offs(config, resolved, registry)
-        config = with_run_lines(config, registry, namespace, folder_lines)
+        config = with_run_lines(config, registry, where)
     except ValueError as error:
         # The worker refuses such a Library itself, in its own words.
         log.warning("library.not_checked", error=str(error))
         editors = []
     if LIBRARY_TOOL in config["tools"]:
         config["tools"][LIBRARY_TOOL]["editors"] = editors
-    return config | {"entry_namespace": namespace, EXAMPLES_STORED_IN: stored_in}
+    return config | {
+        "entry_namespace": namespace,
+        EXAMPLES_STORED_IN: stored_in,
+        TOLD_LAST: last,
+    }
 
 
-def with_run_lines(config, registry, entry, folder_lines):
+def with_run_lines(config, registry, where=None):
     """*config* with each of run_lines() after its namespace's own system_suffix, a
-    blank line between, for its run only: the Library holds none. Of *folder_lines*, the
-    first goes first after root's suffix, which every namespace inherits, and the second
-    last after the *entry* namespace's, which those under it inherit. A bare root, as one
-    left out runs, is given its own."""
+    blank line between, for its run only: the Library holds none; *where* goes first
+    after root's, which every namespace inherits. A bare root, as one left out runs, is
+    given its own."""
     lines = run_lines(registry)
-    if folder_lines:
-        where, how = folder_lines
+    if where:
         lines[ROOT] = "\n\n".join(filter(None, [where, lines.get(ROOT)]))
-        if entry in registry.names:
-            lines[entry] = "\n\n".join(filter(None, [lines.get(entry), how]))
     for name, line in lines.items():
         fields = config["namespaces"].setdefault(name, {})
         own = (fields.get("system_suffix") or "").rstrip("\n")

@@ -10,7 +10,12 @@ import openai
 import pytest
 from deep_reasoner.tools import ToolBuildError
 from deep_reasoner.v2 import agent
-from deep_reasoner.v2.cli import V2Config, build_reasoner, close_run
+from deep_reasoner.v2.cli import (
+    V2Config,
+    build_namespace_registry,
+    build_reasoner,
+    close_run,
+)
 from deep_reasoner.v2.messages import code, func
 from deep_reasoner.v2.repl_coro import REPL
 from genai_prices import Usage, calc_price
@@ -430,6 +435,35 @@ def test_a_worked_example_left_out_is_noted_for_the_agent_it_was_left_out_of_alo
     ]
     assert lines[-1]["why"] == "ZeroDivisionError: division by zero"
     assert lines[-1]["from"] == "stored-here"
+
+
+# A namespace under another, and siblings, each with a suffix of its own.
+NESTED = {
+    "root": {"system_suffix": "Root's."},
+    "team": {"system_suffix": "The team's."},
+    "team.worker": {"system_suffix": "The worker's."},
+    "sibling": {"system_suffix": "The sibling's."},
+}
+LAST_LINE = "There is no upload: ask the user to click 'scratch'."
+
+
+def test_every_agent_given_its_namespaces_instructions_is_told_the_line_last_once(
+    monkeypatch,
+):
+    # put back after the test, as the wrapping replaces it
+    monkeypatch.setattr(agent, "_rendered_instructions", agent._rendered_instructions)
+    worker.telling_last(LAST_LINE)
+    config = {
+        "model": "gpt-6-luna",
+        "client": {"base_url": OWN_SERVER_URL, "api_key_env": "OPENAI_API_KEY"},
+        "namespaces": NESTED,
+    }
+    registry = build_namespace_registry(V2Config.model_validate(config))
+    for name, fields in NESTED.items():
+        suffix = registry.resolve(name).system_suffix
+        *_, told = agent._rendered_instructions("The prompt.", suffix, {})
+        assert told["content"].endswith(f"{fields['system_suffix']}\n\n{LAST_LINE}")
+        assert told["content"].count(LAST_LINE) == 1
 
 
 def in_a_worker(code, *args):
