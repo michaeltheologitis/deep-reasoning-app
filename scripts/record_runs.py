@@ -41,6 +41,7 @@ from fake_model import (
     write,
 )
 
+from deep_reasoning.folders import folder_lines
 from deep_reasoning.library import (
     ROOT,
     add_decomposition,
@@ -324,9 +325,11 @@ async def record(home, name, scenario):
     with FakeOpenAI(responder(scenario), usage=usage) as fake:
 
         def config_for(folder):
-            # The Library's config, as the app builds a run's, with the fake's model.
+            # The Library's config, as the app builds a run's, with the fake's model; the
+            # worker works in the run's folder, as a chat in its scratch folder.
+            lines = folder_lines(folder, scratch=True)
             told = engine_config(
-                library, namespace, folder / "tools", CHAT, folder.name
+                library, namespace, folder / "tools", CHAT, folder.name, (), lines
             )
             return told | config_on(fake, scenario.get("settings", {}))
 

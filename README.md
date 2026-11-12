@@ -217,8 +217,11 @@ chat's folder imports too.
 - Each run tells the agents of every namespace but root which namespace they are in, so "hand this to stats" reaching
   `stats` is done there; of one whose REPL isn't the one above it (root: the local one), where their Python runs,
   whatever is said above; and, when it sets `spawn`, where they can hand work. The panel shows that line under its
-  System suffix, "added by the app at run time", and marks a listed namespace that is gone. Saving takes any text,
-  a line in these words included: what a shared Library's text tells agents is for you to trust or not.
+  System suffix, "added by the app at run time", and marks a listed namespace that is gone. Each run also tells every
+  agent the chat's folder and what is in it (up to 40 names, hidden ones left out), and the agents of the chat's
+  namespace and of those under it (with root, every agent) to send you to the folder button under the message box for
+  files that aren't there; these follow the chat, so the panel doesn't show them. Saving takes any text, a line in
+  these words included: what a shared Library's text tells agents is for you to trust or not.
 - A shared Library's rows the engine can't read are left out, so the rest works, and so is a row that could pass for
   another or hides a mismatch: a worked example with a template no save takes, named with a hidden character, or
   stored under a name its YAML doesn't give; a namespace named with a space, a

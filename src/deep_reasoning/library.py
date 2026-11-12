@@ -1799,9 +1799,14 @@ def overrides(own, above, shown, swaps):
 EXAMPLES_STORED_IN = "examples_stored_in"
 
 
-def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
+def engine_config(
+    library_path, namespace, tools_dir, chat, run, key_names=(), folder_lines=None
+):
     """The Library as one plain dict that V2Config accepts, for run *run* of *chat*, which
-    enters *namespace*; the run's model and client are the chat's to put in.
+    enters *namespace*; the run's model and client are the chat's to put in. Of
+    *folder_lines*, on the chat's folder (folder_lines()), every agent of the run is told
+    the first, after root's own suffix, and the agents of *namespace* and of those under
+    it the second, after *namespace*'s.
 
     Only the tools some namespace grants are in it, the app's own included: a run builds
     each tool it declares, whichever namespace it enters, so a tool any namespace grants
@@ -1849,7 +1854,7 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
             for name in registry.names
         }
         config = without_impossible_hand_offs(config, resolved, registry)
-        config = with_run_lines(config, registry)
+        config = with_run_lines(config, registry, namespace, folder_lines)
     except ValueError as error:
         # The worker refuses such a Library itself, in its own words.
         log.warning("library.not_checked", error=str(error))
@@ -1859,11 +1864,19 @@ def engine_config(library_path, namespace, tools_dir, chat, run, key_names=()):
     return config | {"entry_namespace": namespace, EXAMPLES_STORED_IN: stored_in}
 
 
-def with_run_lines(config, registry):
+def with_run_lines(config, registry, entry, folder_lines):
     """*config* with each of run_lines() after its namespace's own system_suffix, a
-    blank line between, for its run only: the Library holds none. A bare root, as one
+    blank line between, for its run only: the Library holds none. Of *folder_lines*, the
+    first goes first after root's suffix, which every namespace inherits, and the second
+    last after the *entry* namespace's, which those under it inherit. A bare root, as one
     left out runs, is given its own."""
-    for name, line in run_lines(registry).items():
+    lines = run_lines(registry)
+    if folder_lines:
+        where, how = folder_lines
+        lines[ROOT] = "\n\n".join(filter(None, [where, lines.get(ROOT)]))
+        if entry in registry.names:
+            lines[entry] = "\n\n".join(filter(None, [lines.get(entry), how]))
+    for name, line in lines.items():
         fields = config["namespaces"].setdefault(name, {})
         own = (fields.get("system_suffix") or "").rstrip("\n")
         fields["system_suffix"] = "\n\n".join(filter(None, [own, line]))
