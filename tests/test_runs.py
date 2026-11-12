@@ -545,6 +545,9 @@ async def test_a_run_whose_first_call_fails_ends_with_that_call_unfinished(
     assert of_kind(events, "usage") == []
     end = events[-1]
     assert (end["outcome"], end["cost"], end["unfinished_calls"]) == ("failed", 0, 1)
+    lead, words = end["detail"].split("\n", 1)
+    assert lead.startswith("The model provider failed (500) after ")
+    assert words.startswith("InternalServerError: Error code: 500")
 
 
 async def test_the_note_that_a_reply_had_no_repl_block_reaches_the_model_as_the_apps(

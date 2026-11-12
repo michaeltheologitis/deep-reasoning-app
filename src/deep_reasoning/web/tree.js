@@ -50,6 +50,8 @@ const EXCEPTION_MODULE = /^(?:[A-Za-z_]\w*\.)+(?=[A-Za-z_]\w*(?::|$))/;
 // as the OpenAI client words a provider's errors: "NotFoundError: Error code: 404 - {...}"
 const PROVIDER_STATUS = /^(?:openai\.)?(?:APIStatus|Authentication|PermissionDenied|NotFound|RateLimit|InternalServer)Error: Error code: (\d{3})\b/;
 const UNREACHABLE = /^(?:openai\.)?APIConnectionError: /;
+// how the worker begins its own line, before a provider's words, when the provider ended a run (worker.py's PROVIDER_LEAD)
+const PROVIDER_LEAD = "The model provider ";
 const TIMED_OUT = /^(?:openai\.)?APITimeoutError: /;
 // the model a provider's 404 names: "The model `x` does not exist", 'model "x" not found'
 const NAMED_MODEL = /\bmodel\s*[`'"]([^`'"\n]+)[`'"]/i;
@@ -253,10 +255,12 @@ function missing(text, model) {
   return `The provider has no model ${model ?? text.match(NAMED_MODEL)?.[1] ?? "by that name"}`;
 }
 
-// A failure led by what a provider's error means, then its own words: on a line of their own, or after on one cut short.
+// A failure led by what a provider's error means, then its own words: on a line of their own, or after on one cut short. The worker
+// leads a run a provider ended with what it means itself, on its first line.
 function failureView(text, { model = null, after = "\n" } = {}) {
-  const plain = plainFailure(text, model);
-  return plain ? [plain, after, element("span", { class: "raw" }, text)] : text;
+  const cut = text.startsWith(PROVIDER_LEAD) ? text.indexOf("\n") : -1;
+  const [lead, own] = cut > 0 ? [text.slice(0, cut), text.slice(cut + 1)] : [plainFailure(text, model), text];
+  return lead ? [lead, after, element("span", { class: "raw" }, own)] : text;
 }
 
 // A failed cell's error: its last traceback's exception line, plain or an exception group's, its name first; else its last

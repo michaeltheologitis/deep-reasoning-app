@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { CLAMPS, COST_NA, SANITIZE, UNFINISHED, WAITING, clamped, costView, element, formatCost, formatTotal, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
+import { CLAMPS, COST_NA, SANITIZE, UNFINISHED, WAITING, clamped, costView, element, failureView, formatCost, formatTotal, known, markdownHtml, opened, plainFailure, renderAgent, renderAnswer, renderStep, stepLabel } from "../src/deep_reasoning/web/tree.js";
 
 globalThis.marked = createRequire(import.meta.url)("../src/deep_reasoning/web/vendor/marked.min.js");
 
@@ -236,6 +236,22 @@ test("any other failure, a provider's own reason included, has no plain words of
     "worker gone",
   ];
   for (const raw of reasons) assert.equal(plainFailure(raw), null);
+});
+
+test("a run the worker says a provider ended leads with its words, the provider's own after, dim", () => {
+  const lead = "The model provider failed (502) after 197 s of waiting. Try again, or ask in smaller steps.";
+  const [said, between, own] = failureView(`${lead}\nInternalServerError: upstream request failed`);
+  assert.deepEqual([said, between, own.className, own.textContent], [lead, "\n", "raw", "InternalServerError: upstream request failed"]);
+});
+
+test("any other run's failure over lines is shown as it is, read as no words of the worker's", () => {
+  const details = [
+    "Tool broken doesn't build: build raised RuntimeError: no index\nIt is granted in units.",
+    "KeyError: 'rows'\nValueError: no rows",
+    "ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)\nValueError: room D",
+    "NoCodeBlock: The reply holds no block\nInternalServerError: Error code: 500",
+  ];
+  for (const detail of details) assert.equal(failureView(detail), detail);
 });
 
 test("a sub-agent that failed on a provider's error leads with plain words, a short reason after", () => {

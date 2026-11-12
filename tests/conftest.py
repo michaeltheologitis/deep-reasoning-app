@@ -11,6 +11,20 @@ from deep_reasoning.settings import VENDORS, add_server, remember_pick
 
 # Copies of deep_reasoner 0.3.0's docs/configs, in their layout, so _compose paths still resolve.
 CONFIGS = Path(__file__).parent / "configs"
+# What a tester's librarian stored, line breaks typed as a backslash and n: a worked
+# example's table and a tool's reminder emails; and an example that checks for them.
+TYPED_BREAKS = Path(__file__).parent / "typed_breaks"
+# What the panel and the library tool say of them.
+TABLE_BREAK = (
+    "Turn 4 (assistant)'s code types \\n as a backslash and n on its line 14"
+    " ('were categorized as Subsistence.\\\\n\\\\n'), which shows as those two"
+    " characters, not a line break: the code should have \\n there, with one backslash."
+)
+REMINDER_BREAK = (
+    "The tool's Python types \\n as a backslash and n on its line 101"
+    ' (f"Dear {contact},\\\\n\\\\n"), which shows as those two characters, not a line'
+    " break: the code should have \\n there, with one backslash."
+)
 
 
 @pytest.fixture(autouse=True)

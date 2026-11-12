@@ -5,6 +5,8 @@ import signal
 import subprocess
 import sys
 
+import httpx
+import openai
 import pytest
 from deep_reasoner.tools import ToolBuildError
 from deep_reasoner.v2 import agent
@@ -20,6 +22,7 @@ from deep_reasoning.worker import (
     Recorder,
     build_failure,
     cost_of,
+    failure_detail,
     final_answer_of,
     output_of,
     tool_line,
@@ -249,7 +252,9 @@ def test_the_engines_note_of_a_reply_with_no_repl_block_is_sent_as_the_apps(
     assert messages[3] == {
         "role": "user",
         "content": "(An automated note from the app, not the user, who sees none of"
-        f" this: {note['content']})",
+        f" this: {note['content']}) The user saw none of what you just wrote: if it was"
+        " your answer, put that answer, as you wrote it, in FinalAnswer(...) in a <repl>"
+        " block, and never reply to this note itself.",
     }
     # The engine's own conversation, which its log records, keeps the note as it was.
     assert conversation[3] == note
@@ -299,6 +304,14 @@ def test_a_library_change_is_recorded_for_the_agent_whose_cell_made_it():
         "before": None,
         "after": "name: count\n",
     }
+
+
+def test_the_recorder_counts_the_library_changes_a_run_made():
+    change = {"event": "library.change", "node_id": ROOT, "agent_id": ROOT}
+    recorder = new_recorder(io.StringIO())
+    for event in [agent_start(ROOT, None), change, change]:
+        recorder(None, "debug", dict(event))
+    assert recorder.changes_made == 2
 
 
 def test_a_page_opened_is_recorded_for_the_agent_whose_cell_opened_it():
@@ -582,3 +595,103 @@ def test_each_line_of_a_tools_description_is_indented_under_its_tool():
         "  - `delete_library()`\n"
         "    Deletes the whole Library."
     )
+
+
+def provider_error(status, body):
+    """The error the OpenAI client raises for a call its provider answered *status*
+    with *body*, JSON or text."""
+
+    def answer(request):
+        if isinstance(body, dict):
+            return httpx.Response(status, json=body)
+        return httpx.Response(status, text=body)
+
+    transport = httpx.MockTransport(answer)
+    client = openai.AsyncOpenAI(
+        api_key="test",
+        base_url=OPENAI_URL,
+        max_retries=0,
+        http_client=httpx.AsyncClient(transport=transport),
+    )
+    with pytest.raises(openai.APIStatusError) as raised:
+        asyncio.run(client.chat.completions.create(model="gpt-6-luna", messages=[]))
+    return raised.value
+
+
+# As testers' runs ended: a team written in one reply, and a librarian's prompt.
+UPSTREAM_FAILED = "upstream request failed"
+FLAGGED = {
+    "error": {
+        "message": "Invalid prompt: your prompt was flagged as potentially violating our"
+        " usage policy. Please try again with a different prompt.",
+        "type": "invalid_request_error",
+        "param": None,
+        "code": "invalid_prompt",
+    }
+}
+# A 400 that says "flagged" but isn't a refusal of what the prompt holds.
+TOO_LONG = {
+    "error": {
+        "message": "Too long: the flagged turns exceed the context window.",
+        "type": "invalid_request_error",
+        "param": "messages",
+        "code": "context_length_exceeded",
+    }
+}
+AGAIN = "Try again, or ask in smaller steps."
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "waited", "changes", "lead"),
+    [
+        (
+            502,
+            UPSTREAM_FAILED,
+            196.4,
+            9,
+            (
+                "The model provider failed (502) after 197 s of waiting. The 9 changes"
+                f" this run made to the Library are kept. {AGAIN}"
+            ),
+        ),
+        (
+            500,
+            UPSTREAM_FAILED,
+            2.0,
+            1,
+            (
+                "The model provider failed (500) after 2 s of waiting. The 1 change this"
+                f" run made to the Library is kept. {AGAIN}"
+            ),
+        ),
+        (400, FLAGGED, None, 0, f"The model provider refused this prompt. {AGAIN}"),
+        (400, TOO_LONG, None, 3, None),
+    ],
+    ids=["server-error-after-a-wait", "one-change", "refused", "other-400"],
+)
+def test_a_run_ended_by_the_provider_says_what_it_means_first(
+    status, body, waited, changes, lead
+):
+    error = provider_error(status, body)
+    if waited is not None:
+        error.seconds_waited = waited
+    words = f"{type(error).__name__}: {error}"
+    assert failure_detail(error, changes) == (f"{lead}\n{words}" if lead else words)
+
+
+def test_a_run_ended_by_anything_else_says_it_in_the_engines_words():
+    assert failure_detail(ValueError("no rows"), 3) == "ValueError: no rows"
+
+
+def test_a_failed_model_call_carries_how_long_it_waited(monkeypatch):
+    failed = provider_error(502, UPSTREAM_FAILED)
+
+    async def create(self, **kwargs):
+        await asyncio.sleep(0.05)
+        raise failed
+
+    monkeypatch.setattr(AsyncCompletions, "create", create)
+    worker.counting_calls(new_recorder(io.StringIO()))
+    with pytest.raises(openai.InternalServerError):
+        asyncio.run(AsyncCompletions.create(None, model="m", messages=[]))
+    assert failed.seconds_waited >= 0.05

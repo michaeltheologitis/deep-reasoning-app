@@ -79,12 +79,14 @@ from deep_reasoning.library import (
     change_namespace,
     check_size,
     check_tool_block,
+    code_breaks,
     config_and_registry,
     config_of,
     count,
     cut_text,
     distrust,
     dump,
+    example_breaks,
     expanded_shape,
     fields_of,
     in_chain_order,
@@ -1330,10 +1332,12 @@ def check_writable(namespace: str, text: str, key_names: list[str]) -> Any:
     return data
 
 
-def code_problems(decomposition: dict[str, Any]) -> list[str]:
+def code_problems(decomposition: dict[str, Any], before: str = "") -> list[str]:
     """Each assistant turn of *decomposition*, as data the store took, whose code, the
     <repl> block the engine runs, isn't valid Python, or leaves the {name} of a variable
-    its code or an earlier turn's sets in a string without f."""
+    its code or an earlier turn's sets in a string without f; then each typing a line
+    break as a backslash and n on a line the text *before* the write didn't hold
+    (example_breaks())."""
     problems, names = [], set()
     for number, turn in enumerate(decomposition["messages"], start=1):
         if turn["role"] != "assistant":
@@ -1351,7 +1355,7 @@ def code_problems(decomposition: dict[str, Any]) -> list[str]:
             for name in dict.fromkeys(fields_without_f(source, tree))
             if name in names
         ]
-    return problems
+    return problems + example_breaks(decomposition["messages"], before)
 
 
 def set_names(tree: ast.AST) -> set[str]:
@@ -1882,7 +1886,7 @@ def turns_of(
 def change_head(change: Event, chat: str, turns: dict[str, int]) -> Event:
     """A recorded *change*'s id, when it was made, by whom (this chat's, *chat*, with
     the turn, by *turns*, of the run that made it), and what it did."""
-    head = {"id": change["id"], "when": day_of(change["made"])}
+    head = {"id": change["id"], "when": made_at(change["made"])}
     head["by"] = made_by(change, chat)
     if change["chat"] == chat and change["run"] in turns:
         head["turn"] = turns[change["run"]]
@@ -1895,11 +1899,13 @@ def done_of(change: Event) -> str:
     return "deleted" if change["after"] is None else "changed"
 
 
-def day_of(made: float) -> str:
-    """The day a change was *made*: today, yesterday, else its date."""
-    day, today = datetime.fromtimestamp(made).date(), date.today()
+def made_at(made: float) -> str:
+    """When a change was *made*, in the app's local time: its day (today, yesterday,
+    else its date), then its time, as "today 14:02"."""
+    when = datetime.fromtimestamp(made)
+    today = date.today()
     named = {today: "today", today - timedelta(days=1): "yesterday"}
-    return named.get(day, day.isoformat())
+    return f"{named.get(when.date(), when.date().isoformat())} {when:%H:%M}"
 
 
 def made_by(change: Event, chat: str) -> str:
@@ -2104,7 +2110,7 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
             text = yaml_text(yaml, typed=with_real_tags)
         data = check_writable(namespace, text, key_names)
 
-        def write() -> tuple[dict[str, Any], Event]:
+        def write() -> tuple[dict[str, Any], str | None, Event]:
             stored, before = written(
                 library,
                 add_decomposition,
@@ -2120,12 +2126,12 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
                 "name": stored["name"],
             }
             if before == text:
-                return stored, {"done": NOTHING_CHANGED, **at}
+                return stored, before, {"done": NOTHING_CHANGED, **at}
             done = "added" if before is None else "replaced"
-            return stored, logged(done, before, text, **at)
+            return stored, before, logged(done, before, text, **at)
 
-        stored, change = stop_proof(write)
-        broken = code_problems(data)
+        stored, before, change = stop_proof(write)
+        broken = code_problems(data, before or "")
         return {**change, "problems": stored["problems"]} | (
             {"code_problems": broken} if broken else {}
         )
@@ -2200,18 +2206,20 @@ def build_library(client: Any, params: dict[str, Any]) -> Func:
         }
         check_builds({name: (block, source)}, tools_dir, WRITTEN)
 
-        def write() -> Event:
+        def write() -> tuple[str | None, Event]:
             allowed = partial(may_write_tool, name=name, settings=settings or {})
             before = written(
                 library, store_tool, name, block, source, allowed=allowed, by=by
             )
             after = tool_text(name, dump(block), source)
             if before == after:
-                return {"done": NOTHING_CHANGED, "what": "tool", "name": name}
+                return before, {"done": NOTHING_CHANGED, "what": "tool", "name": name}
             done = "added" if before is None else "replaced"
-            return logged(done, before, after, what="tool", name=name)
+            return before, logged(done, before, after, what="tool", name=name)
 
-        return stop_proof(write)
+        before, done = stop_proof(write)
+        typed = code_breaks("The tool's Python", source, before or "")
+        return done | ({"problems": typed} if typed else {})
 
     tool = SimpleNamespace(
         show=giving_marks(show),

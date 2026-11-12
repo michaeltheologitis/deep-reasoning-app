@@ -778,7 +778,8 @@ function noteMark(notes) {
 
 const noteList = (notes) => notes.length > 0 && element("div", { class: "lib-call-notes" }, notes.map((text) => element("p", {}, text)));
 
-// what a namespace agents still run in may need looking at, as a grant runs ignore: ◆ in the warn colour, as a run's Left out line, not a ✗
+// what a namespace or tool agents still run with may need looking at, as a grant runs ignore or a line break typed as \n: ◆ in the warn
+// colour, as a run's Left out line, not a ✗
 function warningMark(warnings) {
   const count = warnings.length;
   const label = `${count} warning${count === 1 ? "" : "s"}`;
@@ -884,6 +885,7 @@ function renderTool(tool) {
   return [
     // one the engine can't read, as a shared file may hold, says why instead
     problemList(tool.problems),
+    warningList(tool.warnings),
     fields(tool.problems.length ? [granted] : [...made, granted]),
     tool.config && sideways(`${tool.name}'s settings`, tool.config),
     // What the agent is told it does, for a custom tool as far as its source says; it wraps, as one may run long.
@@ -896,7 +898,7 @@ function renderTool(tool) {
 function renderTools() {
   const rows = library.tools.map((tool) => {
     const granted = tool.granted_in.length ? `granted in ${tool.granted_in.map(shownName).join(", ")}` : "not granted";
-    return disclosure(toolKey(tool), rowHead(tool.name, granted, tool.problems.length ? checkMark(tool.problems) : tool.badge), () => renderTool(tool));
+    return disclosure(toolKey(tool), rowHead(tool.name, granted, tool.problems.length ? checkMark(tool.problems) : warningMark(tool.warnings) || tool.badge), () => renderTool(tool));
   });
   return [element("div", { class: "lib-rows" }, toolsSaid, rows)];
 }
