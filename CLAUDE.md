@@ -83,7 +83,7 @@ This project's Notion page (todos, changelog, notes): https://app.notion.com/p/4
 
 ## Conventions
 
-- A PR that adds or changes what a user can do updates README.md's list of what the app supports in the same PR.
+- A PR that adds or changes what a user can do updates README.md in the same PR, if the README describes that. The README is short and plain on purpose: what the app offers and how to use it, never internals.
 - No paid model calls except the gpt-6-luna live tests, and the Claude Code on Sonnet live test through Michael's subscription token. Never set `ANTHROPIC_API_KEY`.
 - Tests import copies of `deep_reasoner`'s example configs in `tests/configs/` (0.3.0's `docs/configs`, same layout); refresh them from the pinned tag, never edit them.
 - Kill only the processes you started: never `pkill -f` or `pgrep -f`. `uv run` puts a Python child under its own process, so stop both (or run `.venv/bin/python` directly), and check with `ps` that nothing you started is left before you report.
